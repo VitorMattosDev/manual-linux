@@ -1,0 +1,3 @@
+# Manipulando arquivos e diretórios: cp, mv, rm, mkdir {#sec-cap010}
+
+*(em elaboracao)*

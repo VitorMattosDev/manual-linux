@@ -1,0 +1,3 @@
+# Logs com journald e o syslog tradicional {#sec-cap042}
+
+*(em elaboracao)*

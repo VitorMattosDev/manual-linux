@@ -1,0 +1,3 @@
+# Configuração de rede: ip, NetworkManager e arquivos {#sec-cap079}
+
+*(em elaboracao)*

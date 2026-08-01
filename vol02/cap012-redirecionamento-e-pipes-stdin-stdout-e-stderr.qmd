@@ -1,0 +1,3 @@
+# Redirecionamento e pipes: stdin, stdout e stderr {#sec-cap012}
+
+*(em elaboracao)*

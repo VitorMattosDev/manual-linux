@@ -1,0 +1,3 @@
+# Alternativas: pipx, snap, flatpak e AppImage {#sec-cap038}
+
+*(em elaboracao)*

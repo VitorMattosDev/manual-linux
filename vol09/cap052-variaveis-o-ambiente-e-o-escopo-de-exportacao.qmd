@@ -1,0 +1,3 @@
+# Variáveis, o ambiente e o escopo de exportação {#sec-cap052}
+
+*(em elaboracao)*

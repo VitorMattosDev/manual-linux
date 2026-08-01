@@ -1,0 +1,3 @@
+# Tratamento de erros: set -euo pipefail e traps {#sec-cap071}
+
+*(em elaboracao)*

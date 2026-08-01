@@ -1,0 +1,3 @@
+# Permissões especiais: SUID, SGID e sticky bit {#sec-cap023}
+
+*(em elaboracao)*

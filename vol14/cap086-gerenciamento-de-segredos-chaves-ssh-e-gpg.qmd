@@ -1,0 +1,3 @@
+# Gerenciamento de segredos: chaves SSH e GPG {#sec-cap086}
+
+*(em elaboracao)*

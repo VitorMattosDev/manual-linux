@@ -1,0 +1,3 @@
+# LVM: volumes lógicos flexíveis {#sec-cap048}
+
+*(em elaboracao)*

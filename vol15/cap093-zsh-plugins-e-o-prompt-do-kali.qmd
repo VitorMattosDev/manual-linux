@@ -1,0 +1,3 @@
+# Zsh, plugins e o prompt do Kali {#sec-cap093}
+
+*(em elaboracao)*

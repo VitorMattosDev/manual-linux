@@ -1,0 +1,227 @@
+project:
+  type: book
+  output-dir: _book
+
+lang: pt
+
+book:
+  title: "Manual de Linux e Shell Scripting"
+  subtitle: "Do básico ao avançado — do terminal ao kernel, com Kali Linux como referência"
+  author: "Vitor Mattos"
+  date: today
+  date-format: "DD/MM/YYYY"
+  language: pt
+  search: true
+  repo-url: https://github.com/VitorMattosDev/manual-linux
+  repo-actions: [edit, issue]
+  downloads: [pdf]
+  sidebar:
+    style: docked
+    collapse-level: 1
+  page-footer:
+    left: "Manual de Linux e Shell Scripting"
+    right: "Licença CC BY-SA 4.0"
+  chapters:
+    - index.qmd
+    # ===== Fase 1 — Fundamentos do Linux =====
+    - part: |
+        Volume 1 — Primeiros Passos: Linux e Kali
+      chapters:
+        - vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.qmd
+        - vol01/cap002-por-que-kali-linux-proposito-filosofia-e.qmd
+        - vol01/cap003-instalando-o-kali-maquina-virtual-bare-metal.qmd
+        - vol01/cap004-primeiro-contato-sessao-ambiente-xfce-e.qmd
+        - vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.qmd
+        - vol01/cap006-anatomia-de-um-comando-shell-argumentos.qmd
+        - vol01/cap007-obtendo-ajuda-man-info-tldr-e-a-documentacao.qmd
+    - part: |
+        Volume 2 — O Terminal e o Shell
+      chapters:
+        - vol02/cap008-emulador-de-terminal-e-shell-bash-zsh-e-o.qmd
+        - vol02/cap009-navegacao-pwd-cd-ls-e-caminhos-absolutos-e.qmd
+        - vol02/cap010-manipulando-arquivos-e-diretorios-cp-mv-rm.qmd
+        - vol02/cap011-visualizando-conteudo-cat-less-head-tail-e.qmd
+        - vol02/cap012-redirecionamento-e-pipes-stdin-stdout-e-stderr.qmd
+        - vol02/cap013-curingas-globbing-e-expansao-de-chaves.qmd
+        - vol02/cap014-historico-atalhos-de-teclado-e-produtividade.qmd
+    - part: |
+        Volume 3 — Arquivos e o Sistema de Arquivos
+      chapters:
+        - vol03/cap015-tipos-de-arquivo-inodes-e-a-arvore-de.qmd
+        - vol03/cap016-links-simbolicos-e-hard-links.qmd
+        - vol03/cap017-localizando-arquivos-find-locate-which-e-type.qmd
+        - vol03/cap018-compactacao-e-arquivamento-tar-gzip-xz-e-zip.qmd
+        - vol03/cap019-montagem-de-dispositivos-e-o-comando-mount.qmd
+        - vol03/cap020-permissoes-de-arquivo-leitura-escrita-e.qmd
+    - part: |
+        Volume 4 — Usuários, Grupos e Permissões
+      chapters:
+        - vol04/cap021-usuarios-grupos-e-o-arquivo-etc-passwd.qmd
+        - vol04/cap022-o-root-sudo-e-a-elevacao-de-privilegios.qmd
+        - vol04/cap023-permissoes-especiais-suid-sgid-e-sticky-bit.qmd
+        - vol04/cap024-acls-e-atributos-estendidos-de-arquivo.qmd
+        - vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd
+        - vol04/cap026-trabalhando-como-root-no-kali-com-seguranca.qmd
+    # ===== Fase 2 — Administração do Sistema =====
+    - part: |
+        Volume 5 — Processos e Controle de Tarefas
+      chapters:
+        - vol05/cap027-o-que-e-um-processo-pid-estados-e-a-arvore-de.qmd
+        - vol05/cap028-monitoramento-ps-top-e-htop.qmd
+        - vol05/cap029-sinais-e-controle-kill-killall-nice-e.qmd
+        - vol05/cap030-jobs-primeiro-e-segundo-plano-nohup-e-disown.qmd
+        - vol05/cap031-multiplexacao-de-terminal-tmux-e-screen.qmd
+        - vol05/cap032-recursos-do-sistema-memoria-cpu-uptime-e.qmd
+    - part: |
+        Volume 6 — Gerenciamento de Pacotes
+      chapters:
+        - vol06/cap033-apt-e-o-modelo-debian-repositorios-e-o-kali.qmd
+        - vol06/cap034-instalando-removendo-e-atualizando-pacotes.qmd
+        - vol06/cap035-dpkg-arquivos-deb-e-resolucao-de-dependencias.qmd
+        - vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.qmd
+        - vol06/cap037-compilando-a-partir-do-codigo-fonte.qmd
+        - vol06/cap038-alternativas-pipx-snap-flatpak-e-appimage.qmd
+    - part: |
+        Volume 7 — Boot, systemd e Serviços
+      chapters:
+        - vol07/cap039-o-processo-de-inicializacao-uefi-grub-e-o.qmd
+        - vol07/cap040-systemd-units-targets-e-o-modelo-de-servicos.qmd
+        - vol07/cap041-gerenciando-servicos-com-systemctl.qmd
+        - vol07/cap042-logs-com-journald-e-o-syslog-tradicional.qmd
+        - vol07/cap043-agendamento-cron-at-e-timers-do-systemd.qmd
+        - vol07/cap044-targets-modo-de-recuperacao-e-resolucao-de.qmd
+    - part: |
+        Volume 8 — Armazenamento e Sistemas de Arquivos
+      chapters:
+        - vol08/cap045-discos-particoes-e-a-nomenclatura-de.qmd
+        - vol08/cap046-particionamento-com-fdisk-parted-e-gdisk.qmd
+        - vol08/cap047-sistemas-de-arquivos-ext4-btrfs-xfs-e.qmd
+        - vol08/cap048-lvm-volumes-logicos-flexiveis.qmd
+        - vol08/cap049-raid-por-software-com-mdadm.qmd
+        - vol08/cap050-criptografia-de-disco-com-luks-e-a.qmd
+    # ===== Fase 3 — Shell Scripting =====
+    - part: |
+        Volume 9 — Fundamentos de Shell Scripting
+      chapters:
+        - vol09/cap051-do-comando-ao-script-o-primeiro-script-bash.qmd
+        - vol09/cap052-variaveis-o-ambiente-e-o-escopo-de-exportacao.qmd
+        - vol09/cap053-aspas-expansoes-e-substituicao-de-comandos.qmd
+        - vol09/cap054-entrada-e-saida-read-echo-e-printf.qmd
+        - vol09/cap055-condicionais-test-colchetes-duplos-e-if.qmd
+        - vol09/cap056-codigos-de-saida-e-o-encadeamento-de-comandos.qmd
+        - vol09/cap057-boas-praticas-shebang-permissoes-e.qmd
+    - part: |
+        Volume 10 — Scripting Intermediário
+      chapters:
+        - vol10/cap058-lacos-for-while-e-until.qmd
+        - vol10/cap059-funcoes-retorno-e-escopo-de-variaveis.qmd
+        - vol10/cap060-arrays-indexados-e-associativos.qmd
+        - vol10/cap061-parametros-posicionais-e-getopts.qmd
+        - vol10/cap062-expansao-de-parametros-avancada.qmd
+        - vol10/cap063-aritmetica-e-manipulacao-de-numeros-no-shell.qmd
+    - part: |
+        Volume 11 — Processamento de Texto
+      chapters:
+        - vol11/cap064-expressoes-regulares-fundamentos-e-os.qmd
+        - vol11/cap065-grep-e-a-busca-de-padroes.qmd
+        - vol11/cap066-sed-o-editor-de-fluxo.qmd
+        - vol11/cap067-awk-processamento-por-campos-e-registros.qmd
+        - vol11/cap068-cut-sort-uniq-tr-e-a-caixa-de-ferramentas-de.qmd
+        - vol11/cap069-dados-estruturados-na-linha-de-comando-jq.qmd
+        - vol11/cap070-juntando-tudo-pipelines-de-processamento-de.qmd
+    - part: |
+        Volume 12 — Scripting Avançado e Robusto
+      chapters:
+        - vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.qmd
+        - vol12/cap072-depuracao-de-scripts-set-x-e-shellcheck.qmd
+        - vol12/cap073-manipulando-arquivos-descritores-e-processos.qmd
+        - vol12/cap074-subshells-agrupamento-e-here-documents.qmd
+        - vol12/cap075-sinais-processos-filhos-e-execucao-em-paralelo.qmd
+        - vol12/cap076-interacao-com-o-usuario-menus-cores-e-caixas.qmd
+        - vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.qmd
+    # ===== Fase 4 — Redes, Segurança e Automação =====
+    - part: |
+        Volume 13 — Redes no Linux
+      chapters:
+        - vol13/cap078-fundamentos-interfaces-enderecamento-ip-e-a.qmd
+        - vol13/cap079-configuracao-de-rede-ip-networkmanager-e.qmd
+        - vol13/cap080-diagnostico-ping-traceroute-ss-dig-e-mtr.qmd
+        - vol13/cap081-acesso-e-transferencia-remota-ssh-scp-e-rsync.qmd
+        - vol13/cap082-http-na-linha-de-comando-curl-wget-e-netcat.qmd
+        - vol13/cap083-firewall-no-linux-nftables-e-iptables.qmd
+        - vol13/cap084-captura-e-analise-de-trafego-tcpdump-e-tshark.qmd
+    - part: |
+        Volume 14 — Segurança e o Ambiente Kali
+      chapters:
+        - vol14/cap085-hardening-do-linux-superficie-de-ataque-e.qmd
+        - vol14/cap086-gerenciamento-de-segredos-chaves-ssh-e-gpg.qmd
+        - vol14/cap087-capabilities-isolamento-e-menor-privilegio.qmd
+        - vol14/cap088-confinamento-apparmor-selinux-e-sandboxing.qmd
+        - vol14/cap089-auditoria-integridade-de-arquivos-e-deteccao.qmd
+        - vol14/cap090-o-ecossistema-de-ferramentas-do-kali.qmd
+        - vol14/cap091-anonimato-e-privacidade-proxychains-tor-e-vpn.qmd
+    - part: |
+        Volume 15 — Automação e Produtividade
+      chapters:
+        - vol15/cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.qmd
+        - vol15/cap093-zsh-plugins-e-o-prompt-do-kali.qmd
+        - vol15/cap094-automatizando-tarefas-com-cron-e-scripts.qmd
+        - vol15/cap095-controle-de-versao-com-git-na-linha-de-comando.qmd
+        - vol15/cap096-editores-no-terminal-vim-e-nano.qmd
+        - vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd
+    # ===== Fase 5 — Fronteira e Aprofundamento =====
+    - part: |
+        Volume 16 — Kernel, Contêineres e Virtualização
+      chapters:
+        - vol16/cap098-o-kernel-linux-modulos-proc-e-sys.qmd
+        - vol16/cap099-conteineres-por-dentro-namespaces-cgroups-e.qmd
+        - vol16/cap100-virtualizacao-kvm-qemu-e-o-laboratorio-de.qmd
+        - vol16/cap101-compilacao-toolchains-e-o-ecossistema-de.qmd
+        - vol16/cap102-observabilidade-e-desempenho-strace-ltrace-e.qmd
+        - vol16/cap103-para-onde-ir-depois-certificacoes-comunidade.qmd
+    - referencias.qmd
+
+bibliography: referencias.bib
+csl: associacao-brasileira-de-normas-tecnicas.csl
+
+crossref:
+  chapters: true
+
+filters:
+  - tikz
+  - quarto
+
+tikz:
+  svg-engine: dvisvgm
+  cache: true
+
+format:
+  html:
+    theme: [cosmo, styles.css]
+    toc: true
+    toc-depth: 3
+    code-copy: true
+    code-overflow: wrap
+    highlight-style: github
+    link-external-newwindow: true
+    fig-align: center
+  pdf:
+    documentclass: scrbook
+    papersize: a4
+    geometry:
+      - top=25mm
+      - bottom=25mm
+      - left=25mm
+      - right=25mm
+    toc-depth: 2
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      text: |
+        \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+
+execute:
+  freeze: auto
+  echo: true
+  warning: false

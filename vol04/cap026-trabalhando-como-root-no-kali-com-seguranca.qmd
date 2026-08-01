@@ -1,0 +1,3 @@
+# Trabalhando como root no Kali com segurança {#sec-cap026}
+
+*(em elaboracao)*

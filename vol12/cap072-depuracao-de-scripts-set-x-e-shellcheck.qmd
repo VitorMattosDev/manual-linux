@@ -1,0 +1,3 @@
+# Depuração de scripts: set -x e ShellCheck {#sec-cap072}
+
+*(em elaboracao)*

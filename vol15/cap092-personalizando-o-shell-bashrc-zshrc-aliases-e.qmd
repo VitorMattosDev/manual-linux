@@ -1,0 +1,3 @@
+# Personalizando o shell: .bashrc, .zshrc, aliases e funções {#sec-cap092}
+
+*(em elaboracao)*

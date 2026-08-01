@@ -1,0 +1,3 @@
+# Criptografia de disco com LUKS e a persistência no Kali {#sec-cap050}
+
+*(em elaboracao)*

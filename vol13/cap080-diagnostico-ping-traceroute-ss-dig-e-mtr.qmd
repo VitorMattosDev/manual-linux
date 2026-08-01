@@ -1,0 +1,3 @@
+# Diagnóstico: ping, traceroute, ss, dig e mtr {#sec-cap080}
+
+*(em elaboracao)*

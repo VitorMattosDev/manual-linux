@@ -1,0 +1,3 @@
+# Multiplexação de terminal: tmux e screen {#sec-cap031}
+
+*(em elaboracao)*

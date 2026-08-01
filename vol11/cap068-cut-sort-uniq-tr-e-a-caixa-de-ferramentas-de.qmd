@@ -1,0 +1,3 @@
+# cut, sort, uniq, tr e a caixa de ferramentas de texto {#sec-cap068}
+
+*(em elaboracao)*

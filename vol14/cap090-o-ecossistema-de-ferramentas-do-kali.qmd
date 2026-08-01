@@ -1,0 +1,3 @@
+# O ecossistema de ferramentas do Kali: categorias e fluxos {#sec-cap090}
+
+*(em elaboracao)*

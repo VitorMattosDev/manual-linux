@@ -1,0 +1,3 @@
+# Recursos do sistema: memória, CPU, uptime e limites {#sec-cap032}
+
+*(em elaboracao)*

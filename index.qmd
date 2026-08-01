@@ -1,0 +1,27 @@
+# Apresentação {.unnumbered}
+
+Este é um manual de **Linux e shell scripting** escrito em português do Brasil, pensado para levar o leitor do primeiro comando no terminal até a administração avançada do sistema, a automação com scripts robustos e os fundamentos do kernel, contêineres e virtualização.
+
+A distribuição de referência é o **Kali Linux**. Todos os comandos, caminhos de pacote e convenções foram adaptados ao Kali — que é, por baixo, um Debian *rolling release*. Onde o Kali difere de um Debian ou Ubuntu comum (o repositório rolling, o usuário padrão, os metapacotes de ferramentas, o `kali-tweaks`, a persistência em live USB), o texto aponta a diferença explicitamente. Quem usa outra distribuição derivada de Debian encontrará quase tudo aplicável; onde a família RHEL (`dnf`, `firewalld`, SELinux) diverge de forma relevante, há uma nota.
+
+## Para quem é este manual
+
+Para quem quer aprender Linux a sério: o estudante que acabou de instalar o Kali numa máquina virtual, o profissional de infraestrutura que administra servidores e redes, e quem vem da área de segurança e precisa dominar o sistema operacional que está sob todas as ferramentas. Não se pressupõe conhecimento prévio de Linux — o Volume 1 começa do zero — mas o manual não para no básico: os últimos volumes tratam de LVM, nftables, namespaces e cgroups.
+
+## Como o manual está organizado
+
+O conteúdo avança em cinco fases, do concreto ao abstrato:
+
+- **Fase 1 — Fundamentos do Linux.** O terminal, o sistema de arquivos, usuários e permissões. A base sobre a qual todo o resto se apoia.
+- **Fase 2 — Administração do Sistema.** Processos, pacotes, `systemd`, serviços e armazenamento.
+- **Fase 3 — Shell Scripting.** Do primeiro script Bash ao processamento de texto com `sed` e `awk` e ao scripting robusto com tratamento de erros e depuração.
+- **Fase 4 — Redes, Segurança e Automação.** Redes no Linux, hardening, o ecossistema de ferramentas do Kali e a automação do dia a dia.
+- **Fase 5 — Fronteira e Aprofundamento.** Kernel, contêineres, virtualização e para onde seguir depois.
+
+## Como cada capítulo funciona
+
+Cada capítulo abre por um problema concreto, desenvolve o assunto com exemplos executáveis e comentados, e fecha com duas seções fixas: **🐉 No Kali**, que destaca o que muda especificamente nessa distribuição, e **🧪 Laboratório**, um roteiro prático para reproduzir o conteúdo no seu próprio ambiente. Todo comando mostrado é para ser digitado — a proposta é aprender fazendo.
+
+> **Aviso.** Os capítulos de segurança e das ferramentas do Kali têm caráter educacional e defensivo. Técnicas e ferramentas ofensivas aparecem para que o leitor entenda, detecte e mitigue — e devem ser usadas apenas em ambientes próprios ou com autorização explícita. Usar essas ferramentas contra sistemas de terceiros sem permissão é crime no Brasil (Lei 12.737/2012).
+
+Bom proveito — e mantenha um terminal aberto ao lado enquanto lê.

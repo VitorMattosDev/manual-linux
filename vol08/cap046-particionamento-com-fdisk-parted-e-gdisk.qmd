@@ -1,0 +1,3 @@
+# Particionamento com fdisk, parted e gdisk {#sec-cap046}
+
+*(em elaboracao)*

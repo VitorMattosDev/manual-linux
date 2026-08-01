@@ -1,0 +1,3 @@
+# Observabilidade e desempenho: strace, ltrace e perf {#sec-cap102}
+
+*(em elaboracao)*

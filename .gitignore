@@ -1,0 +1,11 @@
+/_book/
+/.quarto/
+/_freeze/
+*.log
+*.aux
+*.pdf.tmp
+.DS_Store
+Thumbs.db
+__pycache__/
+
+**/*.quarto_ipynb

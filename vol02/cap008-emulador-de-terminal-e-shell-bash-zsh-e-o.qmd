@@ -1,0 +1,3 @@
+# Emulador de terminal e shell: bash, zsh e o padrão do Kali {#sec-cap008}
+
+*(em elaboracao)*

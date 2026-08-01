@@ -1,0 +1,3 @@
+# Obtendo ajuda: man, info, tldr e a documentação do Kali {#sec-cap007}
+
+*(em elaboracao)*

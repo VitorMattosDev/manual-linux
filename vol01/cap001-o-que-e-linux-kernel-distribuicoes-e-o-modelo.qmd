@@ -1,0 +1,3 @@
+# O que é Linux: kernel, distribuições e o modelo de software livre {#sec-cap001}
+
+*(em elaboracao)*
