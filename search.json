@@ -1,0 +1,1295 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Manual de Linux e Shell Scripting",
+    "section": "",
+    "text": "Apresentação\nEste é um manual de Linux e shell scripting escrito em português do Brasil, pensado para levar o leitor do primeiro comando no terminal até a administração avançada do sistema, a automação com scripts robustos e os fundamentos do kernel, contêineres e virtualização.\nA distribuição de referência é o Kali Linux. Todos os comandos, caminhos de pacote e convenções foram adaptados ao Kali — que é, por baixo, um Debian rolling release. Onde o Kali difere de um Debian ou Ubuntu comum (o repositório rolling, o usuário padrão, os metapacotes de ferramentas, o kali-tweaks, a persistência em live USB), o texto aponta a diferença explicitamente. Quem usa outra distribuição derivada de Debian encontrará quase tudo aplicável; onde a família RHEL (dnf, firewalld, SELinux) diverge de forma relevante, há uma nota.",
+    "crumbs": [
+      "Apresentação"
+    ]
+  },
+  {
+    "objectID": "index.html#para-quem-é-este-manual",
+    "href": "index.html#para-quem-é-este-manual",
+    "title": "Manual de Linux e Shell Scripting",
+    "section": "Para quem é este manual",
+    "text": "Para quem é este manual\nPara quem quer aprender Linux a sério: o estudante que acabou de instalar o Kali numa máquina virtual, o profissional de infraestrutura que administra servidores e redes, e quem vem da área de segurança e precisa dominar o sistema operacional que está sob todas as ferramentas. Não se pressupõe conhecimento prévio de Linux — o Volume 1 começa do zero — mas o manual não para no básico: os últimos volumes tratam de LVM, nftables, namespaces e cgroups.",
+    "crumbs": [
+      "Apresentação"
+    ]
+  },
+  {
+    "objectID": "index.html#como-o-manual-está-organizado",
+    "href": "index.html#como-o-manual-está-organizado",
+    "title": "Manual de Linux e Shell Scripting",
+    "section": "Como o manual está organizado",
+    "text": "Como o manual está organizado\nO conteúdo avança em cinco fases, do concreto ao abstrato:\n\nFase 1 — Fundamentos do Linux. O terminal, o sistema de arquivos, usuários e permissões. A base sobre a qual todo o resto se apoia.\nFase 2 — Administração do Sistema. Processos, pacotes, systemd, serviços e armazenamento.\nFase 3 — Shell Scripting. Do primeiro script Bash ao processamento de texto com sed e awk e ao scripting robusto com tratamento de erros e depuração.\nFase 4 — Redes, Segurança e Automação. Redes no Linux, hardening, o ecossistema de ferramentas do Kali e a automação do dia a dia.\nFase 5 — Fronteira e Aprofundamento. Kernel, contêineres, virtualização e para onde seguir depois.",
+    "crumbs": [
+      "Apresentação"
+    ]
+  },
+  {
+    "objectID": "index.html#como-cada-capítulo-funciona",
+    "href": "index.html#como-cada-capítulo-funciona",
+    "title": "Manual de Linux e Shell Scripting",
+    "section": "Como cada capítulo funciona",
+    "text": "Como cada capítulo funciona\nCada capítulo abre por um problema concreto, desenvolve o assunto com exemplos executáveis e comentados, e fecha com duas seções fixas: 🐉 No Kali, que destaca o que muda especificamente nessa distribuição, e 🧪 Laboratório, um roteiro prático para reproduzir o conteúdo no seu próprio ambiente. Todo comando mostrado é para ser digitado — a proposta é aprender fazendo.\n\nAviso. Os capítulos de segurança e das ferramentas do Kali têm caráter educacional e defensivo. Técnicas e ferramentas ofensivas aparecem para que o leitor entenda, detecte e mitigue — e devem ser usadas apenas em ambientes próprios ou com autorização explícita. Usar essas ferramentas contra sistemas de terceiros sem permissão é crime no Brasil (Lei 12.737/2012).\n\nBom proveito — e mantenha um terminal aberto ao lado enquanto lê.",
+    "crumbs": [
+      "Apresentação"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "",
+    "text": "1.1 O que a máquina responde no primeiro minuto\nTrês e vinte da manhã. O monitoramento avisa que o servidor que concentra os coletores de tráfego de doze torres parou de responder. Você entra por SSH pelo link de gerência e o prompt abre — a máquina está viva, o que morreu foi um serviço. O técnico que montou aquele ponto de presença há quatro anos não trabalha mais na empresa, e a única anotação no inventário diz “servidor Linux”. Antes de tentar qualquer conserto, você digita dois comandos:\nO primeiro responde qual kernel está rodando. O segundo responde qual distribuição foi instalada. São perguntas diferentes, e tratá-las como se fossem a mesma é a origem de boa parte dos mal-entendidos de quem está começando. Do kernel dependem os drivers, o suporte ao hardware e o comportamento de rede; da distribuição dependem o gerenciador de pacotes, o caminho dos arquivos de configuração, o modelo de atualização e quanto tempo aquela instalação ainda vai receber correções de segurança. Este capítulo desmonta a palavra “Linux” nas partes que ela esconde.\nNuma instalação Debian de servidor, os dois comandos acima devolvem algo assim:\nRepare que os números não conversam: o kernel é 6.12.13, a distribuição é a versão 12. Não há relação alguma entre eles. A mesma máquina, reinstalada com Kali, responderia:\nKernel muito parecido, sistema completamente diferente. E o campo ID_LIKE=debian já entrega o parentesco: quase tudo que vale para Debian vale para Kali. Guardar essa distinção desde o começo economiza horas de busca em fórum — a resposta que resolve seu problema pode estar escrita para “Linux”, mas depender de um detalhe que só existe no Ubuntu.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-a-máquina-responde-no-primeiro-minuto",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-a-máquina-responde-no-primeiro-minuto",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "",
+    "text": "$ uname -a\nLinux pop-torre-03 6.12.13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.13-1 (2025-02-08) x86_64 GNU/Linux\n$ cat /etc/os-release\nPRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\nVERSION=\"12 (bookworm)\"\nID=debian\nHOME_URL=\"https://www.debian.org/\"\n\n$ uname -a\nLinux kali 6.12.25-amd64 #1 SMP PREEMPT_DYNAMIC Kali 6.12.25-1kali1 (2025-04-30) x86_64 GNU/Linux\n\n$ cat /etc/os-release\nPRETTY_NAME=\"Kali GNU/Linux Rolling\"\nNAME=\"Kali GNU/Linux\"\nVERSION=\"2025.2\"\nID=kali\nID_LIKE=debian",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-kernel-o-linux-no-sentido-estrito",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-kernel-o-linux-no-sentido-estrito",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.2 O kernel: o Linux no sentido estrito",
+    "text": "1.2 O kernel: o Linux no sentido estrito\nLinux, tecnicamente, é só o kernel. É um programa — grande, mas um programa — que fica entre o hardware e todo o resto do software. Quando o computador liga, o firmware carrega o kernel na memória e entrega a ele o controle da máquina; a partir daí é o kernel que decide qual processo usa a CPU e por quanto tempo, quais páginas de memória cada programa enxerga, como os bytes chegam ao disco, como os pacotes saem pela placa de rede e como um dispositivo USB recém-conectado passa a existir para o sistema (Love, 2010).\nNenhum programa comum fala com o hardware diretamente. O ls não sabe ler um disco; ele pede ao kernel. O nmap não sabe montar um pacote na placa de rede; ele pede ao kernel. Essa fronteira tem nome: chamada de sistema (system call). O programa roda no que se chama espaço de usuário, com privilégios limitados; o kernel roda em espaço de kernel, com acesso total; e a única porta entre os dois é o conjunto de algumas centenas de chamadas de sistema. Figura 1.1 mostra o arranjo.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nFigura 1.1: As camadas de um sistema Linux. Tudo acima da linha tracejada precisa pedir ao kernel para tocar no hardware.\n\n\n\nDá para ver essa fronteira funcionando. O comando strace intercepta e imprime cada chamada de sistema que um processo faz:\nstrace -c ls /\nA opção -c resume por chamada em vez de listar uma a uma. Um ls de um diretório pequeno dispara facilmente umas cem chamadas: execve para iniciar o programa, openat e read para carregar as bibliotecas, statx para descobrir o tipo de cada entrada, getdents64 para ler o diretório, write para imprimir na tela. Sem o kernel, o ls é um punhado de instruções incapaz de descobrir sequer o próprio nome.\nO kernel Linux é monolítico e modular. Monolítico porque drivers e subsistemas rodam dentro do mesmo espaço privilegiado, e não como processos separados — decisão de projeto que rendeu, em 1992, um debate público entre Linus Torvalds e Andrew Tanenbaum, autor do Minix, defensor de microkernels. Modular porque partes desse código podem ser carregadas e descarregadas com o sistema em pé:\nlsmod | head\nmodinfo ath9k_htc | head -5\nO primeiro lista os módulos carregados; o segundo descreve um módulo específico — no exemplo, o driver de um adaptador Wi-Fi USB muito usado em laboratório. É por isso que você pluga um adaptador novo e ele funciona sem reiniciar: o kernel carrega o módulo correspondente sob demanda.\nA numeração é simples de ler. Em 6.12.25-amd64, o 6.12 é a versão de origem (mainline), o 25 é o número da correção, e amd64 é a arquitetura. Algumas versões são marcadas como LTS e recebem correções por anos — é o kernel que distribuições de servidor adotam. As versões novas trazem suporte a hardware recente, e é por isso que uma placa de rede lançada este ano pode simplesmente não existir para um servidor com kernel de cinco anos atrás. Esse é o argumento prático mais forte a favor de kernels novos, e o gerenciamento de módulos é tema do Volume 16.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#de-onde-veio-unix-gnu-e-1991",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#de-onde-veio-unix-gnu-e-1991",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.3 De onde veio: Unix, GNU e 1991",
+    "text": "1.3 De onde veio: Unix, GNU e 1991\nEm 1969, no Bell Labs da AT&T, Ken Thompson e Dennis Ritchie escreveram o Unix. A virada aconteceu poucos anos depois, quando o sistema foi reescrito em C: um sistema operacional que podia ser recompilado para outra máquina em vez de reescrito em assembly. Junto com o código veio um conjunto de ideias que o Linux herdou por inteiro — tudo é arquivo, programas pequenos que fazem uma coisa bem, saída de um encadeada na entrada do outro, configuração em texto simples (Kernighan; Pike, 1984). Universidades adotaram o Unix, a Universidade da Califórnia em Berkeley criou sua própria linhagem (a família BSD), e nos anos 1980 o código virou produto comercial fechado, com licenças caras e disputas judiciais sobre quem podia distribuir o quê.\nFoi contra esse fechamento que Richard Stallman lançou, em 1983, o Projeto GNU — sigla recursiva para GNU’s Not Unix. A meta era um sistema completo, compatível com Unix, cujo código qualquer pessoa pudesse ler, modificar e redistribuir. Em 1991 o projeto tinha praticamente tudo: o compilador gcc, o editor Emacs, o bash, os utilitários que hoje formam o pacote coreutils, o make, o depurador. Faltava justamente a peça central — o kernel, chamado Hurd, que se arrastava.\nNesse mesmo ano, um estudante finlandês de 21 anos chamado Linus Torvalds começou a escrever, por conta própria, um kernel para o seu 386. Em agosto de 1991 ele anunciou o projeto numa lista de discussão do Minix com a frase que ficou célebre por envelhecer mal: era só um passatempo, não seria grande e profissional como o GNU. Em 1992 ele relicenciou o kernel sob a GPL versão 2, e a peça que faltava ao GNU encontrou o conjunto de ferramentas que faltava ao kernel. O resultado é o que a saída do uname -a chama, literalmente, de GNU/Linux — e é a razão de existir a disputa sobre esse nome: quem escreve “GNU/Linux” está lembrando que o kernel sozinho não liga uma máquina útil. Neste manual usamos “Linux” no sentido corrente, de sistema completo, e “kernel” quando a distinção importa.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-é-então-uma-distribuição",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-é-então-uma-distribuição",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.4 O que é, então, uma distribuição",
+    "text": "1.4 O que é, então, uma distribuição\nUm kernel não abre um terminal. Para ter um sistema operacional utilizável é preciso juntar o kernel a uma biblioteca C, a um programa de inicialização, a um shell, a centenas de utilitários, a um gerenciador de pacotes, a um repositório onde esses pacotes vivem, a um instalador e a um conjunto de decisões padrão. Esse trabalho de integração — escolher versões, aplicar correções, testar combinações, assinar os pacotes e sustentar tudo isso ao longo do tempo — é o que uma distribuição faz. Figura 1.2 mostra as peças.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nFigura 1.2: Uma distribuição é o kernel mais o trabalho de integração que o torna utilizável.\n\n\n\nCada uma dessas caixas é uma decisão editorial, e distribuições diferentes decidem diferente. As escolhas que mais mudam o dia a dia são quatro. A primeira é o modelo de lançamento: versão fixa, em que os pacotes congelam e só recebem correções de segurança por alguns anos (Debian estável, Ubuntu LTS, RHEL), ou rolling release, em que não existe “versão” e o sistema recebe versões novas continuamente (Arch, Kali). A segunda é o formato de pacote e o gerenciador: .deb com apt na família Debian, .rpm com dnf na família Red Hat, e por aí vai. A terceira é o conjunto padrão: uma imagem mínima de servidor, um desktop completo, ou — no caso do Kali — algumas centenas de ferramentas de segurança já instaladas. A quarta é a política de segurança e suporte: quem corrige, com que rapidez, e por quanto tempo.\nPara ter uma ideia do tamanho do trabalho, conte os pacotes de uma instalação comum:\ndpkg -l | grep -c '^ii'\nUma instalação enxuta de Debian passa dos 500 pacotes; um Kali com o metapacote padrão passa fácil dos 3.000. Nenhum deles foi escrito pela distribuição — todos foram empacotados, testados em conjunto e assinados por ela.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#famílias-o-mapa-das-distribuições",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#famílias-o-mapa-das-distribuições",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.5 Famílias: o mapa das distribuições",
+    "text": "1.5 Famílias: o mapa das distribuições\nExistem centenas de distribuições, mas quase todas descendem de meia dúzia de troncos, e é o tronco que determina os comandos que você vai digitar. Figura 1.3 resume as linhagens que importam na prática.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n \n \n \n \n\n\n\n\n\n\n\n\n\n\n\nFigura 1.3: As linhagens principais. O tronco define o gerenciador de pacotes e boa parte das convenções.\n\n\n\nA família Debian usa pacotes .deb e o apt. Debian é a base; Ubuntu deriva dela e adiciona um ciclo de lançamento previsível; Kali deriva do ramo de testes do Debian; Linux Mint deriva do Ubuntu; o Raspberry Pi OS também é Debian. É a família com maior presença em servidores de pequeno e médio porte no Brasil, e é a família deste manual.\nA família Red Hat usa pacotes .rpm e o dnf. Fedora é o laboratório onde as novidades aparecem primeiro; o RHEL é o produto comercial estabilizado a partir dele; Rocky Linux e AlmaLinux são reconstruções gratuitas e compatíveis do RHEL. É a família dominante em datacenter corporativo, e traz consigo firewalld e SELinux, que resolvem os mesmos problemas de outro jeito.\nA família Arch é rolling, minimalista e monta o sistema a partir do que o usuário escolhe instalar. Fora desses três troncos, valem menção o openSUSE, o Alpine — minúsculo, com biblioteca C musl no lugar da glibc, quase padrão em contêineres — e o Gentoo, que compila tudo a partir do fonte.\nA consequência prática é direta: os conceitos são os mesmos, os comandos nem sempre. Processo, permissão, descritor de arquivo, socket, sinal — isso é kernel, e é idêntico em toda parte. Já apt install contra dnf install, /etc/network/interfaces contra as conexões do NetworkManager, nftables contra firewalld, isso é distribuição. Ao escolher a distribuição de um servidor que vai ficar quatro anos num rack de POP, o critério raramente é gosto: é janela de suporte, previsibilidade de atualização e disponibilidade dos pacotes de que você depende (Nemeth et al., 2017).",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-modelo-de-software-livre",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-modelo-de-software-livre",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.6 O modelo de software livre",
+    "text": "1.6 O modelo de software livre\nNada disso seria possível sem o arranjo jurídico que sustenta o ecossistema. Software livre, na definição da Free Software Foundation, é o que garante quatro liberdades ao usuário: liberdade 0, executar o programa para qualquer finalidade; liberdade 1, estudar como ele funciona e adaptá-lo, o que exige acesso ao código-fonte; liberdade 2, redistribuir cópias; e liberdade 3, distribuir versões modificadas. “Livre” aqui é liberdade, não preço — a ambiguidade existe em inglês (free) e por isso surgiu o termo alternativo open source, cunhado em 1998 com ênfase mais pragmática, no modelo de desenvolvimento colaborativo, e menos na dimensão ética. Na prática as duas listas de licenças aprovadas quase coincidem.\nAs licenças se dividem em duas famílias. As copyleft, como a GPL, obrigam quem distribui uma versão modificada a distribuí-la sob a mesma licença, com o fonte disponível — a liberdade é passada adiante à força. As permissivas, como MIT, BSD e Apache, permitem que o código seja incorporado a produtos fechados. O kernel Linux é GPLv2. É por isso que um fabricante que embarca Linux num roteador ou numa OLT precisa disponibilizar o fonte do kernel modificado que usou — e é por isso que existe, para muito equipamento de rede, uma comunidade capaz de compilar firmware alternativo.\nEsse mesmo mecanismo é o que permite a existência das distribuições: o Kali pode pegar o Debian inteiro, modificar, rebatizar e redistribuir porque as licenças autorizam. Cada pacote instalado traz sua licença registrada em disco:\nhead -20 /usr/share/doc/coreutils/copyright\napt show nmap | head -15\nVale desfazer um mal-entendido comum: software livre não é software sem dinheiro envolvido. Red Hat, Canonical e SUSE são empresas grandes que vendem suporte, certificação e serviços em cima de código aberto; a OffSec, que mantém o Kali, vende treinamento e certificação; a maior parte dos commits do kernel Linux vem de gente paga para isso, empregada por fabricantes de hardware e provedores de nuvem. O que o modelo elimina não é o pagamento — é o aprisionamento.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-muda-no-seu-dia-a-dia",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#o-que-muda-no-seu-dia-a-dia",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.7 O que muda no seu dia a dia",
+    "text": "1.7 O que muda no seu dia a dia\nTrês consequências concretas. Primeira: quando um serviço se comporta de um jeito que a documentação não explica, o código está a um apt source de distância, e ler o fonte é uma opção real de diagnóstico, não um recurso teórico. Segunda: o repositório da distribuição é a sua cadeia de suprimentos de software, com pacotes assinados e verificados a cada apt update — instalar .deb baixado de qualquer lugar contorna essa verificação, e o assunto volta com força no Volume 6. Terceira: você pode auditar. Num ambiente onde a máquina fica trancada num contêiner metálico no meio de um pasto, saber exatamente o que está rodando e de onde veio cada binário não é preciosismo — é a diferença entre um incidente investigável e um mistério.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#no-kali",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#no-kali",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.8 🐉 No Kali",
+    "text": "1.8 🐉 No Kali\nO Kali Linux é uma distribuição Debian rolling mantida pela OffSec, montada a partir do ramo testing do Debian e voltada a teste de invasão, forense e auditoria de segurança (Offensive Security, 2025). Alguns pontos em que ele difere de um Debian ou Ubuntu comum e que aparecem já no primeiro contato:\n\nNão existe “versão” no sentido do Debian. O 2025.2 de /etc/os-release é um marco de imagem de instalação, não um congelamento: a atualização vem do ramo kali-rolling, que se atualiza continuamente. Confira com cat /etc/apt/sources.list — a linha aponta para kali-rolling, não para um codinome como bookworm. Existem ainda os ramos kali-last-snapshot, congelado no último lançamento, e kali-experimental. Isso significa que apt update && apt full-upgrade no Kali é uma operação de rotina, não um evento raro.\nO usuário padrão é kali, não root. Até a versão 2020.1 o Kali logava como root por padrão; hoje adota o modelo de usuário comum com sudo, como qualquer Debian. O tema é aprofundado no Volume 4.\nO kernel tem patches próprios. O sufixo -kali1 em uname -r indica um kernel com correções aplicadas pela distribuição, notadamente para injeção de pacotes e modo monitor em adaptadores Wi-Fi — recursos que um kernel Debian puro nem sempre oferece.\nAs ferramentas vêm por metapacotes. kali-linux-default traz o conjunto usual, kali-linux-large traz quase tudo, kali-linux-headless traz só o que roda sem interface gráfica. Instalar um metapacote arrasta centenas de programas de uma vez. Detalhes no Volume 6.\nkali-tweaks é um utilitário próprio da distribuição para ajustar rapidamente ramo de repositório, shell padrão, serviços de rede e configurações de hardening.\nKali não é distribuição de servidor. Ela vem com ferramentas ofensivas instaladas, acompanha um ramo de testes e não tem janela de suporte de longo prazo. Para o servidor de monitoramento da história de abertura, a escolha correta é Debian estável ou Ubuntu LTS. Kali é a máquina de trabalho de quem audita, não a máquina auditada.\n\n\nNota sobre a família RHEL. Em Fedora, RHEL, Rocky ou Alma, os equivalentes são cat /etc/redhat-release no lugar do os-release, dnf no lugar do apt, rpm -qa no lugar do dpkg -l, firewalld no lugar do nftables direto e SELinux no lugar do AppArmor. O kernel e os conceitos são os mesmos.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#laboratório",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#laboratório",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.9 🧪 Laboratório",
+    "text": "1.9 🧪 Laboratório\nRoteiro para executar numa máquina virtual com Kali. Nenhum passo altera o sistema; todos são de leitura.\n\nIdentifique kernel e distribuição separadamente.\nuname -r\nuname -a\ncat /etc/os-release\nhostnamectl\nEsperado: uname -r devolve algo como 6.12.25-amd64; o os-release devolve ID=kali e ID_LIKE=debian. O hostnamectl reúne as duas informações em campos separados — Operating System e Kernel. Anote os dois valores; eles vão divergir na próxima atualização, e em ritmos diferentes.\nConfirme que o kernel é modular.\nlsmod | wc -l\nlsmod | head -5\nEsperado: dezenas de módulos carregados. A primeira coluna é o nome, a terceira é a contagem de uso — módulo com contagem zero não está sendo usado por ninguém no momento.\nObserve a fronteira das chamadas de sistema.\nsudo apt install -y strace\nstrace -c ls / 2&gt;&1 | tail -20\nEsperado: uma tabela com as chamadas usadas e quantas vezes cada uma. Procure openat, read, write, getdents64, execve. A conclusão a tirar: um comando trivial como ls não faz nada sozinho — ele passa todo o trabalho real para o kernel.\nVeja que o programa depende de bibliotecas, e não só do kernel.\nldd /bin/ls\n/lib/x86_64-linux-gnu/libc.so.6 --version | head -2\nEsperado: a lista de bibliotecas compartilhadas de que o ls precisa, incluindo libc.so.6, e a versão da glibc. Essa camada pertence à distribuição, não ao kernel — trocar de distribuição pode trocar a glibc; trocar de kernel, não.\nMeça o trabalho de integração da distribuição.\ndpkg -l | grep -c '^ii'\napt list --installed 2&gt;/dev/null | wc -l\nEsperado: alguns milhares de pacotes num Kali com metapacote padrão. Cada um foi empacotado, testado em conjunto e assinado por alguém.\nLeia a licença de um programa que você usa.\nhead -25 /usr/share/doc/nmap/copyright\napt show bash 2&gt;/dev/null | head -12\nEsperado: o arquivo copyright traz autoria e licença. Compare a licença do bash (GPL) com a de algum utilitário sob MIT ou BSD e observe a diferença de exigência sobre versões modificadas.\nDescubra o ramo de repositório em que a sua máquina está.\ncat /etc/apt/sources.list\napt policy\nEsperado: uma linha apontando para kali-rolling. Se apontar para kali-last-snapshot, sua máquina está congelada no último lançamento e não receberá pacotes novos até você mudar isso.\nA prova final de que kernel e distribuição são coisas distintas. Se houver Docker no ambiente:\nsudo docker run --rm fedora cat /etc/os-release | head -3\nsudo docker run --rm fedora uname -r\nuname -r\nEsperado: o os-release de dentro do contêiner diz Fedora; o uname -r de dentro do contêiner devolve exatamente o mesmo kernel da sua máquina Kali. O contêiner traz uma distribuição inteira — utilitários, dnf, bibliotecas — mas não traz kernel: ele usa o do hospedeiro. É a demonstração mais limpa da separação, e o mecanismo por trás dela é assunto do Volume 16.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#resumo",
+    "href": "vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.html#resumo",
+    "title": "1  O que é Linux: kernel, distribuições e o modelo de software livre",
+    "section": "1.10 Resumo",
+    "text": "1.10 Resumo\n\nLinux, no sentido estrito, é o kernel: o programa que gerencia CPU, memória, arquivos, rede e dispositivos, e que expõe tudo isso ao restante do software por meio das chamadas de sistema.\nDistribuição é o kernel mais o trabalho de integração: biblioteca C, init, shell, utilitários, gerenciador de pacotes, repositório, instalador e uma política de atualização e suporte.\nuname -a e /etc/os-release respondem perguntas diferentes e seus números não têm relação entre si. Saber ler os dois é o primeiro diagnóstico de qualquer máquina desconhecida.\nA família da distribuição define os comandos. Conceitos de kernel valem em toda parte; apt, dnf e pacman não. Debian e derivados — Kali incluído — formam a família deste manual.\nO modelo de software livre é o que torna esse ecossistema possível: quatro liberdades, licenças copyleft como a GPLv2 do kernel e permissivas como MIT e BSD, e um mercado que cobra por suporte e serviço, não por aprisionamento.\nKali é Debian rolling voltado à segurança, com usuário kali, kernel com patches próprios, ferramentas em metapacotes e sem janela de suporte longo — excelente estação de trabalho de auditoria, má escolha para servidor de produção.\n\n\n\n\n\nKERNIGHAN, Brian W.; PIKE, Rob. The Unix Programming Environment. Englewood Cliffs, NJ: Prentice Hall, 1984.\n\n\nLOVE, Robert. Linux Kernel Development. 3. ed. Upper Saddle River, NJ: Addison-Wesley, 2010.\n\n\nNEMETH, Evi et al. UNIX and Linux System Administration Handbook. 5. ed. Boston, MA: Addison-Wesley, 2017.\n\n\nOFFENSIVE SECURITY. Kali Linux Documentation. https://www.kali.org/docs/, 2025.",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>O que é Linux: kernel, distribuições e o modelo de software livre</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap002-por-que-kali-linux-proposito-filosofia-e.html",
+    "href": "vol01/cap002-por-que-kali-linux-proposito-filosofia-e.html",
+    "title": "2  Por que Kali Linux: propósito, filosofia e quando não usá-lo",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>2</span>  <span class='chapter-title'>Por que Kali Linux: propósito, filosofia e quando não usá-lo</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap003-instalando-o-kali-maquina-virtual-bare-metal.html",
+    "href": "vol01/cap003-instalando-o-kali-maquina-virtual-bare-metal.html",
+    "title": "3  Instalando o Kali: máquina virtual, bare metal, WSL e live USB",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Instalando o Kali: máquina virtual, bare metal, WSL e live USB</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap004-primeiro-contato-sessao-ambiente-xfce-e.html",
+    "href": "vol01/cap004-primeiro-contato-sessao-ambiente-xfce-e.html",
+    "title": "4  Primeiro contato: sessão, ambiente Xfce e organização do sistema",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Primeiro contato: sessão, ambiente Xfce e organização do sistema</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.html",
+    "href": "vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.html",
+    "title": "5  A estrutura de diretórios do Linux (FHS)",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>A estrutura de diretórios do Linux (FHS)</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap006-anatomia-de-um-comando-shell-argumentos.html",
+    "href": "vol01/cap006-anatomia-de-um-comando-shell-argumentos.html",
+    "title": "6  Anatomia de um comando: shell, argumentos, opções e sintaxe",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Anatomia de um comando: shell, argumentos, opções e sintaxe</span>"
+    ]
+  },
+  {
+    "objectID": "vol01/cap007-obtendo-ajuda-man-info-tldr-e-a-documentacao.html",
+    "href": "vol01/cap007-obtendo-ajuda-man-info-tldr-e-a-documentacao.html",
+    "title": "7  Obtendo ajuda: man, info, tldr e a documentação do Kali",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 1 — Primeiros Passos: Linux e Kali\n",
+      "<span class='chapter-number'>7</span>  <span class='chapter-title'>Obtendo ajuda: man, info, tldr e a documentação do Kali</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap008-emulador-de-terminal-e-shell-bash-zsh-e-o.html",
+    "href": "vol02/cap008-emulador-de-terminal-e-shell-bash-zsh-e-o.html",
+    "title": "8  Emulador de terminal e shell: bash, zsh e o padrão do Kali",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Emulador de terminal e shell: bash, zsh e o padrão do Kali</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap009-navegacao-pwd-cd-ls-e-caminhos-absolutos-e.html",
+    "href": "vol02/cap009-navegacao-pwd-cd-ls-e-caminhos-absolutos-e.html",
+    "title": "9  Navegação: pwd, cd, ls e caminhos absolutos e relativos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>Navegação: pwd, cd, ls e caminhos absolutos e relativos</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap010-manipulando-arquivos-e-diretorios-cp-mv-rm.html",
+    "href": "vol02/cap010-manipulando-arquivos-e-diretorios-cp-mv-rm.html",
+    "title": "10  Manipulando arquivos e diretórios: cp, mv, rm, mkdir",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Manipulando arquivos e diretórios: cp, mv, rm, mkdir</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap011-visualizando-conteudo-cat-less-head-tail-e.html",
+    "href": "vol02/cap011-visualizando-conteudo-cat-less-head-tail-e.html",
+    "title": "11  Visualizando conteúdo: cat, less, head, tail e more",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Visualizando conteúdo: cat, less, head, tail e more</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap012-redirecionamento-e-pipes-stdin-stdout-e-stderr.html",
+    "href": "vol02/cap012-redirecionamento-e-pipes-stdin-stdout-e-stderr.html",
+    "title": "12  Redirecionamento e pipes: stdin, stdout e stderr",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>12</span>  <span class='chapter-title'>Redirecionamento e pipes: stdin, stdout e stderr</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap013-curingas-globbing-e-expansao-de-chaves.html",
+    "href": "vol02/cap013-curingas-globbing-e-expansao-de-chaves.html",
+    "title": "13  Curingas, globbing e expansão de chaves",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>13</span>  <span class='chapter-title'>Curingas, globbing e expansão de chaves</span>"
+    ]
+  },
+  {
+    "objectID": "vol02/cap014-historico-atalhos-de-teclado-e-produtividade.html",
+    "href": "vol02/cap014-historico-atalhos-de-teclado-e-produtividade.html",
+    "title": "14  Histórico, atalhos de teclado e produtividade no terminal",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 2 — O Terminal e o Shell\n",
+      "<span class='chapter-number'>14</span>  <span class='chapter-title'>Histórico, atalhos de teclado e produtividade no terminal</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap015-tipos-de-arquivo-inodes-e-a-arvore-de.html",
+    "href": "vol03/cap015-tipos-de-arquivo-inodes-e-a-arvore-de.html",
+    "title": "15  Tipos de arquivo, inodes e a árvore de diretórios",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>15</span>  <span class='chapter-title'>Tipos de arquivo, inodes e a árvore de diretórios</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap016-links-simbolicos-e-hard-links.html",
+    "href": "vol03/cap016-links-simbolicos-e-hard-links.html",
+    "title": "16  Links simbólicos e hard links",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>16</span>  <span class='chapter-title'>Links simbólicos e hard links</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap017-localizando-arquivos-find-locate-which-e-type.html",
+    "href": "vol03/cap017-localizando-arquivos-find-locate-which-e-type.html",
+    "title": "17  Localizando arquivos: find, locate, which e type",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>17</span>  <span class='chapter-title'>Localizando arquivos: find, locate, which e type</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap018-compactacao-e-arquivamento-tar-gzip-xz-e-zip.html",
+    "href": "vol03/cap018-compactacao-e-arquivamento-tar-gzip-xz-e-zip.html",
+    "title": "18  Compactação e arquivamento: tar, gzip, xz e zip",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>18</span>  <span class='chapter-title'>Compactação e arquivamento: tar, gzip, xz e zip</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap019-montagem-de-dispositivos-e-o-comando-mount.html",
+    "href": "vol03/cap019-montagem-de-dispositivos-e-o-comando-mount.html",
+    "title": "19  Montagem de dispositivos e o comando mount",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>19</span>  <span class='chapter-title'>Montagem de dispositivos e o comando mount</span>"
+    ]
+  },
+  {
+    "objectID": "vol03/cap020-permissoes-de-arquivo-leitura-escrita-e.html",
+    "href": "vol03/cap020-permissoes-de-arquivo-leitura-escrita-e.html",
+    "title": "20  Permissões de arquivo: leitura, escrita e execução",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 3 — Arquivos e o Sistema de Arquivos\n",
+      "<span class='chapter-number'>20</span>  <span class='chapter-title'>Permissões de arquivo: leitura, escrita e execução</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap021-usuarios-grupos-e-o-arquivo-etc-passwd.html",
+    "href": "vol04/cap021-usuarios-grupos-e-o-arquivo-etc-passwd.html",
+    "title": "21  Usuários, grupos e o arquivo /etc/passwd",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>21</span>  <span class='chapter-title'>Usuários, grupos e o arquivo /etc/passwd</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap022-o-root-sudo-e-a-elevacao-de-privilegios.html",
+    "href": "vol04/cap022-o-root-sudo-e-a-elevacao-de-privilegios.html",
+    "title": "22  O root, sudo e a elevação de privilégios",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>22</span>  <span class='chapter-title'>O root, sudo e a elevação de privilégios</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap023-permissoes-especiais-suid-sgid-e-sticky-bit.html",
+    "href": "vol04/cap023-permissoes-especiais-suid-sgid-e-sticky-bit.html",
+    "title": "23  Permissões especiais: SUID, SGID e sticky bit",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>23</span>  <span class='chapter-title'>Permissões especiais: SUID, SGID e sticky bit</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap024-acls-e-atributos-estendidos-de-arquivo.html",
+    "href": "vol04/cap024-acls-e-atributos-estendidos-de-arquivo.html",
+    "title": "24  ACLs e atributos estendidos de arquivo",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>24</span>  <span class='chapter-title'>ACLs e atributos estendidos de arquivo</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.html",
+    "href": "vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.html",
+    "title": "25  Gerenciamento de usuários, senhas e o PAM",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>25</span>  <span class='chapter-title'>Gerenciamento de usuários, senhas e o PAM</span>"
+    ]
+  },
+  {
+    "objectID": "vol04/cap026-trabalhando-como-root-no-kali-com-seguranca.html",
+    "href": "vol04/cap026-trabalhando-como-root-no-kali-com-seguranca.html",
+    "title": "26  Trabalhando como root no Kali com segurança",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 4 — Usuários, Grupos e Permissões\n",
+      "<span class='chapter-number'>26</span>  <span class='chapter-title'>Trabalhando como root no Kali com segurança</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap027-o-que-e-um-processo-pid-estados-e-a-arvore-de.html",
+    "href": "vol05/cap027-o-que-e-um-processo-pid-estados-e-a-arvore-de.html",
+    "title": "27  O que é um processo: PID, estados e a árvore de processos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>27</span>  <span class='chapter-title'>O que é um processo: PID, estados e a árvore de processos</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap028-monitoramento-ps-top-e-htop.html",
+    "href": "vol05/cap028-monitoramento-ps-top-e-htop.html",
+    "title": "28  Monitoramento: ps, top e htop",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>28</span>  <span class='chapter-title'>Monitoramento: ps, top e htop</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap029-sinais-e-controle-kill-killall-nice-e.html",
+    "href": "vol05/cap029-sinais-e-controle-kill-killall-nice-e.html",
+    "title": "29  Sinais e controle: kill, killall, nice e prioridades",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>29</span>  <span class='chapter-title'>Sinais e controle: kill, killall, nice e prioridades</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap030-jobs-primeiro-e-segundo-plano-nohup-e-disown.html",
+    "href": "vol05/cap030-jobs-primeiro-e-segundo-plano-nohup-e-disown.html",
+    "title": "30  Jobs, primeiro e segundo plano, nohup e disown",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>30</span>  <span class='chapter-title'>Jobs, primeiro e segundo plano, nohup e disown</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap031-multiplexacao-de-terminal-tmux-e-screen.html",
+    "href": "vol05/cap031-multiplexacao-de-terminal-tmux-e-screen.html",
+    "title": "31  Multiplexação de terminal: tmux e screen",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>31</span>  <span class='chapter-title'>Multiplexação de terminal: tmux e screen</span>"
+    ]
+  },
+  {
+    "objectID": "vol05/cap032-recursos-do-sistema-memoria-cpu-uptime-e.html",
+    "href": "vol05/cap032-recursos-do-sistema-memoria-cpu-uptime-e.html",
+    "title": "32  Recursos do sistema: memória, CPU, uptime e limites",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 5 — Processos e Controle de Tarefas\n",
+      "<span class='chapter-number'>32</span>  <span class='chapter-title'>Recursos do sistema: memória, CPU, uptime e limites</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap033-apt-e-o-modelo-debian-repositorios-e-o-kali.html",
+    "href": "vol06/cap033-apt-e-o-modelo-debian-repositorios-e-o-kali.html",
+    "title": "33  APT e o modelo Debian: repositórios e o Kali rolling",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>33</span>  <span class='chapter-title'>APT e o modelo Debian: repositórios e o Kali rolling</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap034-instalando-removendo-e-atualizando-pacotes.html",
+    "href": "vol06/cap034-instalando-removendo-e-atualizando-pacotes.html",
+    "title": "34  Instalando, removendo e atualizando pacotes com apt",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>34</span>  <span class='chapter-title'>Instalando, removendo e atualizando pacotes com apt</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap035-dpkg-arquivos-deb-e-resolucao-de-dependencias.html",
+    "href": "vol06/cap035-dpkg-arquivos-deb-e-resolucao-de-dependencias.html",
+    "title": "35  dpkg, arquivos .deb e resolução de dependências",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>35</span>  <span class='chapter-title'>dpkg, arquivos .deb e resolução de dependências</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.html",
+    "href": "vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.html",
+    "title": "36  Repositórios do Kali, metapacotes e kali-tweaks",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>36</span>  <span class='chapter-title'>Repositórios do Kali, metapacotes e kali-tweaks</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap037-compilando-a-partir-do-codigo-fonte.html",
+    "href": "vol06/cap037-compilando-a-partir-do-codigo-fonte.html",
+    "title": "37  Compilando a partir do código-fonte",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>37</span>  <span class='chapter-title'>Compilando a partir do código-fonte</span>"
+    ]
+  },
+  {
+    "objectID": "vol06/cap038-alternativas-pipx-snap-flatpak-e-appimage.html",
+    "href": "vol06/cap038-alternativas-pipx-snap-flatpak-e-appimage.html",
+    "title": "38  Alternativas: pipx, snap, flatpak e AppImage",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 6 — Gerenciamento de Pacotes\n",
+      "<span class='chapter-number'>38</span>  <span class='chapter-title'>Alternativas: pipx, snap, flatpak e AppImage</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap039-o-processo-de-inicializacao-uefi-grub-e-o.html",
+    "href": "vol07/cap039-o-processo-de-inicializacao-uefi-grub-e-o.html",
+    "title": "39  O processo de inicialização: UEFI, GRUB e o kernel",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>39</span>  <span class='chapter-title'>O processo de inicialização: UEFI, GRUB e o kernel</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap040-systemd-units-targets-e-o-modelo-de-servicos.html",
+    "href": "vol07/cap040-systemd-units-targets-e-o-modelo-de-servicos.html",
+    "title": "40  systemd: units, targets e o modelo de serviços",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>40</span>  <span class='chapter-title'>systemd: units, targets e o modelo de serviços</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap041-gerenciando-servicos-com-systemctl.html",
+    "href": "vol07/cap041-gerenciando-servicos-com-systemctl.html",
+    "title": "41  Gerenciando serviços com systemctl",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>41</span>  <span class='chapter-title'>Gerenciando serviços com systemctl</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap042-logs-com-journald-e-o-syslog-tradicional.html",
+    "href": "vol07/cap042-logs-com-journald-e-o-syslog-tradicional.html",
+    "title": "42  Logs com journald e o syslog tradicional",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>42</span>  <span class='chapter-title'>Logs com journald e o syslog tradicional</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap043-agendamento-cron-at-e-timers-do-systemd.html",
+    "href": "vol07/cap043-agendamento-cron-at-e-timers-do-systemd.html",
+    "title": "43  Agendamento: cron, at e timers do systemd",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>43</span>  <span class='chapter-title'>Agendamento: cron, at e timers do systemd</span>"
+    ]
+  },
+  {
+    "objectID": "vol07/cap044-targets-modo-de-recuperacao-e-resolucao-de.html",
+    "href": "vol07/cap044-targets-modo-de-recuperacao-e-resolucao-de.html",
+    "title": "44  Targets, modo de recuperação e resolução de problemas de boot",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 7 — Boot, systemd e Serviços\n",
+      "<span class='chapter-number'>44</span>  <span class='chapter-title'>Targets, modo de recuperação e resolução de problemas de boot</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap045-discos-particoes-e-a-nomenclatura-de.html",
+    "href": "vol08/cap045-discos-particoes-e-a-nomenclatura-de.html",
+    "title": "45  Discos, partições e a nomenclatura de dispositivos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>45</span>  <span class='chapter-title'>Discos, partições e a nomenclatura de dispositivos</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap046-particionamento-com-fdisk-parted-e-gdisk.html",
+    "href": "vol08/cap046-particionamento-com-fdisk-parted-e-gdisk.html",
+    "title": "46  Particionamento com fdisk, parted e gdisk",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>46</span>  <span class='chapter-title'>Particionamento com fdisk, parted e gdisk</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap047-sistemas-de-arquivos-ext4-btrfs-xfs-e.html",
+    "href": "vol08/cap047-sistemas-de-arquivos-ext4-btrfs-xfs-e.html",
+    "title": "47  Sistemas de arquivos: ext4, Btrfs, XFS e formatação",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>47</span>  <span class='chapter-title'>Sistemas de arquivos: ext4, Btrfs, XFS e formatação</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap048-lvm-volumes-logicos-flexiveis.html",
+    "href": "vol08/cap048-lvm-volumes-logicos-flexiveis.html",
+    "title": "48  LVM: volumes lógicos flexíveis",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>48</span>  <span class='chapter-title'>LVM: volumes lógicos flexíveis</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap049-raid-por-software-com-mdadm.html",
+    "href": "vol08/cap049-raid-por-software-com-mdadm.html",
+    "title": "49  RAID por software com mdadm",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>49</span>  <span class='chapter-title'>RAID por software com mdadm</span>"
+    ]
+  },
+  {
+    "objectID": "vol08/cap050-criptografia-de-disco-com-luks-e-a.html",
+    "href": "vol08/cap050-criptografia-de-disco-com-luks-e-a.html",
+    "title": "50  Criptografia de disco com LUKS e a persistência no Kali",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 8 — Armazenamento e Sistemas de Arquivos\n",
+      "<span class='chapter-number'>50</span>  <span class='chapter-title'>Criptografia de disco com LUKS e a persistência no Kali</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap051-do-comando-ao-script-o-primeiro-script-bash.html",
+    "href": "vol09/cap051-do-comando-ao-script-o-primeiro-script-bash.html",
+    "title": "51  Do comando ao script: o primeiro script Bash",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>51</span>  <span class='chapter-title'>Do comando ao script: o primeiro script Bash</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap052-variaveis-o-ambiente-e-o-escopo-de-exportacao.html",
+    "href": "vol09/cap052-variaveis-o-ambiente-e-o-escopo-de-exportacao.html",
+    "title": "52  Variáveis, o ambiente e o escopo de exportação",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>52</span>  <span class='chapter-title'>Variáveis, o ambiente e o escopo de exportação</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap053-aspas-expansoes-e-substituicao-de-comandos.html",
+    "href": "vol09/cap053-aspas-expansoes-e-substituicao-de-comandos.html",
+    "title": "53  Aspas, expansões e substituição de comandos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>53</span>  <span class='chapter-title'>Aspas, expansões e substituição de comandos</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap054-entrada-e-saida-read-echo-e-printf.html",
+    "href": "vol09/cap054-entrada-e-saida-read-echo-e-printf.html",
+    "title": "54  Entrada e saída: read, echo e printf",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>54</span>  <span class='chapter-title'>Entrada e saída: read, echo e printf</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap055-condicionais-test-colchetes-duplos-e-if.html",
+    "href": "vol09/cap055-condicionais-test-colchetes-duplos-e-if.html",
+    "title": "55  Condicionais: test, colchetes duplos e if",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>55</span>  <span class='chapter-title'>Condicionais: test, colchetes duplos e if</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap056-codigos-de-saida-e-o-encadeamento-de-comandos.html",
+    "href": "vol09/cap056-codigos-de-saida-e-o-encadeamento-de-comandos.html",
+    "title": "56  Códigos de saída e o encadeamento de comandos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>56</span>  <span class='chapter-title'>Códigos de saída e o encadeamento de comandos</span>"
+    ]
+  },
+  {
+    "objectID": "vol09/cap057-boas-praticas-shebang-permissoes-e.html",
+    "href": "vol09/cap057-boas-praticas-shebang-permissoes-e.html",
+    "title": "57  Boas práticas: shebang, permissões e portabilidade",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 9 — Fundamentos de Shell Scripting\n",
+      "<span class='chapter-number'>57</span>  <span class='chapter-title'>Boas práticas: shebang, permissões e portabilidade</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap058-lacos-for-while-e-until.html",
+    "href": "vol10/cap058-lacos-for-while-e-until.html",
+    "title": "58  Laços: for, while e until",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>58</span>  <span class='chapter-title'>Laços: for, while e until</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap059-funcoes-retorno-e-escopo-de-variaveis.html",
+    "href": "vol10/cap059-funcoes-retorno-e-escopo-de-variaveis.html",
+    "title": "59  Funções, retorno e escopo de variáveis",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>59</span>  <span class='chapter-title'>Funções, retorno e escopo de variáveis</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap060-arrays-indexados-e-associativos.html",
+    "href": "vol10/cap060-arrays-indexados-e-associativos.html",
+    "title": "60  Arrays indexados e associativos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>60</span>  <span class='chapter-title'>Arrays indexados e associativos</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap061-parametros-posicionais-e-getopts.html",
+    "href": "vol10/cap061-parametros-posicionais-e-getopts.html",
+    "title": "61  Parâmetros posicionais e getopts",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>61</span>  <span class='chapter-title'>Parâmetros posicionais e getopts</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap062-expansao-de-parametros-avancada.html",
+    "href": "vol10/cap062-expansao-de-parametros-avancada.html",
+    "title": "62  Expansão de parâmetros avançada",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>62</span>  <span class='chapter-title'>Expansão de parâmetros avançada</span>"
+    ]
+  },
+  {
+    "objectID": "vol10/cap063-aritmetica-e-manipulacao-de-numeros-no-shell.html",
+    "href": "vol10/cap063-aritmetica-e-manipulacao-de-numeros-no-shell.html",
+    "title": "63  Aritmética e manipulação de números no shell",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 10 — Scripting Intermediário\n",
+      "<span class='chapter-number'>63</span>  <span class='chapter-title'>Aritmética e manipulação de números no shell</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap064-expressoes-regulares-fundamentos-e-os.html",
+    "href": "vol11/cap064-expressoes-regulares-fundamentos-e-os.html",
+    "title": "64  Expressões regulares: fundamentos e os diferentes sabores",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>64</span>  <span class='chapter-title'>Expressões regulares: fundamentos e os diferentes sabores</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap065-grep-e-a-busca-de-padroes.html",
+    "href": "vol11/cap065-grep-e-a-busca-de-padroes.html",
+    "title": "65  grep e a busca de padrões",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>65</span>  <span class='chapter-title'>grep e a busca de padrões</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap066-sed-o-editor-de-fluxo.html",
+    "href": "vol11/cap066-sed-o-editor-de-fluxo.html",
+    "title": "66  sed: o editor de fluxo",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>66</span>  <span class='chapter-title'>sed: o editor de fluxo</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap067-awk-processamento-por-campos-e-registros.html",
+    "href": "vol11/cap067-awk-processamento-por-campos-e-registros.html",
+    "title": "67  awk: processamento por campos e registros",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>67</span>  <span class='chapter-title'>awk: processamento por campos e registros</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap068-cut-sort-uniq-tr-e-a-caixa-de-ferramentas-de.html",
+    "href": "vol11/cap068-cut-sort-uniq-tr-e-a-caixa-de-ferramentas-de.html",
+    "title": "68  cut, sort, uniq, tr e a caixa de ferramentas de texto",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>68</span>  <span class='chapter-title'>cut, sort, uniq, tr e a caixa de ferramentas de texto</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap069-dados-estruturados-na-linha-de-comando-jq.html",
+    "href": "vol11/cap069-dados-estruturados-na-linha-de-comando-jq.html",
+    "title": "69  Dados estruturados na linha de comando: jq, JSON e CSV",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>69</span>  <span class='chapter-title'>Dados estruturados na linha de comando: jq, JSON e CSV</span>"
+    ]
+  },
+  {
+    "objectID": "vol11/cap070-juntando-tudo-pipelines-de-processamento-de.html",
+    "href": "vol11/cap070-juntando-tudo-pipelines-de-processamento-de.html",
+    "title": "70  Juntando tudo: pipelines de processamento de dados",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 11 — Processamento de Texto\n",
+      "<span class='chapter-number'>70</span>  <span class='chapter-title'>Juntando tudo: pipelines de processamento de dados</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.html",
+    "href": "vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.html",
+    "title": "71  Tratamento de erros: set -euo pipefail e traps",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>71</span>  <span class='chapter-title'>Tratamento de erros: set -euo pipefail e traps</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap072-depuracao-de-scripts-set-x-e-shellcheck.html",
+    "href": "vol12/cap072-depuracao-de-scripts-set-x-e-shellcheck.html",
+    "title": "72  Depuração de scripts: set -x e ShellCheck",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>72</span>  <span class='chapter-title'>Depuração de scripts: set -x e ShellCheck</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap073-manipulando-arquivos-descritores-e-processos.html",
+    "href": "vol12/cap073-manipulando-arquivos-descritores-e-processos.html",
+    "title": "73  Manipulando arquivos, descritores e processos em scripts",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>73</span>  <span class='chapter-title'>Manipulando arquivos, descritores e processos em scripts</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap074-subshells-agrupamento-e-here-documents.html",
+    "href": "vol12/cap074-subshells-agrupamento-e-here-documents.html",
+    "title": "74  Subshells, agrupamento e here-documents",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>74</span>  <span class='chapter-title'>Subshells, agrupamento e here-documents</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap075-sinais-processos-filhos-e-execucao-em-paralelo.html",
+    "href": "vol12/cap075-sinais-processos-filhos-e-execucao-em-paralelo.html",
+    "title": "75  Sinais, processos filhos e execução em paralelo",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>75</span>  <span class='chapter-title'>Sinais, processos filhos e execução em paralelo</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap076-interacao-com-o-usuario-menus-cores-e-caixas.html",
+    "href": "vol12/cap076-interacao-com-o-usuario-menus-cores-e-caixas.html",
+    "title": "76  Interação com o usuário: menus, cores e caixas de diálogo",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>76</span>  <span class='chapter-title'>Interação com o usuário: menus, cores e caixas de diálogo</span>"
+    ]
+  },
+  {
+    "objectID": "vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.html",
+    "href": "vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.html",
+    "title": "77  Estruturando scripts grandes e bibliotecas de funções",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 12 — Scripting Avançado e Robusto\n",
+      "<span class='chapter-number'>77</span>  <span class='chapter-title'>Estruturando scripts grandes e bibliotecas de funções</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap078-fundamentos-interfaces-enderecamento-ip-e-a.html",
+    "href": "vol13/cap078-fundamentos-interfaces-enderecamento-ip-e-a.html",
+    "title": "78  Fundamentos: interfaces, endereçamento IP e a pilha de rede",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>78</span>  <span class='chapter-title'>Fundamentos: interfaces, endereçamento IP e a pilha de rede</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap079-configuracao-de-rede-ip-networkmanager-e.html",
+    "href": "vol13/cap079-configuracao-de-rede-ip-networkmanager-e.html",
+    "title": "79  Configuração de rede: ip, NetworkManager e arquivos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>79</span>  <span class='chapter-title'>Configuração de rede: ip, NetworkManager e arquivos</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap080-diagnostico-ping-traceroute-ss-dig-e-mtr.html",
+    "href": "vol13/cap080-diagnostico-ping-traceroute-ss-dig-e-mtr.html",
+    "title": "80  Diagnóstico: ping, traceroute, ss, dig e mtr",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>80</span>  <span class='chapter-title'>Diagnóstico: ping, traceroute, ss, dig e mtr</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap081-acesso-e-transferencia-remota-ssh-scp-e-rsync.html",
+    "href": "vol13/cap081-acesso-e-transferencia-remota-ssh-scp-e-rsync.html",
+    "title": "81  Acesso e transferência remota: SSH, scp e rsync",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>81</span>  <span class='chapter-title'>Acesso e transferência remota: SSH, scp e rsync</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap082-http-na-linha-de-comando-curl-wget-e-netcat.html",
+    "href": "vol13/cap082-http-na-linha-de-comando-curl-wget-e-netcat.html",
+    "title": "82  HTTP na linha de comando: curl, wget e netcat",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>82</span>  <span class='chapter-title'>HTTP na linha de comando: curl, wget e netcat</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap083-firewall-no-linux-nftables-e-iptables.html",
+    "href": "vol13/cap083-firewall-no-linux-nftables-e-iptables.html",
+    "title": "83  Firewall no Linux: nftables e iptables",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>83</span>  <span class='chapter-title'>Firewall no Linux: nftables e iptables</span>"
+    ]
+  },
+  {
+    "objectID": "vol13/cap084-captura-e-analise-de-trafego-tcpdump-e-tshark.html",
+    "href": "vol13/cap084-captura-e-analise-de-trafego-tcpdump-e-tshark.html",
+    "title": "84  Captura e análise de tráfego: tcpdump e tshark",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 13 — Redes no Linux\n",
+      "<span class='chapter-number'>84</span>  <span class='chapter-title'>Captura e análise de tráfego: tcpdump e tshark</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap085-hardening-do-linux-superficie-de-ataque-e.html",
+    "href": "vol14/cap085-hardening-do-linux-superficie-de-ataque-e.html",
+    "title": "85  Hardening do Linux: superfície de ataque e princípios",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>85</span>  <span class='chapter-title'>Hardening do Linux: superfície de ataque e princípios</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap086-gerenciamento-de-segredos-chaves-ssh-e-gpg.html",
+    "href": "vol14/cap086-gerenciamento-de-segredos-chaves-ssh-e-gpg.html",
+    "title": "86  Gerenciamento de segredos: chaves SSH e GPG",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>86</span>  <span class='chapter-title'>Gerenciamento de segredos: chaves SSH e GPG</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap087-capabilities-isolamento-e-menor-privilegio.html",
+    "href": "vol14/cap087-capabilities-isolamento-e-menor-privilegio.html",
+    "title": "87  Capabilities, isolamento e menor privilégio",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>87</span>  <span class='chapter-title'>Capabilities, isolamento e menor privilégio</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap088-confinamento-apparmor-selinux-e-sandboxing.html",
+    "href": "vol14/cap088-confinamento-apparmor-selinux-e-sandboxing.html",
+    "title": "88  Confinamento: AppArmor, SELinux e sandboxing",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>88</span>  <span class='chapter-title'>Confinamento: AppArmor, SELinux e sandboxing</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap089-auditoria-integridade-de-arquivos-e-deteccao.html",
+    "href": "vol14/cap089-auditoria-integridade-de-arquivos-e-deteccao.html",
+    "title": "89  Auditoria, integridade de arquivos e detecção de alterações",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>89</span>  <span class='chapter-title'>Auditoria, integridade de arquivos e detecção de alterações</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap090-o-ecossistema-de-ferramentas-do-kali.html",
+    "href": "vol14/cap090-o-ecossistema-de-ferramentas-do-kali.html",
+    "title": "90  O ecossistema de ferramentas do Kali: categorias e fluxos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>90</span>  <span class='chapter-title'>O ecossistema de ferramentas do Kali: categorias e fluxos</span>"
+    ]
+  },
+  {
+    "objectID": "vol14/cap091-anonimato-e-privacidade-proxychains-tor-e-vpn.html",
+    "href": "vol14/cap091-anonimato-e-privacidade-proxychains-tor-e-vpn.html",
+    "title": "91  Anonimato e privacidade: proxychains, Tor e VPN",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 14 — Segurança e o Ambiente Kali\n",
+      "<span class='chapter-number'>91</span>  <span class='chapter-title'>Anonimato e privacidade: proxychains, Tor e VPN</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.html",
+    "href": "vol15/cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.html",
+    "title": "92  Personalizando o shell: .bashrc, .zshrc, aliases e funções",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>92</span>  <span class='chapter-title'>Personalizando o shell: .bashrc, .zshrc, aliases e funções</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap093-zsh-plugins-e-o-prompt-do-kali.html",
+    "href": "vol15/cap093-zsh-plugins-e-o-prompt-do-kali.html",
+    "title": "93  Zsh, plugins e o prompt do Kali",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>93</span>  <span class='chapter-title'>Zsh, plugins e o prompt do Kali</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap094-automatizando-tarefas-com-cron-e-scripts.html",
+    "href": "vol15/cap094-automatizando-tarefas-com-cron-e-scripts.html",
+    "title": "94  Automatizando tarefas com cron e scripts agendados",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>94</span>  <span class='chapter-title'>Automatizando tarefas com cron e scripts agendados</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap095-controle-de-versao-com-git-na-linha-de-comando.html",
+    "href": "vol15/cap095-controle-de-versao-com-git-na-linha-de-comando.html",
+    "title": "95  Controle de versão com Git na linha de comando",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>95</span>  <span class='chapter-title'>Controle de versão com Git na linha de comando</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap096-editores-no-terminal-vim-e-nano.html",
+    "href": "vol15/cap096-editores-no-terminal-vim-e-nano.html",
+    "title": "96  Editores no terminal: vim e nano",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>96</span>  <span class='chapter-title'>Editores no terminal: vim e nano</span>"
+    ]
+  },
+  {
+    "objectID": "vol15/cap097-dotfiles-e-ambientes-reproduziveis.html",
+    "href": "vol15/cap097-dotfiles-e-ambientes-reproduziveis.html",
+    "title": "97  Dotfiles e ambientes reproduzíveis",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 15 — Automação e Produtividade\n",
+      "<span class='chapter-number'>97</span>  <span class='chapter-title'>Dotfiles e ambientes reproduzíveis</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap098-o-kernel-linux-modulos-proc-e-sys.html",
+    "href": "vol16/cap098-o-kernel-linux-modulos-proc-e-sys.html",
+    "title": "98  O kernel Linux: módulos, /proc e /sys",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>98</span>  <span class='chapter-title'>O kernel Linux: módulos, /proc e /sys</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap099-conteineres-por-dentro-namespaces-cgroups-e.html",
+    "href": "vol16/cap099-conteineres-por-dentro-namespaces-cgroups-e.html",
+    "title": "99  Contêineres por dentro: namespaces, cgroups e Docker",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>99</span>  <span class='chapter-title'>Contêineres por dentro: namespaces, cgroups e Docker</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap100-virtualizacao-kvm-qemu-e-o-laboratorio-de.html",
+    "href": "vol16/cap100-virtualizacao-kvm-qemu-e-o-laboratorio-de.html",
+    "title": "100  Virtualização: KVM, QEMU e o laboratório de estudos",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>100</span>  <span class='chapter-title'>Virtualização: KVM, QEMU e o laboratório de estudos</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap101-compilacao-toolchains-e-o-ecossistema-de.html",
+    "href": "vol16/cap101-compilacao-toolchains-e-o-ecossistema-de.html",
+    "title": "101  Compilação, toolchains e o ecossistema de desenvolvimento",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>101</span>  <span class='chapter-title'>Compilação, toolchains e o ecossistema de desenvolvimento</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap102-observabilidade-e-desempenho-strace-ltrace-e.html",
+    "href": "vol16/cap102-observabilidade-e-desempenho-strace-ltrace-e.html",
+    "title": "102  Observabilidade e desempenho: strace, ltrace e perf",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>102</span>  <span class='chapter-title'>Observabilidade e desempenho: strace, ltrace e perf</span>"
+    ]
+  },
+  {
+    "objectID": "vol16/cap103-para-onde-ir-depois-certificacoes-comunidade.html",
+    "href": "vol16/cap103-para-onde-ir-depois-certificacoes-comunidade.html",
+    "title": "103  Para onde ir depois: certificações, comunidade e prática contínua",
+    "section": "",
+    "text": "(em elaboracao)",
+    "crumbs": [
+      "Volume 16 — Kernel, Contêineres e Virtualização\n",
+      "<span class='chapter-number'>103</span>  <span class='chapter-title'>Para onde ir depois: certificações, comunidade e prática contínua</span>"
+    ]
+  },
+  {
+    "objectID": "referencias.html",
+    "href": "referencias.html",
+    "title": "Referências",
+    "section": "",
+    "text": "KERNIGHAN, Brian W.; PIKE, Rob. The Unix Programming\nEnvironment. Englewood Cliffs, NJ: Prentice Hall, 1984.\n\n\nLOVE, Robert. Linux Kernel Development. 3. ed. Upper\nSaddle River, NJ: Addison-Wesley, 2010.\n\n\nNEMETH, Evi et al. UNIX and Linux System Administration\nHandbook. 5. ed. Boston, MA: Addison-Wesley, 2017.\n\n\nOFFENSIVE SECURITY. Kali Linux Documentation. https://www.kali.org/docs/, 2025.",
+    "crumbs": [
+      "Referências"
+    ]
+  }
+]
