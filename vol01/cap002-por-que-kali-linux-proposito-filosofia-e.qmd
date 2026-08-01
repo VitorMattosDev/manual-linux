@@ -1,3 +1,246 @@
 # Por que Kali Linux: propósito, filosofia e quando não usá-lo {#sec-cap002}
 
-*(em elaboracao)*
+A empresa contratou um analista júnior e ele chegou animado: instalou Kali Linux como sistema principal do notebook de trabalho, apagou o Windows, e passou a primeira semana feliz. Na segunda semana o Wi-Fi do escritório parou de conectar depois de um `apt full-upgrade`. Na terceira, o cliente pediu para ele acessar uma planilha compartilhada e o pacote de escritório não abria o arquivo direito. Na quarta, o time de TI descobriu que a máquina que circula na rede corporativa tem `responder`, `bettercap` e `metasploit-framework` instalados e nenhum controle sobre quem senta nela. Nada disso é defeito do Kali. É uso fora de propósito.
+
+O Kali é uma distribuição excelente — para o que ela foi feita. Este capítulo explica o que ela foi feita para ser, de onde veio, quais decisões de projeto explicam seus comportamentos estranhos, e — tão importante quanto — em quais situações a resposta certa é outra distribuição. Como o manual inteiro usa o Kali como referência, vale deixar claro desde já o contrato: aprender Linux **no** Kali é ótimo, porque tudo que vale para Debian vale aqui; usar Kali como sistema de produção, de servidor ou de escritório é uma escolha ruim, e as razões são técnicas.
+
+## O que o Kali é, em uma frase
+
+Kali Linux é uma distribuição Debian voltada a **teste de invasão, forense digital, engenharia reversa e auditoria de segurança**, mantida pela OffSec, distribuída gratuitamente e construída a partir do ramo `testing` do Debian [@kalidocs].
+
+Cada parte dessa frase carrega uma consequência prática. "Debian" significa `apt`, `.deb`, `/etc`, `systemd` — nenhuma novidade estrutural, e é por isso que o conhecimento adquirido aqui é transferível. "Voltada a teste de invasão" significa que o conjunto padrão de pacotes tem centenas de ferramentas ofensivas, o que é conveniente para quem audita e é superfície de risco para quem não audita. "Ramo `testing`" significa *rolling release*: não há versão congelada, os pacotes mudam continuamente, e a estabilidade de longo prazo nunca foi um objetivo do projeto. "Mantida pela OffSec" significa que existe uma empresa por trás, com um modelo de negócio — treinamento e certificação, notadamente a OSCP — que sustenta o trabalho de empacotamento.
+
+## De onde veio: a linhagem BackTrack
+
+O Kali não nasceu do zero em 2013. Ele é o quarto ou quinto nome de uma linha de distribuições de segurança que começou como live CD no início dos anos 2000, quando montar um ambiente com todas as ferramentas de auditoria significava compilar dezenas de projetos à mão, cada um com dependências conflitantes. @fig-linhagem-kali resume o caminho.
+
+::: {#fig-linhagem-kali}
+```{.tikz}
+%%| filename: linhagem-do-kali
+%%| alt: Linha do tempo das distribuicoes de seguranca de Whoppix em 2004 ate o Kali atual
+\begin{tikzpicture}[
+    marco/.style={draw=manualgray,rounded corners=2pt,minimum width=2.2cm,minimum height=0.62cm,align=center,font=\scriptsize,fill=manualblue!10,inner sep=2pt},
+    atual/.style={marco,fill=manualred!16,draw=manualred,thick},
+    seta/.style={manualgray,-{Stealth[length=4pt]}}
+  ]
+  \draw[eixo,-{Stealth[length=5pt]}] (-0.6,0) -- (13.4,0);
+  \foreach \x/\ano in {0.4/2004, 2.6/2006, 5.2/2013, 7.6/2015, 9.9/2020, 12.4/hoje} {
+    \draw[manualgray,thin] (\x,0.12) -- (\x,-0.12);
+    \node[font=\scriptsize,manualgray,below=1pt] at (\x,-0.12) {\ano};
+  }
+
+  \node[marco] (whop) at (0.4,1.0)  {\textbf{Whoppix}\\live CD, Knoppix};
+  \node[marco] (bt)   at (2.9,1.0)  {\textbf{BackTrack}\\Slackware, depois Ubuntu};
+  \node[atual] (k1)   at (5.4,1.0)  {\textbf{Kali 1.0}\\reescrito sobre Debian};
+  \node[marco] (k2)   at (7.9,1.0)  {\textbf{Kali 2.0}\\vira \emph{rolling}};
+  \node[marco] (k20)  at (10.2,1.0) {\textbf{2020.1}\\fim do root padrão};
+  \node[atual] (kn)   at (12.6,1.0) {\textbf{kali-rolling}\\Xfce, metapacotes};
+
+  \foreach \a/\b in {whop/bt,bt/k1,k1/k2,k2/k20,k20/kn} { \draw[seta] (\a) -- (\b); }
+  \foreach \n/\x in {whop/0.4,bt/2.6,k1/5.2,k2/7.6,k20/9.9,kn/12.4} { \draw[auxiliar] (\n.south) -- (\x,0.05); }
+\end{tikzpicture}
+```
+A linhagem do Kali: vinte anos de tentativas de empacotar um ambiente de auditoria reproduzível.
+:::
+
+O **Whoppix**, de 2004, era um live CD derivado do Knoppix com ferramentas de teste de invasão. Ele virou WHAX, e em 2006 a fusão com o projeto Auditor Security Collection produziu o **BackTrack**, que dominou a área por sete anos. O BackTrack era competente e desorganizado: as ferramentas iam parar em `/pentest/`, fora de qualquer convenção do sistema de arquivos, muitas vezes como cópias do repositório de origem sem empacotamento nenhum. Atualizar era um problema, reproduzir um ambiente era um problema, e auditar a procedência de um binário era quase impossível.
+
+Em março de 2013 a equipe jogou fora a base e recomeçou sobre Debian. Essa é a mudança que define o **Kali**: toda ferramenta virou pacote `.deb`, com dependências declaradas, com arquivos nos lugares previstos pelo FHS, com assinatura no repositório, com histórico de versões. O nome mudou justamente para sinalizar que não era uma nova versão do BackTrack, e sim outro sistema.
+
+Duas viradas posteriores importam. Em 2015, o Kali 2.0 adotou o modelo *rolling*, alinhando o repositório ao `testing` do Debian de forma contínua. E em janeiro de 2020, a versão 2020.1 **encerrou o login como root por padrão**, adotando um usuário comum chamado `kali` com `sudo` — mudança que quebrou o hábito de uma geração inteira e alinhou a distribuição às práticas normais de segurança.
+
+## As decisões de projeto que explicam o comportamento
+
+Boa parte do que parece esquisito no Kali é consequência direta de uma decisão consciente. Vale conhecer as principais, porque elas antecipam problemas.
+
+**Repositório único e assinado.** Todo pacote do Kali vem de um repositório assinado com a chave GPG do projeto, e o número de espelhos oficiais é deliberadamente pequeno. A lógica é de cadeia de suprimentos: quem instala uma distribuição de segurança está confiando enormemente em quem empacotou aquelas ferramentas, muitas das quais têm capacidade de fazer estrago. Um repositório enxuto e assinado é auditável; uma coleção de PPAs de terceiros não é. Consequência prática: **não saia adicionando repositórios de outras distribuições ao Kali**. Misturar Ubuntu com Kali quebra dependências e destrói a garantia de procedência. A regra vale em dobro no Kali por ele ser rolling.
+
+**Ferramentas curadas, não exaustivas.** O repositório tem algo em torno de seiscentas ferramentas de segurança, e a entrada de uma nova passa por avaliação: a ferramenta é mantida? Tem licença compatível? Funciona? Duplica algo que já existe? Isso é oposto à filosofia do BlackArch, que empacota milhares de projetos sem tanta triagem. Cada abordagem tem mérito; o Kali escolheu ser menor e mais confiável.
+
+**Kernel com patches próprios.** O sufixo `-kaliN` em `uname -r` indica correções aplicadas pela distribuição, especialmente relacionadas a **injeção de pacotes** e **modo monitor** em adaptadores Wi-Fi. Um kernel Debian puro frequentemente não permite as duas coisas com os mesmos drivers. Esse é um dos poucos pontos em que o Kali realmente entrega algo que você não obteria instalando as ferramentas manualmente em outra distro.
+
+**Metapacotes em vez de instalação monolítica.** Em vez de uma imagem gigante, o Kali oferece pacotes que são apenas listas de dependências: `kali-linux-core` (o mínimo), `kali-linux-default` (o conjunto da imagem padrão), `kali-linux-large`, `kali-linux-everything`, e metapacotes por área — `kali-tools-web`, `kali-tools-wireless`, `kali-tools-forensics`, `kali-tools-passwords`, entre outros. Instalar um deles arrasta centenas de programas; remover libera vários gigabytes. Isso é o que permite um Kali de 2 GB para uma VM descartável e um de 30 GB para uma estação de trabalho completa.
+
+**Onipresença de plataformas.** O mesmo repositório serve imagens para máquina virtual, instalação em disco, live USB, ARM (Raspberry Pi e semelhantes), WSL2 no Windows, contêiner Docker, nuvem, e o NetHunter, que roda em celulares Android. A infraestrutura de build é a mesma; muda o alvo.
+
+**Personalização assumida.** O projeto publica as receitas de construção das próprias imagens (`live-build-config`), de modo que qualquer pessoa pode gerar um Kali sob medida — com exatamente as ferramentas que quer, o papel de parede que quiser e as configurações que precisa. É um recurso subutilizado e uma das coisas mais úteis da distribuição para quem trabalha com auditoria recorrente.
+
+## O contrato de segurança que você assina ao instalar
+
+Aqui está a parte que costuma ser mal compreendida. Uma distribuição de segurança **não é uma distribuição segura**. São ideias opostas.
+
+Uma instalação padrão de Kali traz centenas de binários com capacidade ofensiva, muitos deles com bits de permissão especiais, alguns rodando com privilégio elevado. Traz também um conjunto de decisões voltadas à conveniência do operador — serviços que iniciam fácil, configurações permissivas para laboratório. A superfície de ataque de uma máquina Kali é maior que a de um Debian mínimo, por construção. Se um atacante compromete uma máquina Kali, ele encontra ali uma caixa de ferramentas montada, aquecida e pronta.
+
+Por isso, três hábitos valem desde o primeiro dia:
+
+- **Kali é máquina de trabalho de quem audita, não máquina exposta.** Não a coloque como servidor com serviços abertos à internet. Não deixe SSH aberto para o mundo. Serviços no Kali vêm desabilitados no boot por padrão justamente por isso — é uma decisão de projeto, não um esquecimento.
+- **Use VM com snapshot.** Um teste de invasão suja o sistema: configurações alteradas, pacotes instalados às pressas, artefatos espalhados. Restaurar um snapshot é mais rápido e mais confiável do que limpar.
+- **Separe cliente de cliente.** Se você audita mais de uma organização, dados de uma não podem encostar nos de outra. VMs distintas, ou pelo menos volumes distintos e criptografados.
+
+E o ponto jurídico, que não é detalhe: usar essas ferramentas contra sistemas de terceiros sem autorização é crime no Brasil. A Lei 12.737/2012 tipificou a invasão de dispositivo informático, e a legislação posterior endureceu as penas. O que torna um teste de invasão legítimo não é a ferramenta nem a técnica — é o **contrato**: escopo definido por escrito, janela de execução acordada, autorização de quem tem poder para autorizá-la, e regras claras sobre o que fazer com o que for encontrado. Sem esse documento, a mesma ação que num contrato é serviço profissional é, fora dele, crime. Este manual ensina os mecanismos e assume que o leitor trabalha em laboratório próprio ou sob autorização.
+
+## Quando **não** usar Kali
+
+Esta seção existe porque a pergunta aparece toda semana em fórum. @fig-quando-kali resume a decisão.
+
+::: {#fig-quando-kali}
+```{.tikz}
+%%| filename: quando-usar-kali
+%%| alt: Fluxograma de decisao sobre usar Kali ou outra distribuicao conforme o proposito da maquina
+\begin{tikzpicture}[
+    pergunta/.style={draw=manualblue,thick,rounded corners=3pt,text width=4.4cm,align=center,font=\scriptsize,fill=manualblue!8,inner sep=4pt},
+    sim/.style={draw=manualgreen,thick,rounded corners=3pt,text width=3.6cm,align=center,font=\scriptsize,fill=manualgreen!12,inner sep=4pt},
+    nao/.style={draw=manualred,thick,rounded corners=3pt,text width=3.6cm,align=center,font=\scriptsize,fill=manualred!10,inner sep=4pt},
+    fluxo/.style={manualgray,-{Stealth[length=4pt]}},
+    rot/.style={font=\scriptsize,manualgray,inner sep=1.5pt,fill=white}
+  ]
+  \node[pergunta] (p1) at (0,0) {A máquina vai \textbf{rodar serviços} para outras pessoas?};
+  \node[nao] (n1) at (5.6,0) {\textbf{Debian estável} ou Ubuntu LTS};
+  \draw[fluxo] (p1) -- node[rot]{sim} (n1);
+
+  \node[pergunta] (p2) at (0,-1.9) {É o computador \textbf{principal} de uso diário e trabalho comum?};
+  \draw[fluxo] (p1) -- node[rot,pos=0.55]{não} (p2);
+  \node[nao] (n2) at (5.6,-1.9) {\textbf{Ubuntu}, Fedora, Mint ou Debian desktop};
+  \draw[fluxo] (p2) -- node[rot]{sim} (n2);
+
+  \node[pergunta] (p3) at (0,-3.8) {O objetivo é \textbf{aprender Linux} do zero, sem foco em segurança?};
+  \draw[fluxo] (p2) -- node[rot,pos=0.55]{não} (p3);
+  \node[nao] (n3) at (5.6,-3.8) {\textbf{Debian} ou Ubuntu em VM};
+  \draw[fluxo] (p3) -- node[rot]{sim} (n3);
+
+  \node[pergunta] (p4) at (0,-5.7) {Auditoria, forense, laboratório ou estudo de segurança?};
+  \draw[fluxo] (p3) -- node[rot,pos=0.55]{não} (p4);
+  \node[sim] (s1) at (5.6,-5.7) {\textbf{Kali Linux}, de preferência em VM com snapshot};
+  \draw[fluxo] (p4) -- node[rot]{sim} (s1);
+\end{tikzpicture}
+```
+Kali resolve um problema específico. Fora dele, quase sempre existe escolha melhor.
+:::
+
+**Não use como servidor.** Rolling release e servidor de produção são incompatíveis: um `apt full-upgrade` pode trocar a versão principal de um banco de dados, de um servidor web ou da própria biblioteca C. Não há janela de suporte de segurança de longo prazo, não há backports estabilizados, não há promessa de compatibilidade. Servidor pede Debian estável, Ubuntu LTS ou RHEL/Rocky.
+
+**Não use como desktop de trabalho comum.** É possível — muita gente faz — mas você paga um preço em manutenção que não tem contrapartida. O ambiente vem otimizado para operação de auditoria, não para o dia a dia de escritório, e cada atualização traz a chance de uma regressão em algo que você depende para trabalhar.
+
+**Não use como primeira distribuição para aprender Linux, se o objetivo é só aprender Linux.** Aqui cabe uma ressalva honesta, já que este manual escolheu o Kali como referência: o problema não é o Kali ser difícil — ele é um Debian, e Debian é dos sistemas mais bem documentados que existem. O problema é que, ao pesquisar um erro, o iniciante recebe respostas contaminadas por particularidades da distribuição e por conselhos de fóruns de segurança. A escolha do manual é deliberada: usamos o Kali porque ele é Debian **e** porque o público-alvo tem interesse em segurança, mas todo capítulo marca explicitamente o que é geral e o que é específico da distribuição — essa é a função da seção "No Kali" que fecha cada capítulo.
+
+**Não use se você não sabe o que as ferramentas fazem.** Rodar `bettercap` ou `responder` numa rede corporativa "para ver o que acontece" pode derrubar serviços, capturar credenciais de colegas e render demissão por justa causa, além de responsabilização criminal. Esse não é um cenário hipotético.
+
+**Não use se a organização proíbe.** Muitas empresas têm política explícita contra ferramentas ofensivas em estações de trabalho, e com razão. Verifique antes.
+
+E a contrapartida: **use Kali** quando a tarefa for teste de invasão autorizado, resposta a incidente, forense, engenharia reversa, avaliação de segurança de rede sem fio, laboratório de estudo (CTF, máquinas vulneráveis, ambientes de treino) ou aula prática de segurança. Nesses casos, o tempo que você economiza por ter tudo empacotado e funcionando é enorme.
+
+## As alternativas que valem conhecer
+
+O Kali não é a única opção, e conhecer as vizinhas ajuda a entender as decisões dele.
+
+**Parrot Security OS** também é derivado do Debian e cobre território parecido, com ênfase maior em privacidade e um ambiente gráfico mais leve. É a alternativa mais direta ao Kali.
+
+**BlackArch** é um repositório de ferramentas de segurança sobre Arch Linux, com milhares de pacotes. Serve a quem já vive no Arch e quer o volume máximo de ferramentas, aceitando menos curadoria.
+
+**Debian ou Ubuntu com as ferramentas instaladas manualmente** é a escolha de muito profissional experiente. Você perde os patches de kernel e a conveniência dos metapacotes, e ganha um sistema previsível cujo conteúdo você conhece linha por linha.
+
+**Distribuições de tarefa única** como o Tails (amnésica, focada em anonimato, roda em RAM e não deixa rastro) e o REMnux (análise de malware) resolvem problemas específicos melhor que qualquer distribuição generalista.
+
+**Security Onion** e semelhantes vão para o lado defensivo — monitoramento de rede, detecção de intrusão, análise de logs. Vale lembrar que Kali é ferramenta **ofensiva** por vocação; o lado defensivo tem seu próprio ecossistema.
+
+## 🐉 No Kali
+
+Verificações e ajustes que valem fazer logo depois de instalar, e que exercitam o que este capítulo descreveu:
+
+- **Confirme o ramo do repositório.** O arquivo `/etc/apt/sources.list` deve conter uma única linha ativa apontando para `kali-rolling`. Se apontar para `kali-last-snapshot`, a máquina está congelada na última imagem lançada e não receberá pacotes novos — útil para reprodutibilidade, ruim para quem quer ferramentas atuais.
+- **Confirme a assinatura do repositório.** A chave pública do Kali fica em `/usr/share/keyrings/kali-archive-keyring.gpg`. Se ela expirar ou for corrompida, `apt update` passa a recusar o repositório — é o mecanismo funcionando, não um defeito. A correção é reinstalar o pacote `kali-archive-keyring`, nunca desabilitar a verificação.
+- **Descubra quais metapacotes existem** com `apt search kali-linux` e `apt search kali-tools`. É a forma correta de crescer ou encolher a instalação sem caçar ferramenta por ferramenta.
+- **`kali-tweaks`** é o utilitário próprio da distribuição: ajusta ramo de repositório, shell padrão, comportamento de serviços de rede e o modo *undercover*.
+- **Modo *undercover*** (`kali-undercover`) troca o tema do Xfce por uma imitação de Windows. É um recurso sério, apesar da aparência: serve para não chamar atenção ao trabalhar em campo, num saguão de cliente ou numa sala com terceiros presentes.
+- **Serviços não iniciam no boot.** No Kali, serviços de rede como SSH e o servidor web vêm desabilitados na inicialização. Isso é deliberado. Habilitá-los é possível, mas é uma decisão consciente sua — e o tema de serviços e `systemd` é o Volume 7.
+- **Atualize com `apt update && apt full-upgrade`**, nunca só `apt upgrade`. Em rolling release, transições de pacote frequentemente exigem remover algo, e `apt upgrade` se recusa a remover — o resultado é uma máquina parcialmente atualizada, que é a pior configuração possível. O assunto tem capítulo próprio no Volume 6.
+
+> **Nota sobre a família RHEL.** Não existe equivalente de Kali com a mesma tração no mundo Red Hat. Quem trabalha nesse ecossistema normalmente usa Fedora com repositórios adicionais, ou simplesmente uma VM Kali ao lado. A diferença de família aparece nas ferramentas de sistema (`dnf`, `firewalld`, SELinux), não nas ferramentas de segurança em si, que são as mesmas em toda parte.
+
+## 🧪 Laboratório
+
+Roteiro de leitura e verificação numa VM com Kali. Nenhum passo instala ferramenta ofensiva nem toca em rede de terceiros.
+
+1. **Identifique a natureza rolling da instalação.**
+
+   ```bash
+   cat /etc/os-release
+   cat /etc/apt/sources.list
+   apt policy | head -20
+   ```
+
+   Esperado: `VERSION` traz um marco de imagem (por exemplo `2025.2`) e o `sources.list` aponta para `kali-rolling`. Repare que o número da versão não define de onde vêm os pacotes — quem define é o ramo.
+
+2. **Confirme que o kernel tem patches da distribuição.**
+
+   ```bash
+   uname -r
+   uname -v
+   ```
+
+   Esperado: um sufixo como `-kali1` ou `-kali3`. Esse número é da distribuição, não do kernel de origem. É a evidência dos patches de injeção de pacotes e modo monitor.
+
+3. **Verifique a cadeia de confiança do repositório.**
+
+   ```bash
+   ls -l /usr/share/keyrings/kali-archive-keyring.gpg
+   sudo apt update
+   ```
+
+   Esperado: o `apt update` termina sem aviso de assinatura. Se aparecer `NO_PUBKEY` ou `EXPKEYSIG`, a chave está ausente ou expirada — a correção é `sudo apt install --reinstall kali-archive-keyring`, jamais desativar a verificação.
+
+4. **Explore os metapacotes.**
+
+   ```bash
+   apt search '^kali-linux-' 2>/dev/null | grep '^kali'
+   apt show kali-linux-default 2>/dev/null | head -20
+   ```
+
+   Esperado: a lista dos conjuntos disponíveis e, no `apt show`, um campo `Depends` enorme. Confirme com os próprios olhos que um metapacote não tem conteúdo — ele é só uma lista de dependências.
+
+5. **Meça o custo do conjunto padrão.**
+
+   ```bash
+   dpkg -l | grep -c '^ii'
+   du -sh /usr 2>/dev/null
+   ```
+
+   Esperado: alguns milhares de pacotes e vários gigabytes. Compare mentalmente com uma instalação mínima de Debian, que fica na casa das centenas de pacotes.
+
+6. **Veja quantas ferramentas de segurança estão de fato instaladas.**
+
+   ```bash
+   ls /usr/bin | wc -l
+   apt list --installed 2>/dev/null | grep -c kali
+   ```
+
+   Esperado: milhares de executáveis em `/usr/bin`. Esse número é a materialização do que a seção sobre superfície de ataque discutiu — cada um daqueles binários é código que existe na máquina.
+
+7. **Confirme que serviços de rede não iniciam sozinhos.**
+
+   ```bash
+   systemctl is-enabled ssh 2>/dev/null
+   systemctl is-active ssh 2>/dev/null
+   ss -ltnp 2>/dev/null | head
+   ```
+
+   Esperado: `disabled` e `inactive` para o SSH numa instalação padrão, e pouquíssimas portas em escuta. Um sistema que não escuta em porta alguma não pode ser atacado pela rede.
+
+8. **Experimente o modo *undercover* e volte.**
+
+   ```bash
+   kali-undercover
+   ```
+
+   Esperado: o Xfce assume aparência de Windows. Rodar o mesmo comando de novo desfaz. Vale entender o que ele faz por baixo: é uma troca de tema, papel de parede e disposição do painel — nada de esconder processos ou tráfego. Serve contra olhar casual, não contra perícia.
+
+9. **Registre o estado inicial em um snapshot.** Pelo gerenciador da sua VM, crie um snapshot chamado `kali-limpo`. Esperado: um ponto de retorno para todos os laboratórios seguintes deste manual. Isso não é formalidade — a partir do Volume 3 haverá exercícios que alteram o sistema.
+
+## Resumo
+
+- **Kali é um Debian rolling voltado a teste de invasão, forense e auditoria**, mantido pela OffSec — herdeiro direto do BackTrack, reconstruído sobre Debian em 2013 justamente para ganhar empacotamento, procedência e reprodutibilidade.
+- **As decisões de projeto explicam o comportamento**: repositório único e assinado, ferramentas curadas em vez de exaustivas, kernel com patches para Wi-Fi, metapacotes no lugar de instalação monolítica e serviços desabilitados por padrão.
+- **Distribuição de segurança não é distribuição segura.** A superfície de ataque de um Kali padrão é grande por construção, e o hábito correto é tratá-lo como estação de trabalho de auditoria em VM com snapshot, nunca como máquina exposta.
+- **O que legitima o uso das ferramentas é a autorização**, não a técnica. Sem escopo por escrito e autorização de quem pode dá-la, a mesma ação é crime no Brasil (Lei 12.737/2012).
+- **Não use Kali como servidor, como desktop de trabalho comum ou como sistema de produção.** Rolling release sem janela de suporte é incompatível com esses papéis; Debian estável, Ubuntu LTS ou RHEL resolvem melhor.
+- **Existem alternativas com propósitos vizinhos** — Parrot, BlackArch, Tails, REMnux, ou simplesmente Debian com as ferramentas instaladas à mão —, e conhecê-las ajuda a escolher a máquina certa para cada tarefa.

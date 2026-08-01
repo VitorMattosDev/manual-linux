@@ -11,7 +11,7 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 ### Volume 1 — Primeiros Passos: Linux e Kali
 
 - [x] **cap 001** - O que é Linux: kernel, distribuições e o modelo de software livre - `vol01/cap001-o-que-e-linux-kernel-distribuicoes-e-o-modelo.qmd`
-- [ ] **cap 002** - Por que Kali Linux: propósito, filosofia e quando não usá-lo - `vol01/cap002-por-que-kali-linux-proposito-filosofia-e.qmd`
+- [x] **cap 002** - Por que Kali Linux: propósito, filosofia e quando não usá-lo - `vol01/cap002-por-que-kali-linux-proposito-filosofia-e.qmd`
 - [ ] **cap 003** - Instalando o Kali: máquina virtual, bare metal, WSL e live USB - `vol01/cap003-instalando-o-kali-maquina-virtual-bare-metal.qmd`
 - [ ] **cap 004** - Primeiro contato: sessão, ambiente Xfce e organização do sistema - `vol01/cap004-primeiro-contato-sessao-ambiente-xfce-e.qmd`
 - [ ] **cap 005** - A estrutura de diretórios do Linux (FHS) - `vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.qmd`
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (1 concluidos).
+**Total:** 103 capitulos em 16 volumes (2 concluidos).
 
