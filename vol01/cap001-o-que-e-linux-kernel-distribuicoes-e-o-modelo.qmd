@@ -1,3 +1,308 @@
 # O que é Linux: kernel, distribuições e o modelo de software livre {#sec-cap001}
 
-*(em elaboracao)*
+Três e vinte da manhã. O monitoramento avisa que o servidor que concentra os coletores de tráfego de doze torres parou de responder. Você entra por SSH pelo link de gerência e o prompt abre — a máquina está viva, o que morreu foi um serviço. O técnico que montou aquele ponto de presença há quatro anos não trabalha mais na empresa, e a única anotação no inventário diz "servidor Linux". Antes de tentar qualquer conserto, você digita dois comandos:
+
+```bash
+uname -a
+cat /etc/os-release
+```
+
+O primeiro responde qual **kernel** está rodando. O segundo responde qual **distribuição** foi instalada. São perguntas diferentes, e tratá-las como se fossem a mesma é a origem de boa parte dos mal-entendidos de quem está começando. Do kernel dependem os drivers, o suporte ao hardware e o comportamento de rede; da distribuição dependem o gerenciador de pacotes, o caminho dos arquivos de configuração, o modelo de atualização e quanto tempo aquela instalação ainda vai receber correções de segurança. Este capítulo desmonta a palavra "Linux" nas partes que ela esconde.
+
+## O que a máquina responde no primeiro minuto
+
+Numa instalação Debian de servidor, os dois comandos acima devolvem algo assim:
+
+```bash
+$ uname -a
+Linux pop-torre-03 6.12.13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.13-1 (2025-02-08) x86_64 GNU/Linux
+```
+
+```bash
+$ cat /etc/os-release
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+ID=debian
+HOME_URL="https://www.debian.org/"
+```
+
+Repare que os números não conversam: o kernel é `6.12.13`, a distribuição é a versão `12`. Não há relação alguma entre eles. A mesma máquina, reinstalada com Kali, responderia:
+
+```bash
+$ uname -a
+Linux kali 6.12.25-amd64 #1 SMP PREEMPT_DYNAMIC Kali 6.12.25-1kali1 (2025-04-30) x86_64 GNU/Linux
+
+$ cat /etc/os-release
+PRETTY_NAME="Kali GNU/Linux Rolling"
+NAME="Kali GNU/Linux"
+VERSION="2025.2"
+ID=kali
+ID_LIKE=debian
+```
+
+Kernel muito parecido, sistema completamente diferente. E o campo `ID_LIKE=debian` já entrega o parentesco: quase tudo que vale para Debian vale para Kali. Guardar essa distinção desde o começo economiza horas de busca em fórum — a resposta que resolve seu problema pode estar escrita para "Linux", mas depender de um detalhe que só existe no Ubuntu.
+
+## O kernel: o Linux no sentido estrito
+
+**Linux, tecnicamente, é só o kernel.** É um programa — grande, mas um programa — que fica entre o hardware e todo o resto do software. Quando o computador liga, o firmware carrega o kernel na memória e entrega a ele o controle da máquina; a partir daí é o kernel que decide qual processo usa a CPU e por quanto tempo, quais páginas de memória cada programa enxerga, como os bytes chegam ao disco, como os pacotes saem pela placa de rede e como um dispositivo USB recém-conectado passa a existir para o sistema [@love2010kernel].
+
+Nenhum programa comum fala com o hardware diretamente. O `ls` não sabe ler um disco; ele pede ao kernel. O `nmap` não sabe montar um pacote na placa de rede; ele pede ao kernel. Essa fronteira tem nome: **chamada de sistema** (*system call*). O programa roda no que se chama espaço de usuário, com privilégios limitados; o kernel roda em espaço de kernel, com acesso total; e a única porta entre os dois é o conjunto de algumas centenas de chamadas de sistema. @fig-camadas mostra o arranjo.
+
+::: {#fig-camadas}
+```{.tikz}
+%%| filename: camadas-do-sistema
+%%| alt: Cinco camadas empilhadas, de hardware a aplicacoes, com a fronteira das chamadas de sistema entre kernel e bibliotecas
+\begin{tikzpicture}[
+    camada/.style={draw=manualgray,thick,rounded corners=3pt,minimum width=8.4cm,minimum height=1.05cm,align=center,font=\small},
+    node distance=3mm
+  ]
+  \node[camada,fill=manualblue!12] (app) {\textbf{Aplicações}\\\scriptsize navegador, nmap, Python, o seu script};
+  \node[camada,fill=manualblue!6,below=of app] (util) {\textbf{Utilitários e shell}\\\scriptsize bash, coreutils, systemd, apt};
+  \node[camada,fill=manualgreen!12,below=of util] (lib) {\textbf{Bibliotecas}\\\scriptsize glibc, OpenSSL, libcurl};
+  \node[camada,fill=manualred!14,below=of lib] (ker) {\textbf{Kernel Linux}\\\scriptsize processos, memória, arquivos, rede, drivers};
+  \node[camada,fill=manualgray!18,below=of ker] (hw) {\textbf{Hardware}\\\scriptsize CPU, RAM, disco, placa de rede};
+
+  \draw[destaque,dashed] ($(lib.south west)+(-0.35,-0.15)$) -- ($(lib.south east)+(0.35,-0.15)$);
+  \node[font=\scriptsize,manualred,fill=white,inner sep=1.5pt] at ($(lib.south)+(0,-0.15)$) {chamadas de sistema};
+
+  \node[font=\scriptsize,manualgray,rotate=90] at ($(app.west)!0.5!(lib.west)+(-0.75,0)$) {espaço de usuário};
+  \node[font=\scriptsize,manualgray,rotate=90] at ($(ker.west)+(-0.75,0)$) {espaço de kernel};
+\end{tikzpicture}
+```
+As camadas de um sistema Linux. Tudo acima da linha tracejada precisa pedir ao kernel para tocar no hardware.
+:::
+
+Dá para ver essa fronteira funcionando. O comando `strace` intercepta e imprime cada chamada de sistema que um processo faz:
+
+```bash
+strace -c ls /
+```
+
+A opção `-c` resume por chamada em vez de listar uma a uma. Um `ls` de um diretório pequeno dispara facilmente umas cem chamadas: `execve` para iniciar o programa, `openat` e `read` para carregar as bibliotecas, `statx` para descobrir o tipo de cada entrada, `getdents64` para ler o diretório, `write` para imprimir na tela. Sem o kernel, o `ls` é um punhado de instruções incapaz de descobrir sequer o próprio nome.
+
+O kernel Linux é **monolítico e modular**. Monolítico porque drivers e subsistemas rodam dentro do mesmo espaço privilegiado, e não como processos separados — decisão de projeto que rendeu, em 1992, um debate público entre Linus Torvalds e Andrew Tanenbaum, autor do Minix, defensor de microkernels. Modular porque partes desse código podem ser carregadas e descarregadas com o sistema em pé:
+
+```bash
+lsmod | head
+modinfo ath9k_htc | head -5
+```
+
+O primeiro lista os módulos carregados; o segundo descreve um módulo específico — no exemplo, o driver de um adaptador Wi-Fi USB muito usado em laboratório. É por isso que você pluga um adaptador novo e ele funciona sem reiniciar: o kernel carrega o módulo correspondente sob demanda.
+
+A numeração é simples de ler. Em `6.12.25-amd64`, o `6.12` é a versão de origem (*mainline*), o `25` é o número da correção, e `amd64` é a arquitetura. Algumas versões são marcadas como **LTS** e recebem correções por anos — é o kernel que distribuições de servidor adotam. As versões novas trazem suporte a hardware recente, e é por isso que uma placa de rede lançada este ano pode simplesmente não existir para um servidor com kernel de cinco anos atrás. Esse é o argumento prático mais forte a favor de kernels novos, e o gerenciamento de módulos é tema do Volume 16.
+
+## De onde veio: Unix, GNU e 1991
+
+Em 1969, no Bell Labs da AT&T, Ken Thompson e Dennis Ritchie escreveram o Unix. A virada aconteceu poucos anos depois, quando o sistema foi reescrito em C: um sistema operacional que podia ser recompilado para outra máquina em vez de reescrito em assembly. Junto com o código veio um conjunto de ideias que o Linux herdou por inteiro — tudo é arquivo, programas pequenos que fazem uma coisa bem, saída de um encadeada na entrada do outro, configuração em texto simples [@kernighan1984unix]. Universidades adotaram o Unix, a Universidade da Califórnia em Berkeley criou sua própria linhagem (a família BSD), e nos anos 1980 o código virou produto comercial fechado, com licenças caras e disputas judiciais sobre quem podia distribuir o quê.
+
+Foi contra esse fechamento que Richard Stallman lançou, em 1983, o **Projeto GNU** — sigla recursiva para *GNU's Not Unix*. A meta era um sistema completo, compatível com Unix, cujo código qualquer pessoa pudesse ler, modificar e redistribuir. Em 1991 o projeto tinha praticamente tudo: o compilador `gcc`, o editor Emacs, o `bash`, os utilitários que hoje formam o pacote `coreutils`, o `make`, o depurador. Faltava justamente a peça central — o kernel, chamado Hurd, que se arrastava.
+
+Nesse mesmo ano, um estudante finlandês de 21 anos chamado Linus Torvalds começou a escrever, por conta própria, um kernel para o seu 386. Em agosto de 1991 ele anunciou o projeto numa lista de discussão do Minix com a frase que ficou célebre por envelhecer mal: era só um passatempo, não seria grande e profissional como o GNU. Em 1992 ele relicenciou o kernel sob a **GPL versão 2**, e a peça que faltava ao GNU encontrou o conjunto de ferramentas que faltava ao kernel. O resultado é o que a saída do `uname -a` chama, literalmente, de `GNU/Linux` — e é a razão de existir a disputa sobre esse nome: quem escreve "GNU/Linux" está lembrando que o kernel sozinho não liga uma máquina útil. Neste manual usamos "Linux" no sentido corrente, de sistema completo, e "kernel" quando a distinção importa.
+
+## O que é, então, uma distribuição
+
+Um kernel não abre um terminal. Para ter um sistema operacional utilizável é preciso juntar o kernel a uma biblioteca C, a um programa de inicialização, a um shell, a centenas de utilitários, a um gerenciador de pacotes, a um repositório onde esses pacotes vivem, a um instalador e a um conjunto de decisões padrão. Esse trabalho de integração — escolher versões, aplicar correções, testar combinações, assinar os pacotes e sustentar tudo isso ao longo do tempo — é o que uma **distribuição** faz. @fig-distro mostra as peças.
+
+::: {#fig-distro}
+```{.tikz}
+%%| filename: anatomia-de-uma-distribuicao
+%%| alt: Oito blocos dentro de uma moldura tracejada representando os componentes de uma distribuicao Linux
+\begin{tikzpicture}[
+    peca/.style={draw=manualgray,rounded corners=2pt,text width=3.1cm,minimum height=0.95cm,align=center,font=\scriptsize,fill=manualblue!8,inner sep=3pt},
+    nucleo/.style={peca,fill=manualred!14,draw=manualred,thick}
+  ]
+  \node[nucleo] (k)  at (0,0)     {\textbf{Kernel Linux}\\o mesmo em toda distro};
+  \node[peca]   (lc) at (3.9,0)   {\textbf{Biblioteca C}\\glibc ou musl};
+  \node[peca]   (in) at (0,-1.4)  {\textbf{Init e serviços}\\systemd, OpenRC};
+  \node[peca]   (cu) at (3.9,-1.4){\textbf{Shell e utilitários}\\bash, coreutils};
+  \node[peca]   (pk) at (0,-2.8)  {\textbf{Gerenciador de pacotes}\\apt, dnf, pacman};
+  \node[peca]   (rp) at (3.9,-2.8){\textbf{Repositório e política}\\o que entra e quando};
+  \node[peca]   (de) at (0,-4.2)  {\textbf{Ambiente gráfico}\\Xfce, GNOME ou nenhum};
+  \node[peca]   (ip) at (3.9,-4.2){\textbf{Instalador e defaults}\\usuário, disco, firewall};
+
+  \draw[auxiliar,rounded corners=5pt] (-2.0,0.9) rectangle (5.9,-5.0);
+  \node[font=\small,manualgray] at (1.95,1.25) {\textbf{Distribuição}};
+\end{tikzpicture}
+```
+Uma distribuição é o kernel mais o trabalho de integração que o torna utilizável.
+:::
+
+Cada uma dessas caixas é uma decisão editorial, e distribuições diferentes decidem diferente. As escolhas que mais mudam o dia a dia são quatro. A primeira é o **modelo de lançamento**: versão fixa, em que os pacotes congelam e só recebem correções de segurança por alguns anos (Debian estável, Ubuntu LTS, RHEL), ou *rolling release*, em que não existe "versão" e o sistema recebe versões novas continuamente (Arch, Kali). A segunda é o **formato de pacote e o gerenciador**: `.deb` com `apt` na família Debian, `.rpm` com `dnf` na família Red Hat, e por aí vai. A terceira é o **conjunto padrão**: uma imagem mínima de servidor, um desktop completo, ou — no caso do Kali — algumas centenas de ferramentas de segurança já instaladas. A quarta é a **política de segurança e suporte**: quem corrige, com que rapidez, e por quanto tempo.
+
+Para ter uma ideia do tamanho do trabalho, conte os pacotes de uma instalação comum:
+
+```bash
+dpkg -l | grep -c '^ii'
+```
+
+Uma instalação enxuta de Debian passa dos 500 pacotes; um Kali com o metapacote padrão passa fácil dos 3.000. Nenhum deles foi escrito pela distribuição — todos foram empacotados, testados em conjunto e assinados por ela.
+
+## Famílias: o mapa das distribuições
+
+Existem centenas de distribuições, mas quase todas descendem de meia dúzia de troncos, e é o tronco que determina os comandos que você vai digitar. @fig-familias resume as linhagens que importam na prática.
+
+::: {#fig-familias}
+```{.tikz}
+%%| filename: familias-de-distribuicoes
+%%| alt: Arvore genealogica das distribuicoes Linux a partir do kernel, com Debian, Red Hat e Arch e seus derivados
+\begin{tikzpicture}[
+    distro/.style={draw=manualgray,rounded corners=2pt,minimum width=2.0cm,minimum height=0.6cm,align=center,font=\scriptsize,fill=white,inner sep=2pt},
+    raiz/.style={distro,fill=manualblue!14,draw=manualblue,thick,minimum width=3.4cm},
+    alvo/.style={distro,fill=manualred!16,draw=manualred,thick},
+    lig/.style={manualgray,thin,-{Stealth[length=4pt]}}
+  ]
+  \node[raiz] (k) at (0,0) {\textbf{Kernel Linux} (1991)};
+
+  \node[distro] (deb)  at (-4.4,-1.3) {\textbf{Debian} (1993)};
+  \node[distro] (rh)   at (0,-1.3)    {\textbf{Red Hat} (1994)};
+  \node[distro] (arch) at (4.4,-1.3)  {\textbf{Arch} (2002)};
+  \foreach \fam in {deb,rh,arch} { \draw[lig] (k.south) -- (\fam.north); }
+
+  \node[distro] (ubu)  at (-6.0,-2.7) {Ubuntu};
+  \node[alvo]   (kali) at (-3.4,-2.7) {\textbf{Kali}};
+  \node[distro] (fed)  at (-1.2,-2.7) {Fedora};
+  \node[distro] (rhel) at (1.2,-2.7)  {RHEL};
+  \node[distro] (manj) at (4.4,-2.7)  {Manjaro};
+  \foreach \fil/\pai in {ubu/deb,kali/deb,fed/rh,rhel/rh,manj/arch} { \draw[lig] (\pai.south) -- (\fil.north); }
+
+  \node[distro] (mint)  at (-6.0,-3.9) {Linux Mint};
+  \node[distro] (rocky) at (1.2,-3.9)  {Rocky, Alma};
+  \draw[lig] (ubu.south) -- (mint.north);
+  \draw[lig] (rhel.south) -- (rocky.north);
+
+  \node[font=\scriptsize,manualred,align=center] at (-3.4,-4.1) {ramo \emph{testing}\\do Debian};
+  \draw[destaque,thin,-{Stealth[length=4pt]}] (-3.4,-3.7) -- (kali.south);
+\end{tikzpicture}
+```
+As linhagens principais. O tronco define o gerenciador de pacotes e boa parte das convenções.
+:::
+
+A **família Debian** usa pacotes `.deb` e o `apt`. Debian é a base; Ubuntu deriva dela e adiciona um ciclo de lançamento previsível; Kali deriva do ramo de testes do Debian; Linux Mint deriva do Ubuntu; o Raspberry Pi OS também é Debian. É a família com maior presença em servidores de pequeno e médio porte no Brasil, e é a família deste manual.
+
+A **família Red Hat** usa pacotes `.rpm` e o `dnf`. Fedora é o laboratório onde as novidades aparecem primeiro; o RHEL é o produto comercial estabilizado a partir dele; Rocky Linux e AlmaLinux são reconstruções gratuitas e compatíveis do RHEL. É a família dominante em datacenter corporativo, e traz consigo `firewalld` e SELinux, que resolvem os mesmos problemas de outro jeito.
+
+A **família Arch** é *rolling*, minimalista e monta o sistema a partir do que o usuário escolhe instalar. Fora desses três troncos, valem menção o openSUSE, o Alpine — minúsculo, com biblioteca C `musl` no lugar da `glibc`, quase padrão em contêineres — e o Gentoo, que compila tudo a partir do fonte.
+
+A consequência prática é direta: **os conceitos são os mesmos, os comandos nem sempre**. Processo, permissão, descritor de arquivo, socket, sinal — isso é kernel, e é idêntico em toda parte. Já `apt install` contra `dnf install`, `/etc/network/interfaces` contra as conexões do NetworkManager, `nftables` contra `firewalld`, isso é distribuição. Ao escolher a distribuição de um servidor que vai ficar quatro anos num rack de POP, o critério raramente é gosto: é janela de suporte, previsibilidade de atualização e disponibilidade dos pacotes de que você depende [@nemeth2017unix].
+
+## O modelo de software livre
+
+Nada disso seria possível sem o arranjo jurídico que sustenta o ecossistema. Software livre, na definição da Free Software Foundation, é o que garante quatro liberdades ao usuário: **liberdade 0**, executar o programa para qualquer finalidade; **liberdade 1**, estudar como ele funciona e adaptá-lo, o que exige acesso ao código-fonte; **liberdade 2**, redistribuir cópias; e **liberdade 3**, distribuir versões modificadas. "Livre" aqui é liberdade, não preço — a ambiguidade existe em inglês (*free*) e por isso surgiu o termo alternativo *open source*, cunhado em 1998 com ênfase mais pragmática, no modelo de desenvolvimento colaborativo, e menos na dimensão ética. Na prática as duas listas de licenças aprovadas quase coincidem.
+
+As licenças se dividem em duas famílias. As **copyleft**, como a GPL, obrigam quem distribui uma versão modificada a distribuí-la sob a mesma licença, com o fonte disponível — a liberdade é passada adiante à força. As **permissivas**, como MIT, BSD e Apache, permitem que o código seja incorporado a produtos fechados. O kernel Linux é GPLv2. É por isso que um fabricante que embarca Linux num roteador ou numa OLT precisa disponibilizar o fonte do kernel modificado que usou — e é por isso que existe, para muito equipamento de rede, uma comunidade capaz de compilar firmware alternativo.
+
+Esse mesmo mecanismo é o que permite a existência das distribuições: o Kali pode pegar o Debian inteiro, modificar, rebatizar e redistribuir porque as licenças autorizam. Cada pacote instalado traz sua licença registrada em disco:
+
+```bash
+head -20 /usr/share/doc/coreutils/copyright
+apt show nmap | head -15
+```
+
+Vale desfazer um mal-entendido comum: software livre não é software sem dinheiro envolvido. Red Hat, Canonical e SUSE são empresas grandes que vendem suporte, certificação e serviços em cima de código aberto; a OffSec, que mantém o Kali, vende treinamento e certificação; a maior parte dos commits do kernel Linux vem de gente paga para isso, empregada por fabricantes de hardware e provedores de nuvem. O que o modelo elimina não é o pagamento — é o aprisionamento.
+
+## O que muda no seu dia a dia
+
+Três consequências concretas. Primeira: quando um serviço se comporta de um jeito que a documentação não explica, o código está a um `apt source` de distância, e ler o fonte é uma opção real de diagnóstico, não um recurso teórico. Segunda: o repositório da distribuição é a sua cadeia de suprimentos de software, com pacotes assinados e verificados a cada `apt update` — instalar `.deb` baixado de qualquer lugar contorna essa verificação, e o assunto volta com força no Volume 6. Terceira: você pode auditar. Num ambiente onde a máquina fica trancada num contêiner metálico no meio de um pasto, saber exatamente o que está rodando e de onde veio cada binário não é preciosismo — é a diferença entre um incidente investigável e um mistério.
+
+## 🐉 No Kali
+
+O Kali Linux é uma distribuição **Debian rolling** mantida pela OffSec, montada a partir do ramo `testing` do Debian e voltada a teste de invasão, forense e auditoria de segurança [@kalidocs]. Alguns pontos em que ele difere de um Debian ou Ubuntu comum e que aparecem já no primeiro contato:
+
+- **Não existe "versão" no sentido do Debian.** O `2025.2` de `/etc/os-release` é um marco de imagem de instalação, não um congelamento: a atualização vem do ramo `kali-rolling`, que se atualiza continuamente. Confira com `cat /etc/apt/sources.list` — a linha aponta para `kali-rolling`, não para um codinome como `bookworm`. Existem ainda os ramos `kali-last-snapshot`, congelado no último lançamento, e `kali-experimental`. Isso significa que `apt update && apt full-upgrade` no Kali é uma operação de rotina, não um evento raro.
+- **O usuário padrão é `kali`, não `root`.** Até a versão 2020.1 o Kali logava como root por padrão; hoje adota o modelo de usuário comum com `sudo`, como qualquer Debian. O tema é aprofundado no Volume 4.
+- **O kernel tem patches próprios.** O sufixo `-kali1` em `uname -r` indica um kernel com correções aplicadas pela distribuição, notadamente para injeção de pacotes e modo monitor em adaptadores Wi-Fi — recursos que um kernel Debian puro nem sempre oferece.
+- **As ferramentas vêm por metapacotes.** `kali-linux-default` traz o conjunto usual, `kali-linux-large` traz quase tudo, `kali-linux-headless` traz só o que roda sem interface gráfica. Instalar um metapacote arrasta centenas de programas de uma vez. Detalhes no Volume 6.
+- **`kali-tweaks`** é um utilitário próprio da distribuição para ajustar rapidamente ramo de repositório, shell padrão, serviços de rede e configurações de hardening.
+- **Kali não é distribuição de servidor.** Ela vem com ferramentas ofensivas instaladas, acompanha um ramo de testes e não tem janela de suporte de longo prazo. Para o servidor de monitoramento da história de abertura, a escolha correta é Debian estável ou Ubuntu LTS. Kali é a máquina de trabalho de quem audita, não a máquina auditada.
+
+> **Nota sobre a família RHEL.** Em Fedora, RHEL, Rocky ou Alma, os equivalentes são `cat /etc/redhat-release` no lugar do `os-release`, `dnf` no lugar do `apt`, `rpm -qa` no lugar do `dpkg -l`, `firewalld` no lugar do `nftables` direto e SELinux no lugar do AppArmor. O kernel e os conceitos são os mesmos.
+
+## 🧪 Laboratório
+
+Roteiro para executar numa máquina virtual com Kali. Nenhum passo altera o sistema; todos são de leitura.
+
+1. **Identifique kernel e distribuição separadamente.**
+
+   ```bash
+   uname -r
+   uname -a
+   cat /etc/os-release
+   hostnamectl
+   ```
+
+   Esperado: `uname -r` devolve algo como `6.12.25-amd64`; o `os-release` devolve `ID=kali` e `ID_LIKE=debian`. O `hostnamectl` reúne as duas informações em campos separados — `Operating System` e `Kernel`. Anote os dois valores; eles vão divergir na próxima atualização, e em ritmos diferentes.
+
+2. **Confirme que o kernel é modular.**
+
+   ```bash
+   lsmod | wc -l
+   lsmod | head -5
+   ```
+
+   Esperado: dezenas de módulos carregados. A primeira coluna é o nome, a terceira é a contagem de uso — módulo com contagem zero não está sendo usado por ninguém no momento.
+
+3. **Observe a fronteira das chamadas de sistema.**
+
+   ```bash
+   sudo apt install -y strace
+   strace -c ls / 2>&1 | tail -20
+   ```
+
+   Esperado: uma tabela com as chamadas usadas e quantas vezes cada uma. Procure `openat`, `read`, `write`, `getdents64`, `execve`. A conclusão a tirar: um comando trivial como `ls` não faz nada sozinho — ele passa todo o trabalho real para o kernel.
+
+4. **Veja que o programa depende de bibliotecas, e não só do kernel.**
+
+   ```bash
+   ldd /bin/ls
+   /lib/x86_64-linux-gnu/libc.so.6 --version | head -2
+   ```
+
+   Esperado: a lista de bibliotecas compartilhadas de que o `ls` precisa, incluindo `libc.so.6`, e a versão da glibc. Essa camada pertence à distribuição, não ao kernel — trocar de distribuição pode trocar a glibc; trocar de kernel, não.
+
+5. **Meça o trabalho de integração da distribuição.**
+
+   ```bash
+   dpkg -l | grep -c '^ii'
+   apt list --installed 2>/dev/null | wc -l
+   ```
+
+   Esperado: alguns milhares de pacotes num Kali com metapacote padrão. Cada um foi empacotado, testado em conjunto e assinado por alguém.
+
+6. **Leia a licença de um programa que você usa.**
+
+   ```bash
+   head -25 /usr/share/doc/nmap/copyright
+   apt show bash 2>/dev/null | head -12
+   ```
+
+   Esperado: o arquivo `copyright` traz autoria e licença. Compare a licença do `bash` (GPL) com a de algum utilitário sob MIT ou BSD e observe a diferença de exigência sobre versões modificadas.
+
+7. **Descubra o ramo de repositório em que a sua máquina está.**
+
+   ```bash
+   cat /etc/apt/sources.list
+   apt policy
+   ```
+
+   Esperado: uma linha apontando para `kali-rolling`. Se apontar para `kali-last-snapshot`, sua máquina está congelada no último lançamento e não receberá pacotes novos até você mudar isso.
+
+8. **A prova final de que kernel e distribuição são coisas distintas.** Se houver Docker no ambiente:
+
+   ```bash
+   sudo docker run --rm fedora cat /etc/os-release | head -3
+   sudo docker run --rm fedora uname -r
+   uname -r
+   ```
+
+   Esperado: o `os-release` de dentro do contêiner diz Fedora; o `uname -r` de dentro do contêiner devolve **exatamente o mesmo kernel** da sua máquina Kali. O contêiner traz uma distribuição inteira — utilitários, `dnf`, bibliotecas — mas não traz kernel: ele usa o do hospedeiro. É a demonstração mais limpa da separação, e o mecanismo por trás dela é assunto do Volume 16.
+
+## Resumo
+
+- **Linux, no sentido estrito, é o kernel**: o programa que gerencia CPU, memória, arquivos, rede e dispositivos, e que expõe tudo isso ao restante do software por meio das chamadas de sistema.
+- **Distribuição é o kernel mais o trabalho de integração**: biblioteca C, init, shell, utilitários, gerenciador de pacotes, repositório, instalador e uma política de atualização e suporte.
+- **`uname -a` e `/etc/os-release` respondem perguntas diferentes** e seus números não têm relação entre si. Saber ler os dois é o primeiro diagnóstico de qualquer máquina desconhecida.
+- **A família da distribuição define os comandos.** Conceitos de kernel valem em toda parte; `apt`, `dnf` e `pacman` não. Debian e derivados — Kali incluído — formam a família deste manual.
+- **O modelo de software livre é o que torna esse ecossistema possível**: quatro liberdades, licenças copyleft como a GPLv2 do kernel e permissivas como MIT e BSD, e um mercado que cobra por suporte e serviço, não por aprisionamento.
+- **Kali é Debian rolling voltado à segurança**, com usuário `kali`, kernel com patches próprios, ferramentas em metapacotes e sem janela de suporte longo — excelente estação de trabalho de auditoria, má escolha para servidor de produção.
