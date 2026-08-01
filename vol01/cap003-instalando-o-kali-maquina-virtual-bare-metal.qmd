@@ -1,3 +1,321 @@
 # Instalando o Kali: máquina virtual, bare metal, WSL e live USB {#sec-cap003}
 
-*(em elaboracao)*
+O contrato começa segunda-feira. Você precisa de um ambiente Kali funcionando, com um adaptador Wi-Fi capaz de entrar em modo monitor, com espaço para guardar capturas de tráfego de um cliente sem misturar com as do cliente anterior, e com a possibilidade de voltar tudo ao estado limpo quando a auditoria acabar. Três colegas dão três respostas diferentes: "instala numa VM", "instala direto no disco", "usa o WSL, é mais rápido". As três estão certas — para problemas diferentes. Escolher errado significa descobrir, na quarta-feira, que o adaptador Wi-Fi não aparece dentro da máquina virtual porque ninguém configurou o repasse de USB, ou que não existe como voltar atrás porque a instalação foi feita direto sobre o disco do notebook pessoal.
+
+Este capítulo cobre os cinco caminhos de instalação, o que cada um entrega e o que cada um cobra, e um passo que quase todo tutorial pula: **verificar a imagem antes de instalá-la**. Vamos começar por ele, porque é o único que, se você errar, compromete tudo o que vem depois.
+
+## Antes de tudo: verificar a imagem
+
+Você vai baixar um arquivo de alguns gigabytes que, minutos depois, terá controle total sobre uma máquina sua. Não é exagero conferir a procedência. Uma imagem adulterada — por comprometimento de espelho, por ataque na rede, por download interrompido — instala um sistema que parece normal e não é.
+
+O Kali publica, junto das imagens, um arquivo `SHA256SUMS` com as somas de verificação e um `SHA256SUMS.gpg` com a assinatura desse arquivo. A cadeia de confiança tem dois elos, e pular o segundo é o erro comum. @fig-verificacao mostra o encadeamento.
+
+::: {#fig-verificacao}
+```{.tikz}
+%%| filename: verificacao-de-imagem
+%%| alt: Cadeia de verificacao da imagem do Kali, da chave GPG ate a gravacao na midia
+\begin{tikzpicture}[
+    passo/.style={draw=manualgray,rounded corners=3pt,text width=3.3cm,minimum height=1.15cm,align=center,font=\scriptsize,fill=manualblue!8,inner sep=4pt},
+    chave/.style={passo,fill=manualgreen!14,draw=manualgreen,thick},
+    final/.style={passo,fill=manualred!12,draw=manualred,thick},
+    fluxo/.style={manualgray,thick,-{Stealth[length=5pt]}}
+  ]
+  \node[chave] (k)  at (0,0)    {\textbf{1. Chave pública}\\importar a chave GPG oficial do projeto};
+  \node[passo] (s)  at (4.1,0)  {\textbf{2. SHA256SUMS}\\baixar o arquivo de somas e a assinatura};
+  \node[passo] (g)  at (8.2,0)  {\textbf{3. Verificar assinatura}\\a soma veio mesmo do Kali?};
+  \node[passo] (h)  at (4.1,-2.4) {\textbf{4. Conferir a soma}\\a imagem bate com o valor assinado?};
+  \node[final] (m)  at (8.2,-2.4) {\textbf{5. Gravar}\\só agora a mídia pode ser escrita};
+
+  \draw[fluxo] (k) -- (s);
+  \draw[fluxo] (s) -- (g);
+  \draw[fluxo] (g.south) -- ++(0,-0.6) -| (h.north);
+  \draw[fluxo] (h) -- (m);
+
+  \node[font=\scriptsize,manualred,align=center,text width=3.3cm] at (0,-2.4) {Falhou qualquer etapa? \textbf{descarte o arquivo} e baixe de novo};
+  \draw[destaque,dashed,-{Stealth[length=4pt]}] (1.8,-2.4) -- (2.35,-2.4);
+\end{tikzpicture}
+```
+Conferir apenas a soma não prova nada se ela também veio do mesmo lugar adulterado. A assinatura GPG é o elo que fecha a cadeia.
+:::
+
+Na prática, a partir de qualquer máquina Linux:
+
+```bash
+# 1. importar a chave pública oficial do projeto
+wget -q -O - https://archive.kali.org/archive-keyring.gpg | gpg --import
+
+# 2. baixar o arquivo de somas e a assinatura, ao lado da imagem
+wget https://cdimage.kali.org/current/SHA256SUMS
+wget https://cdimage.kali.org/current/SHA256SUMS.gpg
+
+# 3. a soma foi mesmo assinada pelo Kali?
+gpg --verify SHA256SUMS.gpg SHA256SUMS
+
+# 4. a imagem bate com a soma?
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+O passo 3 deve responder `Good signature`. Um aviso dizendo que a chave não é confiável (`WARNING: This key is not certified with a trusted signature`) é esperado e não é problema: significa apenas que você não assinou a chave do Kali com a sua. O que não pode aparecer é `BAD signature`. O passo 4 deve responder `OK` para o arquivo que você baixou.
+
+No Windows, sem uma máquina Linux à mão, o PowerShell resolve o passo da soma:
+
+```powershell
+Get-FileHash .\kali-linux-2025.2-installer-amd64.iso -Algorithm SHA256
+```
+
+Compare o resultado com a linha correspondente do `SHA256SUMS`. A verificação da assinatura exige o Gpg4win — e vale o trabalho na primeira vez.
+
+## Qual imagem baixar
+
+O projeto publica várias variantes, e o nome do arquivo diz tudo:
+
+**Installer** é a imagem completa de instalação, com os pacotes embutidos: instala sem depender de internet, é a maior. **NetInstaller** é a imagem enxuta que baixa tudo durante a instalação: exige rede, mas sempre instala pacotes atuais e permite escolher exatamente o que entra. **Live** roda direto da mídia sem instalar nada, e é a base para o pendrive com persistência. **Virtual machines** são imagens pré-construídas para VirtualBox e VMware, com as ferramentas de convidado já instaladas — o caminho mais curto para ter um Kali funcionando. **ARM** cobre Raspberry Pi e placas semelhantes. Há ainda imagens para WSL, para nuvem e para o NetHunter em Android.
+
+Existem também versões `weekly`, geradas semanalmente a partir do repositório atual, e as versões de lançamento trimestrais. Para uso normal, pegue a de lançamento e atualize depois; a weekly serve quando você precisa de um pacote muito recente já na imagem.
+
+## Método 1: máquina virtual — o padrão recomendado
+
+Para praticamente todo mundo que está começando, e para a maior parte do trabalho profissional, **VM é a resposta certa**. As razões são três: isolamento (o que acontece no Kali fica no Kali), reversibilidade (snapshot antes, restaurar depois) e paralelismo (uma VM por cliente, ou uma VM Kali e uma máquina-alvo vulnerável na mesma rede virtual).
+
+Os hipervisores viáveis são o **VirtualBox** (gratuito, multiplataforma, o mais comum em estudo), o **VMware Workstation** (mais rápido em gráficos e USB, hoje gratuito para uso pessoal), o **KVM/QEMU** com `virt-manager` (nativo do Linux, o mais eficiente quando o hospedeiro já é Linux) e o **Hyper-V** (embutido no Windows Pro, com integração fraca de USB, o que atrapalha o trabalho com Wi-Fi).
+
+Dimensionamento razoável para uma VM de estudo: **2 a 4 vCPUs**, **4 GB de RAM** no mínimo e 8 GB se houver folga, **60 a 80 GB de disco** em alocação dinâmica. O disco é o item mais subestimado: `kali-linux-default` mais uma atualização acumulada mais capturas de tráfego enchem 40 GB rápido, e ampliar disco de VM depois dá trabalho. Habilite a virtualização assistida por hardware no firmware da máquina (VT-x na Intel, AMD-V na AMD) — sem ela, a VM roda em emulação e fica insuportavelmente lenta.
+
+Depois de instalar, o passo que quase todo mundo esquece são as **ferramentas de convidado**, responsáveis por ajuste automático de resolução, área de transferência compartilhada e pastas compartilhadas:
+
+```bash
+sudo apt update
+sudo apt install -y open-vm-tools-desktop   # VMware
+# ou
+sudo apt install -y virtualbox-guest-x11    # VirtualBox
+```
+
+### Os modos de rede da VM
+
+Este é o ponto que mais gera confusão, e errar aqui custa uma tarde inteira de diagnóstico. @fig-redes-vm compara os três modos que importam.
+
+::: {#fig-redes-vm}
+```{.tikz}
+%%| filename: modos-de-rede-da-vm
+%%| alt: Comparacao entre os modos NAT, bridge e host-only de rede em maquina virtual
+\begin{tikzpicture}[
+    caixa/.style={draw=manualgray,rounded corners=2pt,minimum width=1.9cm,minimum height=0.55cm,align=center,font=\scriptsize,fill=white,inner sep=2pt},
+    vm/.style={caixa,fill=manualred!14,draw=manualred},
+    host/.style={caixa,fill=manualblue!12,draw=manualblue},
+    rede/.style={caixa,fill=manualgreen!12,draw=manualgreen,minimum width=2.1cm},
+    lig/.style={manualgray,-{Stealth[length=4pt]}},
+    titulo/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  % NAT
+  \node[titulo] at (0,1.15) {NAT};
+  \node[vm]   (v1) at (0,0.5)   {VM Kali};
+  \node[host] (h1) at (0,-0.35) {Hospedeiro};
+  \node[rede] (r1) at (0,-1.25) {LAN / internet};
+  \draw[lig] (v1) -- (h1);
+  \draw[lig] (h1) -- (r1);
+  \node[font=\scriptsize,manualgray,align=center,text width=2.9cm] at (0,-2.3) {sai, mas não recebe conexão de fora};
+
+  % Bridge
+  \node[titulo] at (5.4,1.15) {Bridge};
+  \node[vm]   (v2) at (4.4,0.5)   {VM Kali};
+  \node[host] (h2) at (6.5,0.5)   {Hospedeiro};
+  \node[rede] (r2) at (5.45,-1.25) {LAN / internet};
+  \draw[lig] (v2.south) -- (r2.north west);
+  \draw[lig] (h2.south) -- (r2.north east);
+  \node[font=\scriptsize,manualgray,align=center,text width=3.2cm] at (5.45,-2.3) {IP próprio na rede real, visível como outra máquina};
+
+  % Host-only
+  \node[titulo] at (10.7,1.15) {Host-only};
+  \node[vm]   (v3) at (9.7,0.5)   {VM Kali};
+  \node[vm]   (v4) at (11.8,0.5)  {VM alvo};
+  \node[host] (h3) at (10.75,-0.6) {Hospedeiro};
+  \draw[lig] (v3.south) -- (h3.north west);
+  \draw[lig] (v4.south) -- (h3.north east);
+  \draw[lig] (v3) -- (v4);
+  \node[font=\scriptsize,manualgray,align=center,text width=3.2cm] at (10.75,-2.3) {rede isolada, sem saída: o laboratório seguro};
+\end{tikzpicture}
+```
+Os três modos de rede que resolvem a grande maioria dos casos. Laboratório com máquina vulnerável pede host-only.
+:::
+
+**NAT** é o padrão e serve para a maioria: a VM navega, atualiza pacotes e alcança a internet, escondida atrás do hospedeiro. Nada de fora inicia conexão com ela. **Bridge** coloca a VM na rede física como se fosse uma máquina independente, com IP do mesmo roteador — necessário quando ela precisa ser alcançada por outros equipamentos, e o modo que exige mais cuidado, porque um Kali em bridge numa rede corporativa é exatamente o que a política de TI proíbe. **Host-only** (ou "rede interna") cria uma rede fechada entre as VMs e o hospedeiro, sem saída para a internet: é o modo correto para montar laboratório com máquinas propositalmente vulneráveis, porque garante que nada daquilo vaze.
+
+A regra prática: **máquina-alvo vulnerável nunca em NAT nem em bridge**. Instalar uma VM cheia de falhas conhecidas e deixá-la alcançável pela rede da casa ou do escritório transforma seu laboratório em porta de entrada.
+
+### Adaptador Wi-Fi na VM
+
+Adaptador Wi-Fi interno do notebook **não** funciona em modo monitor dentro de uma VM. O hipervisor apresenta ao convidado uma placa Ethernet virtual, e o que o Kali vê não é o rádio real. A solução é um **adaptador USB externo** com chipset compatível, repassado à VM por USB passthrough — em VirtualBox exige o Extension Pack, em VMware é nativo, em KVM se faz pelo `virt-manager`. Depois de repassar, `lsusb` dentro da VM tem de listar o adaptador; se não listar, o problema é de configuração do hipervisor, não do Kali.
+
+## Método 2: bare metal — instalação direta no disco
+
+Instalar direto no hardware entrega desempenho total, acesso nativo a todos os dispositivos (inclusive o Wi-Fi interno) e uso pleno da GPU — o que importa para quem faz quebra de hash com `hashcat`. Em troca, você perde a rede de segurança do snapshot e assume os riscos de particionamento.
+
+Vale a pena quando a máquina é dedicada à função. Não vale a pena no notebook que você usa para tudo.
+
+::: {.callout-warning}
+## Particionar apaga dados
+
+O instalador oferece o modo guiado com "usar o disco inteiro", e ele faz exatamente o que diz: **destrói todas as partições existentes**, incluindo o outro sistema operacional e todos os arquivos. Antes de instalar em bare metal, faça backup completo e verifique que o backup restaura. O tema de discos e partições tem um volume inteiro adiante (Volume 8); por ora, se houver a menor dúvida, use uma VM.
+:::
+
+Três pontos merecem atenção na instalação em disco:
+
+**Dual boot com Windows.** O instalador consegue redimensionar a partição do Windows e conviver com ele, mas o procedimento seguro é reduzir a partição **pelo próprio Windows** antes, deixando espaço não alocado, e só então iniciar o instalador do Kali. Desative também a inicialização rápida do Windows: com ela ligada, o Windows não desliga de verdade e deixa o sistema de arquivos em estado inconsistente, o que pode corromper dados quando o Linux monta a partição.
+
+**Secure Boot.** As imagens atuais do Kali têm suporte a Secure Boot, mas módulos de kernel de terceiros — drivers de adaptadores Wi-Fi fora da árvore, por exemplo — precisam ser assinados para carregar. Se um driver instalado à mão não sobe, Secure Boot é o primeiro suspeito.
+
+**Criptografia de disco.** O instalador oferece LUKS com uma caixa de seleção. Para máquina que sai de casa com dados de cliente, isso não é opcional. O detalhamento de LUKS é o Volume 8.
+
+## Método 3: live USB com persistência
+
+O modo live roda o sistema inteiro a partir do pendrive, sem tocar no disco da máquina. Por padrão nada é gravado: reiniciou, perdeu. Com **persistência**, uma partição adicional do pendrive guarda alterações entre sessões — e pode ser criptografada com LUKS.
+
+É o método certo em três situações: perícia forense, quando você não pode escrever nada no disco do equipamento examinado; recuperação de um sistema que não inicia; e trabalho em máquina de terceiros, quando você leva o seu ambiente no bolso e não deixa rastro na máquina do cliente.
+
+Gravar a imagem no pendrive é a operação mais perigosa deste capítulo:
+
+::: {.callout-important}
+## Escrever no dispositivo errado destrói o disco
+
+O comando abaixo escreve byte a byte no dispositivo indicado, **sem confirmação e sem possibilidade de desfazer**. Apontar para `/dev/sda` em vez de `/dev/sdb` apaga o disco do sistema. Identifique o dispositivo com `lsblk` **antes**, confira o tamanho (um pendrive de 32 GB aparece com cerca de 29 G), e desconecte outros dispositivos removíveis para reduzir a chance de erro.
+:::
+
+```bash
+# 1. identificar o dispositivo — confira tamanho e ponto de montagem
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
+
+# 2. ensaio seguro: escrever numa imagem de arquivo em vez de num disco
+truncate -s 4G /tmp/ensaio.img
+sudo dd if=kali-linux-live-amd64.iso of=/tmp/ensaio.img bs=4M status=progress conv=fsync
+
+# 3. só depois, no dispositivo real — SUBSTITUA sdX pelo seu pendrive
+sudo dd if=kali-linux-live-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sync
+```
+
+O passo 2 não é enfeite: ele deixa você praticar a sintaxe e ver a saída esperada sem risco nenhum. Alternativamente, ferramentas gráficas como o Etcher listam apenas dispositivos removíveis e reduzem bastante a chance de acidente — é a recomendação para quem está começando.
+
+A persistência é criada depois, particionando o espaço livre do pendrive e rotulando a partição como `persistence`, com um arquivo `persistence.conf` contendo `/ union`. A documentação oficial traz o passo a passo atualizado [@kalidocs].
+
+## Método 4: WSL2 no Windows
+
+O Subsistema Windows para Linux roda uma distribuição Linux sobre um kernel Linux real, gerenciado pelo Windows, com integração forte com o sistema hospedeiro. Instalar é trivial:
+
+```powershell
+wsl --install -d kali-linux
+```
+
+Depois, dentro do Kali, dá para instalar o **Win-KeX**, que entrega uma sessão gráfica completa:
+
+```bash
+sudo apt update
+sudo apt install -y kali-win-kex
+kex --win -s
+```
+
+O WSL brilha para trabalho de linha de comando: scripts, processamento de texto, ferramentas que só falam TCP, análise de arquivos, desenvolvimento. É rápido, integra com o sistema de arquivos do Windows e não exige gerenciar uma VM.
+
+E tem limites reais. O kernel é o do WSL, não o do Kali — sem os patches de injeção de pacotes discutidos em @sec-cap002. Acesso a hardware é restrito: USB só via `usbipd`, com resultado irregular, e modo monitor de Wi-Fi na prática não funciona. A pilha de rede é intermediada pelo Windows, o que atrapalha ferramentas que manipulam pacotes em baixo nível. Alguns serviços que dependem do `systemd` exigem configuração adicional. Resumo: **WSL é ótimo complemento e mau substituto** — se o trabalho envolve rede em baixo nível ou Wi-Fi, use VM ou bare metal.
+
+## Método 5: contêiner
+
+Para uma ferramenta específica, sem instalar nada:
+
+```bash
+docker run --rm -it kalilinux/kali-rolling /bin/bash
+apt update && apt install -y kali-linux-headless
+```
+
+O contêiner sobe em segundos, é descartável por natureza e compartilha o kernel do hospedeiro — o que, como visto em @sec-cap001, significa que ele traz a distribuição mas não o kernel do Kali. Serve muito bem para rodar uma ferramenta pontual em pipeline de automação, e serve mal como ambiente de trabalho interativo. O funcionamento interno de contêineres é tema do Volume 16.
+
+## Depois de instalar: os primeiros cinco minutos
+
+Independentemente do método, quatro passos fecham a instalação:
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo apt install -y open-vm-tools-desktop     # ou virtualbox-guest-x11
+sudo dpkg-reconfigure keyboard-configuration  # teclado ABNT2
+sudo reboot
+```
+
+E, na VM, **crie o snapshot** logo depois do reboot, com nome que diga alguma coisa (`kali-limpo-atualizado`). Esse é o ponto de retorno de todos os laboratórios deste manual.
+
+## 🐉 No Kali
+
+- **Credenciais padrão da imagem live: `kali` / `kali`.** Na instalação em disco você define usuário e senha durante o processo. As imagens pré-construídas de VM também vêm com `kali`/`kali` — trocar a senha é o primeiro comando depois do primeiro login (`passwd`).
+- **Imagens pré-construídas de VM já trazem as ferramentas de convidado.** Se você baixou o pacote compactado para VirtualBox ou VMware, não precisa instalar `open-vm-tools` nem os guest additions: já estão lá. Esse é o caminho mais rápido do zero ao Kali funcionando, e o recomendado para quem só quer estudar.
+- **O instalador oferece escolher os metapacotes.** Na tela de seleção de software dá para trocar `kali-linux-default` por `kali-linux-headless` (sem interface gráfica, instalação bem menor) ou marcar conjuntos por área. Escolher ali economiza dezenas de gigabytes e minutos de download.
+- **LUKS com senha de destruição.** O instalador do Kali permite configurar uma senha adicional que, ao ser digitada, apaga os cabeçalhos de chave do volume criptografado, tornando os dados irrecuperáveis. É um recurso pensado para quem transporta material sensível — e é uma arma apontada para o próprio pé se configurada sem entender: **não existe recuperação**. O Volume 8 trata do assunto com o cuidado devido.
+- **`kali-tweaks`** ajusta pós-instalação sem editar arquivo: ramo de repositório, shell padrão, comportamento de serviços de rede e hardening básico.
+- **Modo undercover** e temas: úteis em campo, tratados em @sec-cap002.
+- **Imagens weekly** trazem pacotes mais recentes na própria mídia. Use quando a versão de lançamento estiver velha o bastante para que o primeiro `full-upgrade` baixe vários gigabytes.
+
+> **Nota sobre a família RHEL.** O processo é análogo com Fedora ou Rocky: verificar soma e assinatura (com as chaves em `/etc/pki/rpm-gpg/`), gravar a mídia, instalar com o Anaconda em vez do instalador Debian. Os hipervisores e os modos de rede são exatamente os mesmos.
+
+## 🧪 Laboratório
+
+Roteiro para montar o ambiente que será usado no resto do manual. Os passos 1 a 3 podem ser feitos de qualquer sistema; os demais, dentro da VM recém-criada.
+
+1. **Verifique a cadeia de confiança de uma imagem.** Baixe `SHA256SUMS` e `SHA256SUMS.gpg` do espelho oficial, importe a chave e rode:
+
+   ```bash
+   gpg --verify SHA256SUMS.gpg SHA256SUMS
+   ```
+
+   Esperado: `Good signature from "Kali Linux Repository ..."`. O aviso sobre a chave não estar certificada é normal. Se aparecer `BAD signature`, não prossiga: baixe tudo de novo, de preferência de outra rede.
+
+2. **Confira a soma da imagem que você baixou.**
+
+   ```bash
+   sha256sum -c SHA256SUMS --ignore-missing
+   ```
+
+   Esperado: `<arquivo>: OK`. Anote quanto tempo levou — em imagem de vários gigabytes, alguns minutos são normais, e essa é a razão pela qual tanta gente pula o passo. Pule uma vez e a instalação inteira vira ato de fé.
+
+3. **Crie a VM.** 4 GB de RAM, 2 vCPUs, 60 GB de disco dinâmico, rede em NAT. Instale a partir da imagem verificada, ou importe a imagem pré-construída. Esperado: primeiro login com o usuário criado durante a instalação.
+
+4. **Atualize e instale as ferramentas de convidado.**
+
+   ```bash
+   sudo apt update && sudo apt full-upgrade -y
+   sudo apt install -y open-vm-tools-desktop
+   sudo reboot
+   ```
+
+   Esperado: após reiniciar, a janela da VM redimensiona a resolução automaticamente e a área de transferência funciona entre hospedeiro e convidado. Se não funcionar, o pacote instalado é o do hipervisor errado.
+
+5. **Faça o snapshot `kali-limpo-atualizado`.** Esperado: um ponto de retorno registrado no hipervisor. Confirme que a restauração funciona: crie um arquivo qualquer com `touch ~/teste-snapshot`, restaure o snapshot e verifique que o arquivo sumiu. **Testar o retorno é mais importante que fazer o snapshot** — snapshot que ninguém testou é backup que ninguém testou.
+
+6. **Descubra o modo de rede em uso, por dentro.**
+
+   ```bash
+   ip -brief address
+   ip route get 1.1.1.1
+   ```
+
+   Esperado: em NAT, um endereço de faixa privada do hipervisor (frequentemente `10.0.2.x` no VirtualBox ou `192.168.x.x` no VMware) e um gateway que é o próprio hipervisor. Anote o endereço; ele muda quando você trocar o modo de rede.
+
+7. **Crie e observe uma rede isolada.** Adicione um segundo adaptador em modo host-only pelo hipervisor, reinicie a VM e rode `ip -brief address` de novo. Esperado: duas interfaces, cada uma com endereço de faixa diferente. Confirme que a interface host-only não alcança a internet — é essa propriedade que torna o laboratório seguro.
+
+8. **Ensaie a gravação de imagem sem risco.**
+
+   ```bash
+   truncate -s 100M /tmp/ensaio.img
+   sudo dd if=/dev/zero of=/tmp/ensaio.img bs=1M count=20 status=progress conv=fsync
+   ls -lh /tmp/ensaio.img
+   ```
+
+   Esperado: a barra de progresso, o relatório final de blocos copiados e o arquivo intacto em 100 M — o comando escreveu dentro dele, não o truncou. Repita a leitura da sintaxe até que `if=` (origem) e `of=` (destino) estejam decorados na ordem certa. Trocar os dois num disco real é o acidente clássico.
+
+9. **Documente o ambiente.** Anote em algum lugar fora da VM: hipervisor e versão, recursos alocados, modo de rede, nome do snapshot inicial e a data. Esperado: um registro de meia dúzia de linhas. Quando algo quebrar daqui a dois meses, é esse registro que responde "o que mudou?".
+
+## Resumo
+
+- **Verificar a imagem tem duas etapas, não uma**: conferir a soma SHA-256 prova integridade do download, e só a verificação da assinatura GPG do arquivo de somas prova procedência. Pular a segunda é confiar em quem serviu o arquivo.
+- **Máquina virtual é o padrão recomendado** — isolamento, snapshot e a possibilidade de manter ambientes separados por cliente ou por laboratório. Bare metal só quando a máquina for dedicada e o acesso direto ao hardware for necessário.
+- **O modo de rede da VM é decisão de segurança**: NAT para uso geral, bridge quando a VM precisa ser alcançável, host-only para qualquer laboratório com máquina propositalmente vulnerável.
+- **Wi-Fi em modo monitor exige adaptador USB externo repassado à VM.** O rádio interno do notebook não chega ao convidado, e nenhuma configuração dentro do Kali resolve isso.
+- **Live USB com persistência criptografada** é a ferramenta certa para forense e para trabalho em máquina de terceiros; gravar a mídia é a operação mais perigosa do capítulo e merece conferir o dispositivo duas vezes.
+- **WSL2 é excelente complemento e mau substituto**: ótimo para linha de comando e scripts, limitado para rede em baixo nível e praticamente inútil para Wi-Fi.
+- **Instalação só termina com atualização, ferramentas de convidado e snapshot testado** — e um snapshot cuja restauração nunca foi verificada não conta.
