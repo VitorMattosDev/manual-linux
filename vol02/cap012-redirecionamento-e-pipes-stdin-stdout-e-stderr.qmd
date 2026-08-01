@@ -1,3 +1,573 @@
 # Redirecionamento e pipes: stdin, stdout e stderr {#sec-cap012}
 
-*(em elaboracao)*
+Você deixa uma varredura longa rodando e guarda tudo num arquivo para analisar depois:
+
+```bash
+nmap -sV 192.168.56.0/24 > resultado.txt
+```
+
+Volta uma hora depois, abre o arquivo e encontra os resultados — mas as mensagens de erro sobre hosts inalcançáveis não estão lá. Elas apareceram na tela e sumiram junto com o buffer de rolagem. Você tenta corrigir e escreve:
+
+```bash
+nmap -sV 192.168.56.0/24 2>&1 > resultado.txt
+```
+
+Parece a linha certa. Não é. Ela continua mandando os erros para a tela, e a razão é uma ordem de operações que quase ninguém explica.
+
+Redirecionamento e pipes são o mecanismo que transforma um punhado de comandos pequenos num sistema. É o que permite pegar a saída de um, filtrar com outro, ordenar com um terceiro e gravar o resultado — tudo numa linha, sem arquivo temporário. Entender esse mecanismo é a diferença entre usar o shell e programar com ele.
+
+## Os três descritores padrão
+
+Todo processo no Linux começa com três canais de comunicação já abertos, identificados por número:
+
+| Descritor | Nome | Padrão | Para que serve |
+|-----------|------|--------|----------------|
+| `0` | `stdin` | teclado | entrada de dados |
+| `1` | `stdout` | tela | resultado do trabalho |
+| `2` | `stderr` | tela | erros e avisos |
+
+: Os três descritores de arquivo padrão {#tbl-descritores}
+
+Quem abre esses canais é o shell, antes de executar o programa, como visto em @sec-cap006. Por isso qualquer comando "já sabe" ler do teclado e escrever na tela sem nenhuma configuração.
+
+A separação entre `stdout` e `stderr` é uma decisão de projeto excelente e frequentemente ignorada. Ela permite gravar o resultado útil num arquivo enquanto os erros continuam visíveis na tela — exatamente o que aconteceu no exemplo da abertura, só que involuntariamente. @fig-descritores mostra o arranjo padrão e o efeito de um redirecionamento.
+
+::: {#fig-descritores}
+```{.tikz}
+%%| filename: descritores-padrao-e-redirecionamento
+%%| alt: Processo com os descritores 0, 1 e 2 ligados ao terminal e depois com o descritor 1 redirecionado para arquivo
+\begin{tikzpicture}[
+    proc/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,text width=2.1cm,align=center,font=\scriptsize,minimum height=1.5cm,thick},
+    disp/.style={draw=manualgray,fill=manualgray!10,rounded corners=2pt,text width=1.7cm,align=center,font=\scriptsize,minimum height=0.6cm},
+    arq/.style={disp,fill=manualgreen!14,draw=manualgreen,thick},
+    fd/.style={font=\scriptsize\ttfamily,manualgray},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    fv/.style={manualgreen,thick,-{Stealth[length=4.5pt]}},
+    tit/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  % painel 1
+  \node[tit] at (0.2,2.0) {\texttt{comando}};
+  \node[proc] (p1) at (0.2,0)     {processo};
+  \node[disp] (t1) at (-3.2,0.7)  {teclado};
+  \node[disp] (s1) at (3.5,0.7)   {tela};
+  \node[disp] (s2) at (3.5,-0.7)  {tela};
+  \draw[fl] (t1) -- node[fd,above]{0} (p1.west);
+  \draw[fl] (p1.east) -- node[fd,above]{1} (s1);
+  \draw[fl] (p1.east) -- node[fd,below]{2} (s2);
+  \node[font=\scriptsize,manualgray,align=center,text width=5.0cm] at (0.2,-2.0) {tudo na tela: resultado e erro misturados};
+
+  \draw[auxiliar] (5.4,2.3) -- (5.4,-2.6);
+
+  % painel 2
+  \node[tit] at (9.0,2.0) {\texttt{comando > saida.txt}};
+  \node[proc] (p2) at (9.0,0)     {processo};
+  \node[disp] (t2) at (6.2,0.7)   {teclado};
+  \node[arq]  (a2) at (12.3,0.7)  {saida.txt};
+  \node[disp] (s3) at (12.3,-0.7) {tela};
+  \draw[fl] (t2) -- node[fd,above]{0} (p2.west);
+  \draw[fv] (p2.east) -- node[fd,above]{1} (a2);
+  \draw[fl] (p2.east) -- node[fd,below]{2} (s3);
+  \node[font=\scriptsize,manualgray,align=center,text width=5.0cm] at (9.0,-2.0) {só o descritor 1 mudou de destino; o 2 continua na tela};
+\end{tikzpicture}
+```
+Redirecionar é apenas reapontar um descritor antes de o programa começar. O programa não sabe que isso aconteceu.
+:::
+
+O detalhe crucial: **o programa não percebe a diferença**. Ele escreve no descritor 1 do mesmo jeito, sem saber se ali está um terminal, um arquivo ou um cano. Só isso já explica por que o mesmo comando funciona interativamente e dentro de um script.
+
+## Redirecionando a saída
+
+```bash
+comando > arquivo        # stdout para o arquivo, SOBRESCREVENDO
+comando >> arquivo       # stdout para o arquivo, ACRESCENTANDO ao final
+comando 2> arquivo       # stderr para o arquivo
+comando 2>> arquivo      # stderr acrescentando
+comando > saida.txt 2> erros.txt    # cada um para o seu arquivo
+comando > tudo.txt 2>&1  # os dois para o mesmo arquivo
+comando &> tudo.txt      # o mesmo, forma abreviada do Bash e do Zsh
+comando &>> tudo.txt     # abreviada, acrescentando
+```
+
+O `>` **destrói** o conteúdo anterior do arquivo antes mesmo de o comando rodar. E ele faz isso mesmo que o comando falhe:
+
+```bash
+comando-que-nao-existe > importante.txt    # importante.txt fica VAZIO
+```
+
+O shell trunca o arquivo ao montar o redirecionamento, antes de descobrir que o comando não existe. É um jeito rápido e silencioso de perder dados.
+
+A proteção existe:
+
+```bash
+set -o noclobber
+echo teste > existente.txt      # recusa: "file exists"
+echo teste >| existente.txt     # >| forca a sobrescrita quando necessario
+set +o noclobber                # desliga
+```
+
+Vale ativar `noclobber` no `~/.zshrc` — mas, como todo alias de proteção, saiba que ele não estará em servidores nem em scripts.
+
+### A ordem de `2>&1` é o que confunde todo mundo
+
+A sintaxe `2>&1` significa literalmente: "faça o descritor 2 apontar para **onde o descritor 1 aponta neste momento**". É uma cópia do destino atual, não um vínculo permanente. E o shell processa os redirecionamentos **da esquerda para a direita**. @fig-ordem-redirecionamento mostra as duas ordens.
+
+::: {#fig-ordem-redirecionamento}
+```{.tikz}
+%%| filename: ordem-do-redirecionamento-2-para-1
+%%| alt: Comparacao passo a passo entre redirecionar para arquivo antes ou depois de duplicar o descritor de erro
+\begin{tikzpicture}[
+    cx/.style={draw=manualgray,fill=manualgray!8,rounded corners=2pt,text width=4.1cm,align=left,font=\scriptsize,minimum height=0.62cm,inner sep=4pt},
+    ok/.style={draw=manualgreen,fill=manualgreen!13,rounded corners=2pt,text width=4.1cm,align=center,font=\scriptsize,minimum height=0.75cm,inner sep=3pt},
+    ru/.style={draw=manualred,fill=manualred!13,rounded corners=2pt,text width=4.1cm,align=center,font=\scriptsize,minimum height=0.75cm,inner sep=3pt},
+    tit/.style={font=\scriptsize\ttfamily\bfseries},
+    pa/.style={manualgray,thick,-{Stealth[length=4pt]}}
+  ]
+  % --- coluna correta
+  \node[tit,manualgreen] at (0,1.5) {comando > log.txt 2>\&1};
+  \node[cx] (a1) at (0,0.5)  {\textbf{1.} \texttt{> log.txt}\\o descritor 1 passa a apontar para o arquivo};
+  \node[cx] (a2) at (0,-1.1) {\textbf{2.} \texttt{2>\&1}\\o descritor 2 copia o destino atual do 1: o arquivo};
+  \node[ok] (a3) at (0,-2.7) {resultado \textbf{e} erro no arquivo};
+  \draw[pa] (a1) -- (a2);
+  \draw[pa] (a2) -- (a3);
+
+  \draw[auxiliar] (3.0,2.0) -- (3.0,-3.5);
+
+  % --- coluna errada
+  \node[tit,manualred] at (6.0,1.5) {comando 2>\&1 > log.txt};
+  \node[cx] (b1) at (6.0,0.5)  {\textbf{1.} \texttt{2>\&1}\\o descritor 2 copia o destino atual do 1: a \textbf{tela}};
+  \node[cx] (b2) at (6.0,-1.1) {\textbf{2.} \texttt{> log.txt}\\só o descritor 1 muda para o arquivo};
+  \node[ru] (b3) at (6.0,-2.7) {resultado no arquivo, erro \textbf{na tela}};
+  \draw[pa] (b1) -- (b2);
+  \draw[pa] (b2) -- (b3);
+
+  \node[font=\scriptsize,manualgray,align=center,text width=9.4cm] at (3.0,-4.3) {\texttt{2>\&1} copia o destino \emph{daquele instante}. Não é um vínculo: mudar o 1 depois não arrasta o 2 junto.};
+\end{tikzpicture}
+```
+A mesma dupla de redirecionamentos, em duas ordens, com resultados opostos.
+:::
+
+A regra prática que resolve para sempre: **o `2>&1` vem por último**, ou use `&>`.
+
+Existe um uso legítimo da ordem "errada", e ele é elegante — mandar apenas os erros para um cano:
+
+```bash
+comando 2>&1 > /dev/null | grep "falha"
+```
+
+Aqui o `stderr` foi copiado para o cano antes de o `stdout` ser descartado, então só as mensagens de erro chegam ao `grep`.
+
+### Os arquivos de dispositivo que aparecem em todo lugar
+
+```bash
+comando > /dev/null          # descarta a saida
+comando 2> /dev/null         # descarta so os erros
+comando &> /dev/null         # descarta tudo
+```
+
+`/dev/null` aceita qualquer quantidade de dados e não guarda nada. Ler dele devolve fim de arquivo imediatamente. É o destino padrão para saída que não interessa — especialmente em tarefas do `cron`, que enviariam e-mail a cada linha impressa.
+
+A família completa vale conhecer:
+
+| Dispositivo | Comportamento |
+|-------------|---------------|
+| `/dev/null` | descarta o que escrevem; leitura devolve vazio |
+| `/dev/zero` | leitura devolve bytes zero infinitamente |
+| `/dev/urandom` | leitura devolve bytes aleatórios |
+| `/dev/full` | escrita falha com "no space left"; útil para testar tratamento de erro |
+| `/dev/stdout` | o próprio descritor 1, útil quando um programa exige nome de arquivo |
+
+: Dispositivos virtuais usados em redirecionamento {#tbl-dispositivos}
+
+```bash
+head -c 1M /dev/zero > vazio.img      # arquivo de 1 MB de zeros
+head -c 32 /dev/urandom | base64      # senha aleatoria
+```
+
+::: {.callout-warning}
+## Descartar erro esconde problema
+
+`2> /dev/null` é conveniente e perigoso quando vira hábito. Num script, ele silencia justamente a informação que explicaria a falha. Use quando você **sabe** qual erro está descartando — por exemplo, o `find` reclamando de diretórios sem permissão — e não como forma de deixar a saída bonita.
+:::
+
+## Redirecionando a entrada
+
+```bash
+comando < arquivo            # le do arquivo em vez do teclado
+sort < nomes.txt
+wc -l < /etc/passwd          # sem o nome do arquivo na saida
+```
+
+A diferença entre `wc -l arquivo` e `wc -l < arquivo` é sutil e útil: no primeiro caso o `wc` conhece o nome e o imprime junto do número; no segundo ele só vê um fluxo anônimo e imprime apenas o número. Em script, a segunda forma dispensa recortar a saída.
+
+### Here-document e here-string
+
+```bash
+cat << FIM
+primeira linha
+segunda linha com $USER expandido
+FIM
+```
+
+O here-document (`<<`) alimenta o comando com o texto até o marcador. Variáveis são expandidas por padrão; para desligar a expansão, coloque o marcador entre aspas:
+
+```bash
+cat << 'FIM'
+$USER nao sera expandido
+FIM
+```
+
+Com `<<-` as tabulações iniciais são removidas, o que permite indentar o bloco dentro de uma função sem sujar o conteúdo. O here-string (`<<<`) manda uma única linha:
+
+```bash
+grep raiz <<< "uma linha de teste com raiz dentro"
+tr 'a-z' 'A-Z' <<< "minusculas"
+base64 -d <<< "S2FsaSBMaW51eAo="
+```
+
+É o jeito limpo de alimentar um comando sem `echo` e sem cano. O tema volta com profundidade no Volume 12.
+
+## Pipes: a ideia central do Unix
+
+O cano `|` liga o `stdout` de um comando ao `stdin` do próximo:
+
+```bash
+comando_a | comando_b | comando_c
+```
+
+Os três processos rodam **ao mesmo tempo**, não em sequência. O kernel cria um buffer entre cada par, e cada processo consome conforme o anterior produz. Isso significa que um pipeline pode processar um arquivo de 100 GB usando poucos megabytes de memória — e que a saída começa a aparecer antes de a entrada terminar.
+
+```bash
+ps aux | grep ssh
+ls -l /etc | wc -l
+cat /var/log/syslog | grep erro | sort | uniq -c | sort -rn | head
+history | awk '{print $2}' | sort | uniq -c | sort -rn | head
+```
+
+O último é um clássico: mostra quais comandos você mais usa.
+
+Por padrão, o cano transporta **apenas** o `stdout`. Erros continuam indo para a tela. Para incluir também o `stderr`:
+
+```bash
+comando |& grep algo        # Bash 4+ e Zsh
+comando 2>&1 | grep algo    # forma portavel, funciona em qualquer shell
+```
+
+### O código de saída de um pipeline
+
+Este ponto causa bugs silenciosos em produção. Por padrão, o status de um pipeline é o do **último** comando:
+
+```bash
+comando-que-nao-existe | tee saida.txt
+echo $?      # 0 — porque o tee funcionou
+```
+
+O pipeline "teve sucesso" mesmo com o primeiro comando falhando. Duas soluções:
+
+```bash
+echo "${PIPESTATUS[@]}"     # bash: status de cada elemento do pipeline
+echo "${pipestatus[@]}"     # zsh: mesma coisa, nome em minusculas
+
+set -o pipefail             # o pipeline falha se QUALQUER elemento falhar
+```
+
+Em qualquer script sério, `set -o pipefail` deveria estar no topo, junto de `set -euo`. O tema completo é do Volume 12, mas o hábito começa aqui.
+
+## `tee`: gravar e continuar
+
+O `tee` duplica o fluxo: escreve no arquivo **e** repassa adiante.
+
+```bash
+comando | tee saida.txt                    # ve na tela e grava
+comando | tee -a saida.txt                 # acrescenta em vez de sobrescrever
+comando | tee saida.txt | grep erro        # grava tudo, filtra o que ve
+comando | tee a.txt b.txt c.txt            # grava em varios de uma vez
+comando 2>&1 | tee log-completo.txt        # inclui os erros no arquivo
+```
+
+O caso mais importante é o que resolve a armadilha de `sudo` com redirecionamento, vista em @sec-cap006:
+
+```bash
+sudo echo "linha" >> /etc/arquivo          # FALHA: quem redireciona e o seu shell
+echo "linha" | sudo tee -a /etc/arquivo > /dev/null   # funciona
+```
+
+O `> /dev/null` no final evita que o conteúdo apareça duplicado na tela.
+
+## Substituição de processo
+
+Alguns comandos exigem **nomes de arquivo** e não aceitam entrada por cano — o `diff`, por exemplo, precisa de dois arquivos. A substituição de processo cria arquivos temporários virtuais a partir de comandos:
+
+```bash
+diff <(ls /etc) <(ls /etc/apt)
+diff <(sort a.txt) <(sort b.txt)
+comm -13 <(sort antigo.txt) <(sort novo.txt)     # so o que e novo
+```
+
+O `<(comando)` executa o comando e entrega o caminho de um descritor — geralmente algo como `/dev/fd/63` — no lugar do texto. Dá para ver o mecanismo funcionando:
+
+```bash
+echo <(ls)
+# /dev/fd/63
+```
+
+A forma inversa, `>(comando)`, cria um destino de escrita:
+
+```bash
+ls -l | tee >(wc -l > contagem.txt) > listagem.txt
+```
+
+É um recurso do Bash e do Zsh, não do `sh` POSIX. Em script com `#!/bin/sh` no Debian, ele não funciona.
+
+## Buffering: por que a saída parece travada
+
+Um comportamento que parece bug: um comando que imprime na hora quando roda sozinho fica mudo dentro de um cano.
+
+A causa é a biblioteca C. Ela ajusta o buffer conforme o destino: quando a saída é um terminal, o buffer é por linha (aparece na hora); quando é um cano ou arquivo, é por bloco de alguns kilobytes (só aparece quando o bloco enche). É uma otimização, e ela atrapalha monitoramento ao vivo.
+
+As soluções:
+
+```bash
+tail -F /var/log/auth.log | grep --line-buffered "Failed"
+comando | stdbuf -oL grep algo
+stdbuf -o0 comando | outro          # sem buffer nenhum
+unbuffer comando | outro            # do pacote expect, funciona ate com cores
+```
+
+O `--line-buffered` do `grep` é a solução mais comum. Para programas que não têm opção equivalente, `stdbuf` resolve na maioria dos casos, e `unbuffer` — que cria um pseudoterminal, enganando a biblioteca — resolve o resto.
+
+## Descritores personalizados
+
+Além de 0, 1 e 2, um processo pode abrir outros descritores. É recurso avançado, mas o padrão vale conhecer:
+
+```bash
+exec 3> /tmp/registro.log       # abre o descritor 3 apontando para o arquivo
+echo "evento inicial" >&3       # escreve nele
+echo "outro evento"   >&3
+exec 3>&-                       # fecha
+cat /tmp/registro.log
+```
+
+A vantagem sobre `>>` repetido é que o arquivo é aberto uma única vez. Em script que registra centenas de eventos, isso importa. Volume 12 trata do assunto.
+
+## 🐉 No Kali
+
+- **Ferramentas de varredura escrevem muito em `stderr`.** `nmap`, `gobuster` e `ffuf` mandam progresso e avisos para o descritor 2 e resultado para o 1. Guardar só o `>` perde metade da informação. Use `&> saida.txt` ou `2>&1 | tee saida.txt`.
+- **A maioria tem opção própria de saída em arquivo, e ela é melhor.** `nmap -oA base` grava nos três formatos de uma vez, `gobuster -o resultado.txt`, `ffuf -o resultado.json`. Redirecionamento serve para capturar o que a ferramenta não formata; a opção nativa produz arquivo estruturado.
+- **`| tee` durante um teste autorizado é hábito profissional.** Você acompanha na tela e mantém o registro do que foi executado e quando — material de evidência e de relatório. Combine com `script` ou `ts` (do pacote `moreutils`) para carimbar a hora em cada linha.
+- **`--line-buffered` é obrigatório ao filtrar log ao vivo.** `tail -F /var/log/auth.log | grep --line-buffered "Failed password"` mostra tentativas de autenticação na hora; sem a opção, você espera minutos pelo buffer encher.
+- **Escrever em arquivo de `/etc` exige `tee`, não `sudo` com `>`.** Ajustar `/etc/apt/sources.list` ou `/etc/hosts` sempre passa por `echo ... | sudo tee -a arquivo > /dev/null`.
+- **Wordlists funcionam bem por cano.** `zcat rockyou.txt.gz | head -1000 > /tmp/curta.txt` cria uma lista reduzida para teste sem descomprimir centenas de megabytes, e sem escrever em `/usr/share`.
+- **Cuidado com `> arquivo` em evidência.** Um `>` acidental num arquivo de coleta apaga o conteúdo instantaneamente, antes de qualquer comando rodar. `set -o noclobber` no `~/.zshrc` é uma proteção barata, e `>>` deveria ser o padrão mental ao lidar com material que não pode ser perdido.
+- **Contêineres de ferramenta seguem a mesma lógica.** `docker run ... 2>&1 | tee log.txt` funciona porque o Docker repassa os descritores do processo interno. Volume 16 detalha.
+
+> **Nota sobre a família RHEL.** Redirecionamento e pipes fazem parte do POSIX [@posix2018] e são idênticos. O `&>` é extensão do Bash e do Zsh, disponível nas duas famílias, mas ausente em `dash` e em `sh` estrito — em script com `#!/bin/sh`, use `> arquivo 2>&1`.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`.
+
+1. **Separe resultado de erro.**
+
+   ```bash
+   mkdir -p /tmp/lab012 && cd /tmp/lab012
+   ls /etc /nao-existe
+   ls /etc /nao-existe > saida.txt
+   cat saida.txt
+   ls /etc /nao-existe 2> erros.txt
+   cat erros.txt
+   ls /etc /nao-existe > saida.txt 2> erros.txt
+   wc -l saida.txt erros.txt
+   ```
+
+   Esperado: no segundo comando o erro aparece na tela e não no arquivo; no terceiro acontece o inverso. Os dois canais são independentes.
+
+2. **Reproduza a armadilha da ordem.**
+
+   ```bash
+   ls /etc /nao-existe > tudo1.txt 2>&1
+   ls /etc /nao-existe 2>&1 > tudo2.txt
+   grep -c "No such" tudo1.txt
+   grep -c "No such" tudo2.txt
+   ```
+
+   Esperado: `1` no primeiro e `0` no segundo — e, na segunda linha, o erro apareceu na tela. Compare com @fig-ordem-redirecionamento.
+
+3. **Use a ordem "errada" de propósito.**
+
+   ```bash
+   ls /etc /nao-existe 2>&1 > /dev/null | cat
+   ```
+
+   Esperado: **só** a mensagem de erro. O resultado normal foi descartado. É o idioma para tratar exclusivamente os erros de um comando.
+
+4. **Veja o `>` destruir um arquivo antes da execução.**
+
+   ```bash
+   echo "conteudo importante" > importante.txt
+   cat importante.txt
+   comando-que-nao-existe > importante.txt
+   cat importante.txt
+   ls -l importante.txt
+   ```
+
+   Esperado: o arquivo fica com zero bytes mesmo com o comando falhando. O shell truncou antes de tentar executar.
+
+5. **Ative a proteção contra sobrescrita.**
+
+   ```bash
+   echo "dados" > protegido.txt
+   set -o noclobber
+   echo "novo" > protegido.txt
+   echo "novo" >| protegido.txt
+   cat protegido.txt
+   set +o noclobber
+   ```
+
+   Esperado: a terceira linha é recusada, a quarta força a escrita. Considere `set -o noclobber` no `~/.zshrc`.
+
+6. **Explore os dispositivos virtuais.**
+
+   ```bash
+   head -c 1048576 /dev/zero > vazio.img
+   ls -lh vazio.img
+   head -c 32 /dev/urandom | base64
+   head -c 20 /dev/zero | xxd
+   echo teste > /dev/full ; echo "status: $?"
+   ```
+
+   Esperado: um arquivo de 1 MB de zeros, uma cadeia aleatória, vinte bytes zerados e um erro de disco cheio no `/dev/full`. O último é a maneira correta de testar tratamento de erro de escrita.
+
+7. **Compare `wc` com e sem redirecionamento de entrada.**
+
+   ```bash
+   wc -l /etc/passwd
+   wc -l < /etc/passwd
+   ```
+
+   Esperado: com o nome do arquivo na primeira, só o número na segunda. Em script, a segunda forma dispensa recortar a saída.
+
+8. **Use here-document e here-string.**
+
+   ```bash
+   cat << FIM > mensagem.txt
+   usuario atual: $USER
+   diretorio: $PWD
+   FIM
+   cat mensagem.txt
+
+   cat << 'FIM'
+   $USER fica literal aqui
+   FIM
+
+   tr 'a-z' 'A-Z' <<< "converta esta linha"
+   base64 -d <<< "S2FsaSBMaW51eAo="
+   ```
+
+   Esperado: variáveis expandidas no primeiro caso, literais no segundo com o marcador entre aspas, e as duas últimas linhas processando uma cadeia sem arquivo nem `echo`.
+
+9. **Monte um pipeline de contagem.**
+
+   ```bash
+   ls -l /etc | wc -l
+   cat /etc/passwd | cut -d: -f7 | sort | uniq -c | sort -rn
+   ```
+
+   Esperado: a contagem de entradas em `/etc` e o ranking dos shells cadastrados no sistema. Cinco processos rodando simultaneamente, cada um consumindo o que o anterior produz.
+
+10. **Descubra o código de saída de um pipeline.**
+
+    ```bash
+    comando-inexistente | tee lixo.txt
+    echo "status do pipeline: $?"
+    echo "status de cada etapa: ${pipestatus[@]:-${PIPESTATUS[@]}}"
+
+    set -o pipefail
+    comando-inexistente | tee lixo.txt
+    echo "com pipefail: $?"
+    set +o pipefail
+    ```
+
+    Esperado: `0` sem `pipefail`, não-zero com ele. Esse detalhe já mascarou falha de backup em produção por meses.
+
+11. **Grave e veja ao mesmo tempo com `tee`.**
+
+    ```bash
+    ls -l /etc | tee listagem.txt | wc -l
+    wc -l listagem.txt
+    ls -l /usr | tee -a listagem.txt > /dev/null
+    wc -l listagem.txt
+    ```
+
+    Esperado: a listagem completa vai ao arquivo enquanto só a contagem aparece na tela; o `-a` acrescenta sem apagar.
+
+12. **Resolva o `sudo` com redirecionamento.**
+
+    ```bash
+    sudo echo "# comentario de teste" >> /etc/hosts 2>/dev/null; echo "status: $?"
+    echo "# comentario de teste" | sudo tee -a /etc/hosts > /dev/null
+    tail -2 /etc/hosts
+    sudo sed -i '$ d' /etc/hosts       # remove a ultima linha, desfazendo o teste
+    tail -2 /etc/hosts
+    ```
+
+    Esperado: a primeira forma pode até funcionar aqui (o seu usuário talvez consiga escrever), mas num arquivo realmente protegido ela falha; a segunda sempre funciona. A última linha desfaz o teste.
+
+13. **Compare arquivos sem criar arquivos.**
+
+    ```bash
+    diff <(ls /etc) <(ls /etc/apt) | head
+    echo <(ls)
+    comm -13 <(printf 'a\nb\nc\n') <(printf 'b\nc\nd\n')
+    ```
+
+    Esperado: o `diff` funciona sobre saídas de comando, o `echo` revela um caminho como `/dev/fd/63`, e o `comm` mostra que apenas `d` é exclusivo do segundo conjunto.
+
+14. **Observe o buffering na prática.**
+
+    Numa segunda aba:
+
+    ```bash
+    tail -F /tmp/lab012/fluxo.log | grep ALERTA
+    ```
+
+    Na primeira:
+
+    ```bash
+    for i in $(seq 1 5); do echo "ALERTA evento $i" >> /tmp/lab012/fluxo.log; sleep 1; done
+    ```
+
+    Esperado: **nada** aparece durante a execução. Encerre com `Ctrl+C`, repita usando `grep --line-buffered ALERTA` e veja as linhas surgirem na hora.
+
+15. **Use um descritor personalizado.**
+
+    ```bash
+    cd /tmp/lab012
+    exec 3> registro.log
+    echo "inicio em $(date +%T)" >&3
+    echo "esta linha vai para a tela"
+    echo "fim em $(date +%T)" >&3
+    exec 3>&-
+    cat registro.log
+    ```
+
+    Esperado: apenas as duas linhas marcadas com `>&3` no arquivo; a outra ficou na tela. O arquivo foi aberto uma única vez.
+
+16. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -la /tmp/lab012
+    rm -rf /tmp/lab012
+    ```
+
+## Resumo
+
+- **Todo processo nasce com três descritores**: `0` para entrada, `1` para resultado e `2` para erro. Redirecionar é apenas reapontar um deles antes de o programa começar — e o programa não percebe.
+- **`>` sobrescreve e `>>` acrescenta**, e a truncagem acontece **antes** da execução: um comando inexistente já esvaziou o arquivo. `set -o noclobber` protege, com `>|` para forçar quando preciso.
+- **`2>&1` copia o destino atual do descritor 1**, e o shell lê os redirecionamentos da esquerda para a direita. Por isso ele vem por último — ou use `&>`.
+- **`/dev/null` descarta; `/dev/zero`, `/dev/urandom` e `/dev/full` geram dados e falhas sob demanda.** Descartar erro com `2> /dev/null` só é aceitável quando você sabe qual erro está silenciando.
+- **O cano liga `stdout` a `stdin` e roda todos os processos ao mesmo tempo**, o que permite processar arquivos maiores que a memória. Ele não transporta o `stderr` — para isso, `|&` ou `2>&1 |`.
+- **O status de um pipeline é o do último comando**, o que esconde falhas. `set -o pipefail` corrige, e `PIPESTATUS` mostra cada etapa.
+- **`tee` grava e repassa**, e é a resposta correta para escrever em arquivo protegido: `echo ... | sudo tee -a arquivo`.
+- **`<(comando)` transforma saída em nome de arquivo**, permitindo `diff` e `comm` sobre resultados de comandos, sem arquivo temporário.
+- **Buffering por bloco é o motivo de um filtro ao vivo parecer travado.** `grep --line-buffered`, `stdbuf` ou `unbuffer` restauram a saída imediata.

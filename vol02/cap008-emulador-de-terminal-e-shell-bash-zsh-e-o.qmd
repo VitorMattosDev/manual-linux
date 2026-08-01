@@ -1,3 +1,377 @@
 # Emulador de terminal e shell: bash, zsh e o padrão do Kali {#sec-cap008}
 
-*(em elaboracao)*
+Você passou uma tarde configurando o terminal do seu Kali: prompt colorido mostrando o diretório e o ramo do Git, autocompletar que adivinha o comando enquanto você digita, `Ctrl+seta` andando de palavra em palavra. Aí você abre uma sessão SSH num servidor e tudo desaparece. O prompt vira um `$` seco, `Ctrl+seta` imprime `;5C` na tela, e o autocompletar some. Nada quebrou: você simplesmente descobriu que o que você configurou não era o terminal — era o shell — e que os dois são programas diferentes, rodando em máquinas diferentes, com responsabilidades diferentes.
+
+Essa confusão entre "terminal" e "shell" é a mais comum de todas, e ela não é culpa de quem está aprendendo. As duas coisas aparecem na mesma janela, respondem ao mesmo teclado e imprimem no mesmo lugar. A diferença só fica visível quando algo se comporta de forma inesperada — e aí, sem o modelo mental certo, não há como saber onde procurar.
+
+Este capítulo separa as camadas. Ao final dele você vai saber exatamente qual programa desenha os caracteres na tela, qual interpreta o que você digitou, qual guarda o histórico, qual define as cores, e por que a resposta muda quando você entra num servidor remoto ou dentro de um contêiner.
+
+## A pilha: da tecla ao programa
+
+Entre a tecla que você aperta e o programa que executa existem pelo menos quatro camadas independentes. @fig-pilha-terminal mostra o caminho completo.
+
+::: {#fig-pilha-terminal}
+```{.tikz}
+%%| filename: pilha-terminal-shell
+%%| alt: Camadas entre o teclado e o programa: emulador de terminal, pseudoterminal do kernel, shell e processo filho
+\begin{tikzpicture}[
+    cam/.style={draw=manualgray,rounded corners=3pt,text width=4.4cm,minimum height=1.05cm,align=center,font=\scriptsize,inner sep=4pt},
+    user/.style={cam,fill=manualyellow!20,draw=manualyellow},
+    app/.style={cam,fill=manualblue!12,draw=manualblue,thick},
+    kern/.style={cam,fill=manualred!12,draw=manualred,thick},
+    sh/.style={cam,fill=manualgreen!14,draw=manualgreen,thick},
+    desce/.style={manualgray,thick,-{Stealth[length=5pt]}},
+    sobe/.style={manualblue,thick,-{Stealth[length=5pt]},dashed}
+  ]
+  \node[user] (kb) at (0,0)     {\textbf{Teclado e tela}\\hardware ou janela gráfica};
+  \node[app]  (em) at (0,-1.8)  {\textbf{Emulador de terminal}\\qterminal, xterm, tmux, PuTTY\\desenha glifos, traduz teclas};
+  \node[kern] (pt) at (0,-3.6)  {\textbf{Pseudoterminal (PTY)}\\driver do kernel: \texttt{/dev/pts/N}\\modo canônico, eco, sinais};
+  \node[sh]   (sh) at (0,-5.4)  {\textbf{Shell}\\zsh, bash, dash\\lê linhas, expande, executa};
+  \node[app]  (pr) at (0,-7.2)  {\textbf{Programa}\\\texttt{ls}, \texttt{nmap}, \texttt{vim}\\herda os três descritores};
+
+  \foreach \de/\pa in {kb/em,em/pt,pt/sh,sh/pr} { \draw[desce] (\de) -- (\pa); }
+
+  \draw[sobe] (pr.east) -- ++(1.3,0) -- ++(0,6.9) -- (kb.east);
+  \node[font=\scriptsize,manualblue,align=center,rotate=90] at (4.0,-3.6) {saída: bytes sobem};
+  \node[font=\scriptsize,manualgray,align=center,rotate=90] at (-2.9,-3.6) {entrada: bytes descem};
+
+  \node[font=\scriptsize,manualred,align=left,text width=3.4cm] at (-5.2,-3.6) {O kernel entra aqui, e é por isso que \texttt{Ctrl+C} funciona mesmo com o programa travado.};
+\end{tikzpicture}
+```
+Quatro camadas independentes. Cada problema de terminal pertence a exatamente uma delas.
+:::
+
+Ler essa pilha de cima para baixo já resolve metade das dúvidas:
+
+**O emulador de terminal** é um programa gráfico comum, como um navegador ou um editor. Ele abre uma janela, desenha caracteres com uma fonte, mantém o buffer de rolagem, trata a seleção com o mouse, interpreta sequências de escape para colorir texto e traduz teclas em bytes. Ele **não** sabe o que é um comando, não tem histórico de comandos e não conhece `ls`.
+
+**O pseudoterminal (PTY)** é uma peça do kernel. Ele expõe duas pontas: o *master*, que o emulador segura, e o *slave*, que aparece como um arquivo de dispositivo (`/dev/pts/0`, `/dev/pts/1`). É o PTY que faz o eco das teclas digitadas, que junta os caracteres numa linha até você apertar Enter, e que converte `Ctrl+C` no sinal `SIGINT` enviado ao processo em primeiro plano. Quando um programa trava e `Ctrl+C` ainda funciona, é porque quem está agindo é o kernel, não o programa.
+
+**O shell** é o programa que roda ligado à ponta slave. Ele imprime o prompt, lê a linha, faz as expansões, resolve o nome do comando e cria o processo — exatamente o ciclo de @sec-cap006. Prompt, histórico, aliases, autocompletar e atalhos de edição de linha são todos dele.
+
+**O programa** herda três descritores de arquivo já abertos e apontando para o PTY: entrada padrão, saída padrão e saída de erro. É por isso que qualquer comando "sabe" imprimir na sua tela sem nenhuma configuração — o shell entregou os canais prontos.
+
+Voltando ao problema da abertura: no SSH, o emulador de terminal continua sendo o seu, na sua máquina. O que mudou foi o shell, que agora roda no servidor remoto e não tem a sua configuração. Por isso o prompt sumiu.
+
+## O emulador de terminal
+
+O nome "emulador" é literal e histórico. Nos anos 1970, um terminal era hardware: um teclado, uma tela e um cabo serial ligado ao computador central. O modelo dominante foi o **DEC VT100**, e a linguagem de controle dele — sequências de escape que começam com o byte `ESC` — virou o padrão de fato que todos os terminais de software imitam até hoje [@kernighan1984unix]. Quando você escreve `\033[31m` para pintar um texto de vermelho, está falando VT100 com uma janela que finge ser um aparelho de 1978.
+
+Emuladores comuns no mundo Linux:
+
+| Emulador | Característica |
+|----------|----------------|
+| `qterminal` | Padrão do Kali com Xfce, leve, baseado em Qt |
+| `gnome-terminal` | Padrão do GNOME, integrado ao ambiente |
+| `xterm` | O clássico, mínimo, presente em praticamente tudo |
+| `alacritty`, `kitty` | Renderização via GPU, rápidos para muita saída |
+| `tmux`, `screen` | Multiplexadores: terminais *dentro* de um terminal |
+| `PuTTY`, Windows Terminal | Clientes usados a partir do Windows |
+
+: Emuladores de terminal comuns {#tbl-emuladores}
+
+A escolha do emulador afeta velocidade de rolagem, suporte a ligaduras de fonte, transparência e atalhos de abas — e nada mais. Nenhum deles muda a sintaxe de um comando.
+
+### A variável `TERM` e o banco de dados terminfo
+
+Cada emulador anuncia suas capacidades através da variável de ambiente `TERM`:
+
+```bash
+echo "$TERM"
+infocmp | head -20
+```
+
+Num Kali com qterminal, `TERM` normalmente vale `xterm-256color`. Esse nome é a chave de busca num banco de dados chamado **terminfo**, que descreve o que aquele terminal sabe fazer: quantas cores suporta, qual sequência limpa a tela, qual move o cursor para a linha 5 coluna 12. Programas de tela cheia como `vim`, `htop`, `less` e `nano` consultam esse banco em vez de gravar sequências VT100 no código.
+
+Quando `TERM` está errado, o sintoma é característico: lixo na tela, cores ausentes ou a reclamação direta.
+
+```bash
+TERM=desconhecido htop      # "Error opening terminal"
+```
+
+Isso aparece na prática ao entrar por SSH numa máquina antiga que não conhece `xterm-256color`, ou dentro de contêineres minimalistas onde o pacote `ncurses-base` não foi instalado. A saída de emergência é declarar um terminal conservador que todo mundo conhece:
+
+```bash
+export TERM=xterm
+```
+
+### TTY e PTY
+
+O comando `tty` mostra a qual dispositivo o seu shell está ligado:
+
+```bash
+tty
+# /dev/pts/0
+```
+
+`pts` significa *pseudo-terminal slave*. Um número diferente para cada janela ou aba aberta. Isso permite mandar texto direto para outra janela, se você tiver permissão:
+
+```bash
+echo "mensagem de outra aba" > /dev/pts/1
+```
+
+Existem também os terminais **virtuais** de texto, acessíveis com `Ctrl+Alt+F1` até `F6` numa instalação com interface gráfica. Esses aparecem como `/dev/tty1`, `/dev/tty2` — sem o `pts` — porque não são emulados por um programa gráfico: são fornecidos diretamente pelo kernel. Eles salvam o dia quando o ambiente gráfico congela, e é bom saber que existem antes de precisar.
+
+A distinção também explica um comportamento que confunde em scripts. Um programa pode perguntar ao sistema se sua saída é um terminal ou um arquivo, e mudar de comportamento conforme a resposta:
+
+```bash
+ls --color=auto            # colorido na tela
+ls --color=auto | cat      # sem cor: a saida nao e um terminal
+```
+
+Não é bug. O `ls` detecta que a saída virou um cano e desliga as cores, porque códigos de escape num arquivo de texto seriam lixo. Vale lembrar disso ao processar saídas com `grep` — assunto de @sec-cap012.
+
+## O shell
+
+O shell é um programa comum que lê linhas e executa outros programas. Os principais no mundo Linux:
+
+**`sh`** — o shell POSIX. No Debian e no Kali, `/bin/sh` é um link para o **dash**, um shell minimalista e rápido, escolhido justamente por acelerar os milhares de scripts executados durante o boot [@debianpolicy]. Ele **não** tem arrays, `[[ ]]`, `local` completo nem substituição de processo. Um script com `#!/bin/sh` que usa sintaxe do Bash falha aqui — e é a causa clássica de "funciona no meu terminal, quebra no cron".
+
+**`bash`** — *Bourne Again Shell*, o padrão da maioria das distribuições e o assunto de toda a Fase 3 deste manual. É o alvo natural para scripts, por estar em praticamente todo sistema Linux [@gnu2024bash].
+
+**`zsh`** — o padrão do Kali desde a versão 2020.4. Amplamente compatível com o Bash na sintaxe do dia a dia, mas com autocompletar muito superior, correção de erros de digitação, globbing recursivo nativo e um sistema de temas que produz o prompt colorido característico do Kali.
+
+**`fish`** — sintaxe amigável e recursos interativos excelentes, mas **incompatível** com POSIX. Ótimo para uso interativo, péssimo para colar comandos de tutoriais.
+
+Descobrir o que está rodando agora:
+
+```bash
+echo "$SHELL"          # o shell cadastrado para o seu usuario
+ps -p $$ -o comm=      # o shell realmente em execucao
+$SHELL --version
+cat /etc/shells        # os shells instalados e permitidos
+```
+
+Os dois primeiros divergem com frequência: `$SHELL` vem do `/etc/passwd` e não muda quando você digita `bash` dentro de um Zsh.
+
+### Zsh e Bash: o que muda de verdade
+
+Para quem está começando, a diferença prática é pequena, e isso é uma boa notícia. Praticamente tudo neste volume — navegação, redirecionamento, curingas, histórico — funciona igual nos dois. As divergências que aparecem cedo:
+
+| Situação | Bash | Zsh |
+|----------|------|-----|
+| Índice inicial de array | `0` | `1` |
+| Curinga sem correspondência | fica literal | erro `no matches found` |
+| Cache de comandos | `hash -r` | `rehash` |
+| Config interativa | `~/.bashrc` | `~/.zshrc` |
+| `$0` no prompt interativo | `bash` | `zsh` |
+
+: Divergências que aparecem cedo entre Bash e Zsh {#tbl-bash-zsh}
+
+A segunda linha da tabela merece atenção. No Bash, `ls *.xyz` sem nenhum arquivo correspondente passa o texto `*.xyz` literalmente para o `ls`, que reclama de arquivo inexistente. No Zsh, o próprio shell aborta antes com `zsh: no matches found`. O comportamento do Zsh é mais correto e mais seguro, mas surpreende quem vem de tutoriais escritos para Bash. O tema volta em @sec-cap013.
+
+A regra de convivência é simples: **use o Zsh interativamente e escreva scripts para Bash**, com `#!/usr/bin/env bash` na primeira linha. Um script não herda nada do seu shell interativo — nem aliases, nem funções, nem configuração — então a escolha do shell de uso diário não afeta os scripts.
+
+## Arquivos de inicialização
+
+O motivo mais comum de "coloquei o alias no arquivo e ele não funciona" é escolher o arquivo errado. E a escolha depende de duas perguntas que o shell faz a si mesmo ao iniciar. @fig-init-shell mostra a decisão.
+
+::: {#fig-init-shell}
+```{.tikz}
+%%| filename: arquivos-de-inicializacao-do-shell
+%%| alt: Arvore de decisao entre shell de login, interativo e nao interativo e os arquivos lidos em cada caso
+\begin{tikzpicture}[
+    cx/.style={draw=manualyellow,fill=manualyellow!16,rounded corners=3pt,text width=3.2cm,align=center,font=\scriptsize,minimum height=0.9cm,inner sep=3pt},
+    arq/.style={draw=manualblue,fill=manualblue!10,rounded corners=2pt,text width=3.6cm,align=center,font=\scriptsize\ttfamily,minimum height=0.75cm,inner sep=3pt},
+    nada/.style={draw=manualgray,fill=manualgray!10,rounded corners=2pt,text width=3.6cm,align=center,font=\scriptsize,minimum height=0.75cm,inner sep=3pt},
+    ex/.style={font=\scriptsize,manualgray,align=center,text width=3.2cm},
+    ramo/.style={manualgray,thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[cx] (q1) at (0,0) {O shell é de \textbf{login}?\\(SSH, \texttt{tty}, \texttt{su -})};
+
+  \node[arq] (login) at (-4.2,-2.0) {/etc/profile\\$\sim$/.profile\\$\sim$/.zprofile};
+  \node[cx]  (q2)    at (3.2,-2.0)  {É \textbf{interativo}?\\(tem prompt e teclado)};
+
+  \node[arq] (inter) at (0.6,-4.2)  {$\sim$/.bashrc\\$\sim$/.zshrc};
+  \node[nada](nao)   at (6.2,-4.2)  {\textbf{nada é lido}\\(exceto \texttt{BASH\_ENV})};
+
+  \draw[ramo] (q1.west) -- node[above,font=\scriptsize,manualgreen]{sim} (login.east);
+  \draw[ramo] (q1.east) -- node[above,font=\scriptsize,manualred]{não} (q2.west);
+  \draw[ramo] (q2.south west) -- node[left,font=\scriptsize,manualgreen,pos=0.6]{sim} (inter.north east);
+  \draw[ramo] (q2.south east) -- node[right,font=\scriptsize,manualred,pos=0.6]{não} (nao.north west);
+
+  \draw[auxiliar,-{Stealth[length=4pt]}] (login.south) -- ++(0,-1.4) -| (inter.west);
+  \node[ex] at (-4.2,-4.2) {no Debian, o profile costuma chamar o rc};
+
+  \node[ex,text width=5cm,manualblue] at (0,1.6) {\textbf{Alias e prompt vão no arquivo interativo.}\\Variável de ambiente vai no de login.};
+\end{tikzpicture}
+```
+Duas perguntas, três destinos. Errar o arquivo é o motivo número um de configuração que "não pega".
+:::
+
+Um **shell de login** é o que inicia uma sessão: entrar por SSH, logar num terminal virtual de texto, ou usar `su -`. Um **shell interativo** é o que tem prompt e lê do teclado. Uma janela nova do qterminal normalmente abre um shell interativo que **não** é de login — e é exatamente por isso que a configuração vai no `~/.zshrc`, não no `~/.zprofile`.
+
+A divisão de trabalho recomendada:
+
+- `~/.zprofile` / `~/.bash_profile` / `~/.profile` — variáveis de ambiente (`PATH`, `EDITOR`, `LANG`). São herdadas por todos os processos filhos, então basta definir uma vez por sessão.
+- `~/.zshrc` / `~/.bashrc` — tudo que só faz sentido com um humano na frente: aliases, funções, prompt, opções de histórico, autocompletar.
+
+Um teste rápido para saber em que situação você está:
+
+```bash
+# 1 se for shell de login
+shopt -q login_shell && echo "login" || echo "nao-login"    # bash
+[[ -o login ]] && echo "login" || echo "nao-login"          # zsh
+
+# interativo?
+[[ $- == *i* ]] && echo "interativo" || echo "nao-interativo"
+```
+
+Depois de editar um desses arquivos, não é preciso fechar o terminal:
+
+```bash
+source ~/.zshrc      # ou: . ~/.zshrc
+```
+
+O `source` executa o arquivo **no shell atual**, e não num filho. Rodar `./~/.zshrc` criaria um novo processo, aplicaria as mudanças nele e o descartaria — inútil. A distinção volta com força no Volume 9.
+
+### Trocando o shell padrão
+
+```bash
+chsh -s /usr/bin/bash        # muda o shell de login do seu usuario
+```
+
+A mudança altera o campo correspondente em `/etc/passwd` e só tem efeito na **próxima** sessão. O shell precisa estar listado em `/etc/shells`. Para experimentar sem compromisso, basta invocar o outro shell dentro do atual e sair com `exit`:
+
+```bash
+bash          # entra no bash como processo filho
+exit          # volta ao zsh
+```
+
+## 🐉 No Kali
+
+- **Zsh é o padrão desde o Kali 2020.4.** A mudança veio junto com um tema próprio, que mostra usuário, host, diretório e indicadores de estado no prompt, com cor diferente quando você é root — um lembrete visual deliberado de que você está com privilégios totais.
+- **`kali-tweaks` troca o visual do prompt.** Na aba correspondente, é possível alternar entre o prompt de duas linhas, o de uma linha e o modelo enxuto, sem editar o `~/.zshrc` à mão.
+- **O emulador padrão do Kali com Xfce é o `qterminal`.** Vale conhecer os atalhos de aba: `Ctrl+Shift+T` para nova aba, `Ctrl+Shift+W` para fechar, `Ctrl+Shift+C` e `Ctrl+Shift+V` para copiar e colar. O `Shift` é obrigatório porque `Ctrl+C` já tem dono: é o sinal de interrupção.
+- **`Ctrl+Shift+V` cola, e isso é um risco real.** Colar comando de artigo direto no terminal é o vetor de ataque mais barato que existe: uma página pode esconder texto adicional no que você acha que selecionou. Cole num editor antes, ou digite.
+- **`~/.zshrc` no Kali já vem povoado.** Ele define aliases coloridos, opções de histórico e o tema. Ao personalizar, acrescente ao final em vez de reescrever o arquivo — assim uma atualização de pacote não apaga o seu trabalho e você não perde os defaults da distribuição.
+- **O usuário padrão é `kali`, não `root`.** Um shell de root aberto com `sudo -i` é de login e lê os arquivos de `/root`, não os seus. Se um alias seu "sumiu" depois de virar root, é isso: outro usuário, outro `~`, outra configuração.
+- **No WSL não existe interface gráfica por padrão.** O emulador é o Windows Terminal, o `TERM` costuma vir como `xterm-256color`, e não há `/dev/tty1` para socorro. É um ambiente ótimo para aprender comandos, mas ele não substitui a VM quando o assunto envolve rede, kernel ou drivers.
+- **`tmux` vem instalado.** Ele resolve o problema real de perder o trabalho quando a conexão SSH cai: a sessão continua no servidor e você reconecta com `tmux attach`. O uso completo é tema do Volume 5.
+
+> **Nota sobre a família RHEL.** Fedora e RHEL usam Bash como padrão e `~/.bash_profile` como arquivo de login. O `/bin/sh` nessas distribuições é um link para o próprio Bash, e não para o dash — o que faz scripts com `#!/bin/sh` aceitarem sintaxe do Bash lá e falharem no Debian e no Kali. É uma das diferenças que mais geram falsos "funciona aqui".
+
+## 🧪 Laboratório
+
+Roteiro na VM do Kali. Nenhum passo altera configuração permanente sem que você seja avisado.
+
+1. **Identifique cada camada da pilha.**
+
+   ```bash
+   tty
+   echo "$TERM"
+   ps -p $$ -o pid,ppid,comm
+   ps -p $PPID -o comm=
+   ```
+
+   Esperado: um dispositivo `/dev/pts/N`, o tipo de terminal, o PID e o nome do seu shell, e o nome do emulador que o criou. Você acabou de ver três camadas de @fig-pilha-terminal identificadas por nome.
+
+2. **Prove que o emulador não é o shell.**
+
+   ```bash
+   zsh --version
+   bash --version | head -1
+   bash                  # entra num bash filho
+   echo "$0"
+   ps -p $$ -o comm=
+   exit                  # volta ao zsh
+   echo "$0"
+   ```
+
+   Esperado: a mesma janela, o mesmo `/dev/pts`, dois shells diferentes. A janela nunca mudou — só o programa ligado a ela.
+
+3. **Converse com outra aba pelo dispositivo.**
+
+   Abra uma segunda aba com `Ctrl+Shift+T`, rode `tty` nela e anote o caminho. Volte à primeira aba:
+
+   ```bash
+   echo "mensagem vinda da outra aba" > /dev/pts/1     # ajuste o numero
+   ```
+
+   Esperado: o texto aparece na outra aba. Isso demonstra que o terminal é, literalmente, um arquivo de dispositivo em que se pode escrever.
+
+4. **Veja o `TERM` em ação e quebre-o de propósito.**
+
+   ```bash
+   tput colors
+   infocmp | head -5
+   TERM=vt100 tput colors
+   TERM=inexistente htop
+   ```
+
+   Esperado: `256` na primeira linha, `8` com `vt100`, e um erro de abertura de terminal na última. Repare que a variável foi definida **só para aquele comando** — o seu shell continua intacto.
+
+5. **Observe um programa detectando que a saída não é um terminal.**
+
+   ```bash
+   ls --color=always /etc | head -3
+   ls --color=auto /etc | cat | head -3
+   ls /etc | cat | head -3
+   ```
+
+   Esperado: cores na primeira, sem cores nas outras. Guarde este comportamento: ele explica por que uma saída colorida na tela chega "limpa" quando você a joga num arquivo.
+
+6. **Descubra o tipo do seu shell atual.**
+
+   ```bash
+   [[ -o login ]] && echo "login" || echo "nao-login"
+   [[ $- == *i* ]] && echo "interativo" || echo "nao-interativo"
+   ```
+
+   Esperado numa aba comum do qterminal: `nao-login` e `interativo`. Compare com o resultado de `sudo -i` (que abre um shell de login) e de `zsh -c '[[ -o login ]] && echo login || echo nao-login'` (que não é nem login nem interativo).
+
+7. **Confirme qual arquivo de inicialização foi lido.**
+
+   ```bash
+   echo 'echo "=> passei pelo .zshrc"' >> ~/.zshrc
+   echo 'echo "=> passei pelo .zprofile"' >> ~/.zprofile
+   zsh -i -c exit          # shell interativo, nao login
+   zsh -l -i -c exit       # shell de login e interativo
+   ```
+
+   Esperado: o primeiro imprime só a mensagem do `.zshrc`; o segundo imprime as duas. Desfaça em seguida removendo as duas últimas linhas dos arquivos com o editor de sua preferência (`nano ~/.zshrc`).
+
+8. **Crie um alias e entenda por que ele some.**
+
+   ```bash
+   alias lixo='ls -la /tmp'
+   lixo
+   zsh -c lixo
+   ```
+
+   Esperado: funciona no seu shell, falha no shell filho não interativo. Aliases pertencem à sessão interativa e **não** são herdados. É por isso que scripts nunca podem depender deles.
+
+9. **Compare Bash e Zsh no curinga sem correspondência.**
+
+   ```bash
+   cd /tmp
+   ls *.formato-que-nao-existe
+   bash -c 'ls *.formato-que-nao-existe'
+   ```
+
+   Esperado: `zsh: no matches found` no primeiro, e um erro do próprio `ls` no segundo. Duas filosofias — o Zsh protege, o Bash entrega literal.
+
+10. **Recarregue a configuração sem fechar o terminal.**
+
+    ```bash
+    echo "alias oi='echo ola do zshrc'" >> ~/.zshrc
+    oi                    # ainda nao existe
+    source ~/.zshrc
+    oi                    # agora existe
+    ```
+
+    Esperado: falha, depois sucesso. Remova a linha do `~/.zshrc` ao terminar. A lição é que `source` executa no shell atual — executar o arquivo criaria um filho e jogaria o resultado fora.
+
+11. **Veja o terminal virtual de texto.** *(pule este passo no WSL)*
+
+    Pressione `Ctrl+Alt+F3`. Faça login em modo texto, rode `tty` — deve mostrar `/dev/tty3`, sem `pts`. Volte à interface gráfica com `Ctrl+Alt+F1` ou `Ctrl+Alt+F7`, conforme a instalação. Esse é o caminho de recuperação quando o ambiente gráfico congela.
+
+## Resumo
+
+- **Terminal e shell são programas diferentes.** O emulador desenha caracteres e traduz teclas; o shell interpreta comandos. Prompt, histórico e aliases pertencem ao shell — por isso desaparecem ao entrar num servidor remoto, onde o shell é outro.
+- **Entre os dois há um pseudoterminal do kernel**, visível como `/dev/pts/N`. É ele que faz o eco das teclas, monta a linha até o Enter e transforma `Ctrl+C` em `SIGINT` — motivo pelo qual a interrupção funciona mesmo com o programa travado.
+- **A variável `TERM` descreve as capacidades do terminal** e é a chave do banco terminfo. Quando ela está errada, programas de tela cheia falham ou enchem a tela de lixo; `export TERM=xterm` é a saída de emergência.
+- **O Kali usa Zsh por padrão desde 2020.4**, com Bash disponível. As diferenças do dia a dia são poucas — índice de array, curinga sem correspondência e o nome do arquivo de configuração.
+- **Use Zsh interativamente e escreva scripts para Bash.** Scripts não herdam aliases, funções nem configuração do shell interativo, então as duas escolhas são independentes.
+- **A configuração vai no arquivo certo conforme o tipo de shell**: variável de ambiente no arquivo de login (`~/.zprofile`), alias e prompt no arquivo interativo (`~/.zshrc`). Errar isso é a causa número um de configuração que não faz efeito.
+- **`source arquivo` aplica mudanças no shell atual.** Executar o arquivo cria um processo filho, aplica lá e descarta — o que parece não fazer nada.

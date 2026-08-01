@@ -1,3 +1,508 @@
 # Visualizando conteúdo: cat, less, head, tail e more {#sec-cap011}
 
-*(em elaboracao)*
+Duas cenas que todo mundo vive uma vez:
+
+```bash
+cat /var/log/syslog
+```
+
+O terminal cospe centenas de milhares de linhas em alta velocidade. Você aperta `Ctrl+C`, mas já perdeu o buffer de rolagem inteiro, e o que interessava — as três linhas do erro que você procurava — passou voando.
+
+```bash
+cat /usr/bin/nmap
+```
+
+Agora a tela vira lixo, o cursor some, letras viram símbolos e o prompt não volta ao normal nem depois de `clear`. Você fecha a janela achando que travou algo.
+
+Nenhum dos dois é acidente: os dois são o `cat` fazendo exatamente o que ele foi projetado para fazer, que **não** é exibir arquivos. Este capítulo separa a ferramenta certa para cada situação — arquivo pequeno, arquivo enorme, arquivo binário, arquivo comprimido, arquivo que ainda está crescendo — e mostra por que o `less` merece o investimento de aprender dez teclas.
+
+## Escolher a ferramenta antes de abrir o arquivo
+
+O primeiro reflexo, antes de qualquer visualizador, é descobrir com o que você está lidando:
+
+```bash
+file /var/log/syslog          # ASCII text
+file /usr/bin/nmap            # ELF 64-bit LSB pie executable
+file /usr/share/wordlists/rockyou.txt.gz   # gzip compressed data
+ls -lh /var/log/syslog        # tamanho
+wc -l /var/log/syslog         # quantas linhas
+```
+
+O `file` não confia na extensão: ele lê os primeiros bytes e compara com um banco de assinaturas. Um arquivo chamado `relatorio.txt` que na verdade é um PDF é identificado corretamente, e um binário sem extensão nenhuma também.
+
+@fig-escolha-visualizador resume a decisão.
+
+::: {#fig-escolha-visualizador}
+```{.tikz}
+%%| filename: escolha-do-visualizador-de-arquivo
+%%| alt: Arvore de decisao entre cat, less, head, tail, strings, xxd e zless conforme tipo e tamanho do arquivo
+\begin{tikzpicture}[
+    cx/.style={draw=manualyellow,fill=manualyellow!16,rounded corners=3pt,text width=3.0cm,align=center,font=\scriptsize,minimum height=0.85cm,inner sep=3pt},
+    fer/.style={draw=manualblue,fill=manualblue!11,rounded corners=2pt,text width=2.7cm,align=center,font=\scriptsize,minimum height=0.8cm,inner sep=3pt},
+    per/.style={fer,fill=manualred!12,draw=manualred},
+    ramo/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    rot/.style={font=\scriptsize,manualgray}
+  ]
+  \node[cx] (q0) at (0,0) {\texttt{file arquivo}\\é \textbf{texto}?};
+
+  \node[cx]  (q1) at (-3.4,-2.0) {é \textbf{grande}?\\(mais de uma tela)};
+  \node[cx]  (q2) at (4.2,-2.0)  {é \textbf{comprimido}?};
+
+  \node[fer] (f1) at (-6.6,-4.2) {\texttt{cat}\\arquivo curto};
+  \node[cx]  (q3) at (-2.6,-4.2) {precisa \textbf{acompanhar} o crescimento?};
+  \node[fer] (f2) at (2.0,-4.2)  {\texttt{zless}, \texttt{zcat}\\\texttt{zgrep}};
+  \node[per] (f3) at (6.0,-4.2)  {\texttt{strings}, \texttt{xxd}\\nunca \texttt{cat}};
+
+  \node[fer] (f4) at (-4.6,-6.4) {\texttt{tail -f}\\\texttt{journalctl -f}};
+  \node[fer] (f5) at (-1.0,-6.4) {\texttt{less}\\\texttt{head}, \texttt{tail}};
+
+  \draw[ramo] (q0.west)  -- node[rot,above]{sim} (q1.north east);
+  \draw[ramo] (q0.east)  -- node[rot,above]{não} (q2.north west);
+  \draw[ramo] (q1.south west) -- node[rot,left]{não} (f1.north);
+  \draw[ramo] (q1.south east) -- node[rot,right]{sim} (q3.north);
+  \draw[ramo] (q2.south west) -- node[rot,left]{sim} (f2.north);
+  \draw[ramo] (q2.south east) -- node[rot,right]{não} (f3.north);
+  \draw[ramo] (q3.south west) -- node[rot,left]{sim} (f4.north);
+  \draw[ramo] (q3.south east) -- node[rot,right]{não} (f5.north);
+
+  \node[font=\scriptsize,manualred,align=left,text width=4.0cm] at (8.6,-6.2) {\texttt{cat} num binário injeta sequências de escape e embaralha o terminal. Conserto: \texttt{reset}.};
+\end{tikzpicture}
+```
+Duas perguntas antes de abrir qualquer arquivo evitam quase todos os acidentes de terminal.
+:::
+
+## `cat`: concatenar, não visualizar
+
+O nome vem de *concatenate*. A função original é juntar arquivos e mandar o resultado para a saída padrão:
+
+```bash
+cat parte1.txt parte2.txt parte3.txt > completo.txt
+```
+
+Exibir na tela é apenas o que acontece quando você dá um arquivo só e não redireciona nada. As opções que valem:
+
+```bash
+cat -n arquivo        # numera todas as linhas
+cat -b arquivo        # numera so as linhas nao vazias
+cat -s arquivo        # colapsa linhas em branco repetidas
+cat -A arquivo        # mostra caracteres invisiveis
+cat -T arquivo        # so as tabulacoes, como ^I
+cat -E arquivo        # marca o fim de linha com $
+```
+
+O `-A` é uma ferramenta de diagnóstico séria. Ele revela três coisas que causam bugs difíceis:
+
+```bash
+printf 'linha com espaco no fim   \r\n\ttabulacao\n' > /tmp/sujo.txt
+cat -A /tmp/sujo.txt
+# linha com espaco no fim   ^M$
+# ^Itabulacao$
+```
+
+O `^M` é o retorno de carro do Windows (`CRLF`), causa clássica de script que responde `bad interpreter: /bin/bash^M`. O `^I` é uma tabulação onde você achava que havia espaços — fatal em `Makefile` e em YAML. O `$` marca o fim de cada linha, revelando espaços em branco no final.
+
+Para escrever um arquivo curto sem abrir editor:
+
+```bash
+cat > nota.txt
+digite o texto
+e mais uma linha
+# Ctrl+D encerra
+```
+
+`Ctrl+D` não é "cancelar": é o sinal de fim de arquivo na entrada padrão. `Ctrl+C` no lugar dele aborta e deixa o arquivo pela metade.
+
+### `tac` e o uso inútil de `cat`
+
+```bash
+tac arquivo.txt       # mesmo conteudo, ultima linha primeiro
+```
+
+Útil para ler log do mais recente para o mais antigo sem inverter a ordenação.
+
+E uma correção de estilo que aparece em toda revisão de script:
+
+```bash
+cat arquivo.txt | grep erro       # inutil: um processo a mais
+grep erro arquivo.txt             # o grep abre o arquivo sozinho
+grep erro < arquivo.txt           # tambem correto
+```
+
+Chamam isso de *useless use of cat*. Não é pecado mortal, mas em pipelines longos sobre arquivos grandes o processo extra e a cópia de dados custam. Todo comando que aceita nome de arquivo dispensa o `cat`.
+
+### Binários e o terminal embaralhado
+
+Quando um binário passa pelo terminal, os bytes que por acaso formarem sequências de escape VT100 são **interpretados** — trocam a fonte, mudam o mapa de caracteres, reposicionam o cursor. O terminal não travou; ele obedeceu.
+
+O conserto:
+
+```bash
+reset            # reinicializa o terminal por completo
+tput reset       # equivalente
+stty sane        # restaura os modos do driver do terminal
+```
+
+Se nem o prompt aparecer, digite `reset` às cegas e aperte Enter — geralmente funciona. Para inspecionar binários de verdade:
+
+```bash
+strings /usr/bin/nmap | head -20      # so as sequencias de texto legivel
+xxd /usr/bin/nmap | head -5           # hexadecimal com ASCII ao lado
+hexdump -C /usr/bin/nmap | head -5    # equivalente
+```
+
+O `strings` é a primeira ferramenta de qualquer análise de binário: mensagens de erro, caminhos embutidos, nomes de funções e, com frequência espantosa, credenciais deixadas no código.
+
+## `less`: o visualizador que se aprende uma vez
+
+O `less` carrega o arquivo sob demanda, o que significa que abrir um log de 10 GB é instantâneo. Ele permite rolar nos dois sentidos, buscar, filtrar e acompanhar crescimento.
+
+```bash
+less /var/log/syslog
+less -N arquivo          # com numeros de linha
+less -S arquivo          # nao quebra linhas longas (rola na horizontal)
+less -R arquivo          # interpreta cores ANSI
+less +F arquivo          # ja abre em modo de acompanhamento
+less +G arquivo          # ja abre no fim
+less +/erro arquivo      # ja abre na primeira ocorrencia de "erro"
+less arquivo1 arquivo2   # varios: :n proximo, :p anterior
+```
+
+As teclas que cobrem 95% do uso:
+
+| Tecla | Ação |
+|-------|------|
+| `Espaço` / `f` | avança uma tela |
+| `b` | volta uma tela |
+| `j` / `k` | uma linha para baixo / para cima |
+| `g` / `G` | início / fim do arquivo |
+| `/texto` | busca para frente |
+| `?texto` | busca para trás |
+| `n` / `N` | próxima / anterior ocorrência |
+| `&texto` | mostra **só** as linhas com o texto |
+| `-i` | liga e desliga a busca sem diferenciar maiúsculas |
+| `m` + letra | marca a posição; `'` + letra volta a ela |
+| `F` | acompanha o arquivo crescendo (`Ctrl+C` sai do modo) |
+| `v` | abre o arquivo no editor definido em `EDITOR` |
+| `h` | ajuda com a lista completa |
+| `q` | sai |
+
+: Teclas essenciais do `less` {#tbl-teclas-less}
+
+O `&` é o recurso mais subestimado da lista. Dentro de um log gigantesco, `&sshd` deixa na tela apenas as linhas do serviço SSH, e um `&` seguido de Enter volta ao arquivo inteiro. É um `grep` interativo, sem sair do arquivo nem perder a posição.
+
+O `F` transforma o `less` em `tail -f`, com uma vantagem decisiva: `Ctrl+C` sai do modo de acompanhamento e devolve a navegação livre, com todo o histórico ainda disponível. Com `tail -f`, sair significa perder o contexto.
+
+Duas variáveis de ambiente que vale colocar no `~/.zshrc`:
+
+```bash
+export LESS='-R -i -M'      # cores, busca insensivel, barra de status detalhada
+export PAGER=less
+```
+
+O `less` é também o paginador que o `man` usa (@sec-cap007), o que significa que essas teclas já valiam para toda a documentação do sistema.
+
+### `more`: só quando não houver `less`
+
+O `more` é o paginador original: avança, mas não volta e não busca para trás. Existe uma frase antiga na comunidade — *less is more* — que resume a relação. Ainda assim, vale conhecer: em contêineres minimalistas, em sistemas embarcados e em algumas máquinas antigas, `more` é o único disponível.
+
+## `head` e `tail`: as pontas do arquivo
+
+```bash
+head arquivo             # primeiras 10 linhas
+head -n 20 arquivo       # primeiras 20
+head -n -5 arquivo       # tudo, MENOS as ultimas 5
+head -c 100 arquivo      # primeiros 100 bytes
+
+tail arquivo             # ultimas 10 linhas
+tail -n 50 arquivo       # ultimas 50
+tail -n +100 arquivo     # da linha 100 ate o fim
+tail -c 100 arquivo      # ultimos 100 bytes
+```
+
+Os dois formatos de `-n` no `tail` confundem, e a diferença é o sinal de mais: `tail -n 100` são as **últimas** cem linhas; `tail -n +100` é **a partir** da linha 100. @fig-head-tail mostra as faixas selecionadas por cada forma.
+
+::: {#fig-head-tail}
+```{.tikz}
+%%| filename: faixas-de-head-e-tail
+%%| alt: Arquivo de dez linhas com as faixas selecionadas por head, tail e combinacoes destacadas
+\begin{tikzpicture}[
+    lin/.style={draw=manualgray,fill=manualgray!8,minimum width=3.6cm,minimum height=0.42cm,font=\scriptsize\ttfamily,inner sep=2pt,anchor=west},
+    chave/.style={decorate,decoration={brace,amplitude=4pt},thick},
+    rot/.style={font=\scriptsize,align=left,text width=3.9cm}
+  ]
+  \foreach \idx in {1,...,10} {
+    \pgfmathsetmacro{\yy}{-0.5*\idx}
+    \node[lin] at (0,\yy) {linha \idx};
+  }
+
+  \draw[chave,manualblue]  (-0.25,-0.28) -- (-0.25,-1.72);
+  \node[rot,manualblue]  at (-3.0,-1.0) {\texttt{head -n 3}\\as três primeiras};
+
+  \draw[chave,manualred]   (3.85,-3.78) -- (3.85,-5.22);
+  \node[rot,manualred]   at (6.2,-4.5) {\texttt{tail -n 3}\\as três últimas};
+
+  \draw[chave,manualgreen] (3.85,-2.78) -- (3.85,-5.22);
+  \node[rot,manualgreen] at (6.2,-2.4) {\texttt{tail -n +6}\\da linha 6 até o fim};
+
+  \draw[chave,manualyellow] (-0.25,-1.78) -- (-0.25,-3.22);
+  \node[rot,manualyellow] at (-3.0,-2.5) {\texttt{head -n 6 | tail -n 3}\\as linhas 4 a 6};
+
+  \node[font=\scriptsize,manualgray,align=center,text width=5.2cm] at (1.8,-6.2) {O sinal de mais muda tudo: \texttt{-n 3} conta do fim, \texttt{-n +3} conta do começo.};
+\end{tikzpicture}
+```
+Quatro formas de recortar faixas de um arquivo sem abrir editor.
+:::
+
+A combinação da faixa do meio é um idioma que se usa muito:
+
+```bash
+head -n 20 arquivo | tail -n 5      # linhas 16 a 20
+sed -n '16,20p' arquivo             # o mesmo, com sed (Volume 11)
+```
+
+E os dois aceitam vários arquivos, com cabeçalho automático:
+
+```bash
+head -n 3 /etc/passwd /etc/group
+tail -n 2 /var/log/*.log
+head -q -n 3 *.txt      # -q suprime os cabecalhos
+```
+
+### `tail -f`: acompanhando em tempo real
+
+```bash
+tail -f /var/log/syslog          # segue o arquivo
+tail -F /var/log/syslog          # segue o NOME do arquivo
+tail -f -n 100 /var/log/syslog   # mostra 100 linhas antes de comecar a seguir
+tail -f arquivo1 arquivo2        # varios, com cabecalho ao alternar
+```
+
+A diferença entre `-f` e `-F` importa mais do que parece. O `-f` minúsculo segue o **inode**: quando o `logrotate` renomeia `syslog` para `syslog.1` e cria um arquivo novo, o `tail -f` continua olhando o arquivo antigo, que nunca mais recebe nada. O `-F` maiúsculo segue o **nome** e reabre o arquivo novo automaticamente. Em servidor, é sempre `-F`.
+
+Um padrão útil combina acompanhamento com filtro:
+
+```bash
+tail -F /var/log/auth.log | grep --line-buffered "Failed password"
+```
+
+O `--line-buffered` é obrigatório: sem ele, o `grep` acumula a saída num buffer de alguns kilobytes e você não vê nada durante minutos. O motivo está no buffering de pipes, tema de @sec-cap012.
+
+## Arquivos comprimidos e outros visualizadores
+
+Descomprimir só para olhar é desperdício. Existe uma família inteira de equivalentes:
+
+```bash
+zcat  rockyou.txt.gz | head        # cat para .gz
+zless rockyou.txt.gz               # less para .gz
+zgrep senha rockyou.txt.gz         # grep para .gz
+zdiff a.gz b.gz                    # diff para .gz
+```
+
+Para `.bz2` os prefixos são `bz` (`bzcat`, `bzless`); para `.xz`, `xz` (`xzcat`, `xzless`). O `less` moderno costuma detectar a compressão sozinho.
+
+Complementos que valem instalar:
+
+```bash
+sudo apt install bat
+batcat arquivo.py       # cat com cores por sintaxe e numeros de linha
+```
+
+No Debian e no Kali o binário se chama `batcat`, porque `bat` já pertencia a outro pacote. Um `alias bat='batcat'` resolve. Ele colore por sintaxe, mostra número de linha e integra com o Git — excelente para ler código, desnecessário para processar dados.
+
+E para arquivos que não são texto puro:
+
+```bash
+pdftotext relatorio.pdf - | less     # o hifen manda para a saida padrao
+jq . dados.json | less -R            # JSON formatado e colorido
+column -t -s, dados.csv | less -S    # CSV alinhado em colunas
+xxd -l 64 arquivo.bin                # os primeiros 64 bytes em hexadecimal
+```
+
+## 🐉 No Kali
+
+- **`journalctl` é o `less` dos logs modernos.** O systemd guarda os logs num formato binário, então `cat` em `/var/log/journal` não serve para nada. Use `journalctl -u ssh`, `journalctl -f` para acompanhar, `journalctl -p err` para filtrar por severidade. O tema completo é do Volume 7.
+- **`/var/log/auth.log` é onde as tentativas de autenticação aparecem** — inclusive todo `sudo` que você digitou. `tail -F /var/log/auth.log` numa segunda aba, enquanto trabalha, ensina muito sobre o que o sistema registra a seu respeito.
+- **A `rockyou.txt` tem mais de 14 milhões de linhas.** `cat` nela é o caminho garantido para perder o terminal. Use `zcat rockyou.txt.gz | head`, `wc -l` para contar, `zgrep` para procurar.
+- **Saída de ferramenta com cor precisa de `less -R`.** `nmap`, `nikto` e vários outros emitem códigos ANSI; sem o `-R`, você lê `ESC[1;32m` no meio de cada linha.
+- **`strings` num binário suspeito é o primeiro passo de análise, não o último.** Ele revela caminhos, URLs, mensagens e às vezes chaves. Faça isso numa VM isolada, sem executar o binário — e apenas com material que você tem autorização para analisar. Análise de malware em máquina de trabalho conectada à rede da empresa é como abrir uma amostra de vírus na cozinha.
+- **Relatórios de ferramenta costumam ser enormes.** `nmap -oN saida.txt` numa faixa `/16` produz arquivo grande; abra com `less` e use `&` para filtrar por porta ou serviço em vez de rolar tudo.
+- **`bat` não vem instalado**, mas está no repositório como `bat`, com o binário `batcat`.
+- **Cuidado ao paginar arquivo em diretório de evidência.** Abrir com `less` atualiza o `atime` do arquivo (@sec-cap010). Em contexto pericial, trabalhe sobre cópia montada como somente leitura.
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas do coreutils e do pacote `less`. A diferença prática está nos caminhos: o log de autenticação é `/var/log/secure`, e não `/var/log/auth.log`. O `journalctl` funciona igual, já que o systemd é o mesmo.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`. Um dos passos embaralha o terminal de propósito — o conserto está no passo seguinte.
+
+1. **Prepare arquivos de teste.**
+
+   ```bash
+   mkdir -p /tmp/lab011 && cd /tmp/lab011
+   seq 1 200 > numeros.txt
+   printf 'linha com espaco no fim   \r\n\ttabulacao\nnormal\n' > sujo.txt
+   wc -l numeros.txt
+   file numeros.txt sujo.txt /usr/bin/ls
+   ```
+
+   Esperado: 200 linhas, dois arquivos de texto e um `ELF 64-bit`. O `file` é o primeiro comando de qualquer investigação.
+
+2. **Revele caracteres invisíveis.**
+
+   ```bash
+   cat sujo.txt
+   cat -A sujo.txt
+   ```
+
+   Esperado: a primeira saída parece normal; a segunda mostra `^M` (fim de linha do Windows), `^I` (tabulação) e `$` (fim de linha). Guarde o `cat -A`: ele explica o famoso `bad interpreter: /bin/bash^M`.
+
+3. **Numere linhas de dois jeitos.**
+
+   ```bash
+   printf 'um\n\ndois\n\ntres\n' > vazias.txt
+   cat -n vazias.txt
+   cat -b vazias.txt
+   cat -s vazias.txt
+   ```
+
+   Esperado: `-n` numera até as linhas vazias, `-b` pula as vazias, `-s` colapsa as repetidas.
+
+4. **Escreva um arquivo com `cat` e encerre corretamente.**
+
+   ```bash
+   cat > nota.txt
+   primeira linha
+   segunda linha
+   ```
+
+   Aperte `Ctrl+D` numa linha vazia. Depois:
+
+   ```bash
+   cat nota.txt
+   ```
+
+   Esperado: as duas linhas gravadas. Repita usando `Ctrl+C` no lugar de `Ctrl+D` e compare — o arquivo fica truncado.
+
+5. **Embaralhe o terminal de propósito e conserte.**
+
+   ```bash
+   head -c 400 /usr/bin/ls
+   ```
+
+   O terminal fica ilegível. Digite `reset` às cegas e aperte Enter.
+
+   Esperado: o terminal volta ao normal. Você acabou de aprender que "terminal travado" quase nunca é travamento — e que `reset` é a resposta.
+
+6. **Inspecione o binário do jeito certo.**
+
+   ```bash
+   strings /usr/bin/ls | head -20
+   xxd -l 64 /usr/bin/ls
+   file /usr/bin/ls
+   ```
+
+   Esperado: texto legível no `strings`, os bytes `7f 45 4c 46` (`.ELF`) no início do `xxd`. Essa assinatura é como o `file` identifica o formato.
+
+7. **Explore o `less` de verdade.**
+
+   ```bash
+   less /var/log/syslog 2>/dev/null || less /var/log/dpkg.log
+   ```
+
+   Dentro do `less`, execute na ordem: `G` (fim), `g` (início), `/error` seguido de Enter, `n` algumas vezes, `&sudo` seguido de Enter, `&` sozinho seguido de Enter, `-N` seguido de Enter, `h` (ajuda), `q` para sair da ajuda, `q` de novo para sair.
+
+   Esperado: navegação nos dois sentidos, busca destacada e — no `&sudo` — apenas as linhas correspondentes na tela. Esse filtro é o recurso que substitui rolar milhares de linhas.
+
+8. **Compare as faixas de `head` e `tail`.**
+
+   ```bash
+   cd /tmp/lab011
+   head -n 3 numeros.txt
+   tail -n 3 numeros.txt
+   tail -n +198 numeros.txt
+   head -n 6 numeros.txt | tail -n 3
+   head -n -195 numeros.txt
+   ```
+
+   Esperado, na ordem: 1–3, 198–200, 198–200, 4–6, 1–5. Confira contra @fig-head-tail.
+
+9. **Acompanhe um arquivo crescendo.**
+
+   Numa segunda aba (`Ctrl+Shift+T`):
+
+   ```bash
+   tail -f /tmp/lab011/crescendo.log
+   ```
+
+   Na primeira aba:
+
+   ```bash
+   for i in $(seq 1 10); do echo "evento $i em $(date +%T)" >> /tmp/lab011/crescendo.log; sleep 1; done
+   ```
+
+   Esperado: as linhas aparecem na segunda aba conforme são escritas. `Ctrl+C` encerra o `tail`.
+
+10. **Veja a diferença entre `-f` e `-F`.**
+
+    Com o `tail -f` ainda rodando na segunda aba, na primeira:
+
+    ```bash
+    mv /tmp/lab011/crescendo.log /tmp/lab011/crescendo.log.1
+    echo "linha nova depois da rotacao" >> /tmp/lab011/crescendo.log
+    ```
+
+    Esperado: o `tail -f` **não** mostra a linha nova — ele continua no arquivo antigo. Encerre com `Ctrl+C`, rode `tail -F /tmp/lab011/crescendo.log` e repita o teste: agora a linha aparece. Essa é a diferença que faz o monitoramento de servidor funcionar depois de uma rotação de log.
+
+11. **Filtre um fluxo em tempo real.**
+
+    ```bash
+    tail -F /var/log/auth.log 2>/dev/null | grep --line-buffered sudo &
+    sleep 1
+    sudo true
+    sleep 2
+    kill %1
+    ```
+
+    Esperado: a linha do seu `sudo` aparece filtrada. Se remover `--line-buffered`, nada aparece — o `grep` fica segurando a saída no buffer.
+
+12. **Trabalhe com arquivo comprimido sem descomprimir.**
+
+    ```bash
+    cd /tmp/lab011
+    gzip -k numeros.txt
+    ls -lh numeros.txt*
+    zcat numeros.txt.gz | head -3
+    zgrep -c 5 numeros.txt.gz
+    zless numeros.txt.gz     # q para sair
+    ```
+
+    Esperado: o `.gz` é lido diretamente. Numa `rockyou.txt.gz` de centenas de megabytes, isso economiza tempo e espaço em disco.
+
+13. **Experimente um visualizador com destaque de sintaxe.**
+
+    ```bash
+    sudo apt install -y bat
+    batcat /etc/os-release
+    batcat -n /tmp/lab011/numeros.txt | head -5
+    ```
+
+    Esperado: cores, número de linha e cabeçalho. Ótimo para código; para dados que seguirão num cano, continue usando `cat`.
+
+14. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -la /tmp/lab011
+    rm -rf /tmp/lab011
+    ```
+
+## Resumo
+
+- **`cat` concatena, não visualiza.** Usá-lo em arquivo grande arrasa o buffer de rolagem; usá-lo em binário injeta sequências de escape e embaralha o terminal — o conserto é `reset`.
+- **`file` antes de abrir.** Ele lê os bytes iniciais em vez da extensão e evita quase todos os acidentes de terminal.
+- **`cat -A` revela o invisível**: `^M` de fim de linha do Windows, `^I` de tabulação e `$` marcando espaços em branco no fim da linha. É diagnóstico de bugs que não aparecem de outro jeito.
+- **`less` carrega sob demanda** e abre arquivos de gigabytes instantaneamente. Dez teclas — `Espaço`, `b`, `g`, `G`, `/`, `n`, `&`, `F`, `h`, `q` — cobrem quase todo o uso, e o `&` filtra o arquivo sem sair dele.
+- **`head -n 3` são as três primeiras; `tail -n 3` são as três últimas; `tail -n +3` é da terceira em diante.** Encadear `head` com `tail` recorta qualquer faixa do meio.
+- **`tail -f` segue o inode; `tail -F` segue o nome.** Depois de uma rotação de log, só o `-F` continua funcionando.
+- **Ao filtrar um fluxo ao vivo, use `grep --line-buffered`.** Sem isso, a saída fica presa no buffer e parece que nada está acontecendo.
+- **Arquivos comprimidos têm uma família própria**: `zcat`, `zless`, `zgrep`, `zdiff`. Descomprimir só para olhar desperdiça tempo e espaço.

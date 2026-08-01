@@ -1,3 +1,504 @@
 # Navegação: pwd, cd, ls e caminhos absolutos e relativos {#sec-cap009}
 
-*(em elaboracao)*
+Um colega te passa um comando que funciona perfeitamente na máquina dele:
+
+```bash
+tar czf backup.tar.gz ../configuracoes
+```
+
+Você roda e recebe `../configuracoes: Cannot stat: No such file or directory`. O diretório existe — você acabou de ver. O comando está correto. O que mudou foi apenas de onde ele foi executado, e isso bastou para que `..` apontasse para outro lugar.
+
+Caminho relativo é uma conveniência enorme e uma armadilha silenciosa. Ele encurta a digitação e torna scripts portáveis, mas depende inteiramente de um dado invisível: o diretório de trabalho do processo. Quem não tem clareza sobre esse dado passa a vida corrigindo caminhos por tentativa e erro.
+
+Este capítulo trata da navegação como ela realmente funciona — não como decoreba de comandos, mas como manipulação consciente de um estado que todo processo carrega.
+
+## O diretório de trabalho é um atributo do processo
+
+Todo processo em execução no Linux tem um **diretório de trabalho atual** (*current working directory*, ou cwd). Não é uma propriedade do usuário, nem do terminal, nem do sistema: é um campo na estrutura que o kernel mantém para aquele processo específico.
+
+```bash
+pwd
+```
+
+O `pwd` (*print working directory*) apenas lê esse campo. E como é um atributo do processo, dá para inspecioná-lo de fora, através do `/proc`:
+
+```bash
+ls -l /proc/self/cwd
+ls -l /proc/$$/cwd
+```
+
+Os dois mostram um link simbólico apontando para o diretório atual — o primeiro do processo `ls`, o segundo do seu shell. Essa consulta é útil de verdade quando um serviço travado está segurando um sistema de arquivos que você quer desmontar: `ls -l /proc/<PID>/cwd` revela onde ele está parado.
+
+Três consequências práticas seguem imediatamente do fato de o cwd pertencer ao processo:
+
+**Cada aba do terminal tem o seu.** Duas janelas do mesmo shell podem estar em diretórios diferentes ao mesmo tempo, sem qualquer interferência.
+
+**Um processo filho herda o do pai, mas não o devolve.** Um script que faz `cd /var/log` muda o diretório do próprio processo do script; quando ele termina, o seu shell continua exatamente onde estava. Isso confunde muita gente, e a solução — `source` em vez de execução — é a mesma da configuração do shell, vista em @sec-cap008.
+
+**Por isso `cd` é builtin.** Um programa externo chamado `cd` seria inútil: ele mudaria o próprio diretório e morreria em seguida. Só um comando embutido no shell consegue alterar o shell, como visto em @sec-cap006.
+
+## Caminhos absolutos e relativos
+
+Um **caminho absoluto** começa em `/`, a raiz da árvore descrita em @sec-cap005. Ele identifica o mesmo arquivo independentemente de onde você esteja: `/etc/ssh/sshd_config` é sempre o mesmo arquivo.
+
+Um **caminho relativo** não começa com `/` e é interpretado a partir do diretório de trabalho. O mesmo texto aponta para arquivos diferentes conforme o cwd. @fig-caminhos ilustra os dois modos sobre uma árvore concreta.
+
+::: {#fig-caminhos}
+```{.tikz}
+%%| filename: caminhos-absolutos-e-relativos
+%%| alt: Arvore de diretorios mostrando o mesmo destino alcancado por caminho absoluto e por caminho relativo
+\begin{tikzpicture}[
+    dir/.style={draw=manualgray,fill=manualblue!8,rounded corners=2pt,font=\scriptsize\ttfamily,minimum height=0.55cm,inner sep=3pt},
+    aqui/.style={dir,fill=manualyellow!28,draw=manualyellow,thick},
+    alvo/.style={dir,fill=manualgreen!18,draw=manualgreen,thick},
+    lig/.style={manualgray,thin},
+    abs/.style={manualred,very thick,-{Stealth[length=5pt]}},
+    rel/.style={manualgreen,very thick,dashed,-{Stealth[length=5pt]}}
+  ]
+  \node[dir]  (raiz) at (0,0)      {/};
+  \node[dir]  (etc)  at (-3.4,-1.3) {etc};
+  \node[dir]  (home) at (0,-1.3)   {home};
+  \node[dir]  (var)  at (3.0,-1.3) {var};
+
+  \node[dir]  (ssh)  at (-4.6,-2.6) {ssh};
+  \node[dir]  (apt)  at (-2.4,-2.6) {apt};
+  \node[dir]  (kali) at (0,-2.6)    {kali};
+  \node[dir]  (log)  at (3.0,-2.6)  {log};
+
+  \node[alvo] (cfg)  at (-4.6,-3.9) {sshd\_config};
+  \node[aqui] (proj) at (0,-3.9)    {projetos};
+  \node[dir]  (docs) at (2.2,-3.9)  {Documentos};
+
+  \node[dir]  (rec)  at (0,-5.2)    {recon};
+
+  \foreach \pai/\fil in {raiz/etc,raiz/home,raiz/var,etc/ssh,etc/apt,home/kali,var/log,ssh/cfg,kali/proj,kali/docs,proj/rec}
+    { \draw[lig] (\pai) -- (\fil); }
+
+  \node[font=\scriptsize,manualyellow,align=left] at (2.6,-5.0) {você está aqui\\(\texttt{pwd})};
+
+  \draw[abs] (5.2,-0.2) -- ++(0,-3.4) -- (cfg.east);
+  \node[font=\scriptsize,manualred,align=left] at (7.0,-0.1) {\textbf{absoluto}\\\texttt{/etc/ssh/sshd\_config}};
+
+  \draw[rel] (proj.west) .. controls (-2.8,-4.2) and (-3.2,-1.9) .. (cfg.south);
+  \node[font=\scriptsize,manualgreen,align=left] at (-1.2,-5.9) {\textbf{relativo}: \texttt{../../../etc/ssh/sshd\_config}};
+
+  \node[font=\scriptsize,manualgray,align=left,text width=4.4cm] at (8.6,-2.2) {O caminho absoluto vale de qualquer lugar. O relativo só vale a partir do quadro amarelo.};
+\end{tikzpicture}
+```
+Mesmo destino, dois caminhos. Um deles deixa de funcionar se você mudar de diretório.
+:::
+
+Quatro atalhos aparecem em todo caminho relativo:
+
+| Símbolo | Significado |
+|---------|-------------|
+| `.` | o diretório atual |
+| `..` | o diretório pai |
+| `~` | o diretório pessoal do usuário atual |
+| `~kali` | o diretório pessoal do usuário `kali` |
+| `-` | o diretório anterior (só com `cd`) |
+
+: Atalhos de caminho {#tbl-atalhos-caminho}
+
+O `.` e o `..` não são invenção do shell: são **entradas reais de diretório**, criadas pelo sistema de arquivos. Dá para vê-las:
+
+```bash
+ls -a /etc | head -3
+ls -ldi . ..
+```
+
+Isso explica por que `./script.sh` funciona mesmo sem o diretório atual estar no `PATH`: você não está pedindo uma busca, está dando um caminho — relativo, mas explícito.
+
+O til é diferente: ele é **expandido pelo shell** antes de o comando rodar, e só no início da palavra. Consequência prática que morde:
+
+```bash
+cd ~/Documentos       # funciona
+cd "~/Documentos"     # falha: dentro de aspas o til nao expande
+cd "$HOME/Documentos" # forma correta com aspas
+```
+
+## `cd`: mais do que trocar de pasta
+
+O uso básico dispensa comentário, mas há quatro formas que economizam tempo real:
+
+```bash
+cd /var/log       # absoluto
+cd projetos/recon # relativo
+cd ..             # sobe um nível
+cd ../..          # sobe dois
+
+cd                # vai para o diretório pessoal — sem argumento nenhum
+cd ~              # idem
+cd -              # volta ao diretório ANTERIOR e imprime o caminho
+```
+
+O `cd -` é o que mais rende no dia a dia. Ele alterna entre dois diretórios usando a variável `OLDPWD`, que o shell atualiza a cada mudança:
+
+```bash
+cd /etc/apt
+cd /var/log
+cd -              # de volta a /etc/apt
+cd -              # de volta a /var/log
+echo "$OLDPWD"
+```
+
+### Pilha de diretórios: `pushd` e `popd`
+
+Quando são mais de dois diretórios, o `cd -` não basta. O shell mantém uma pilha:
+
+```bash
+pushd /etc/ssh      # vai para la e empilha o diretorio de origem
+pushd /var/log      # empilha de novo
+dirs -v             # mostra a pilha numerada
+popd                # volta ao topo anterior e desempilha
+popd
+```
+
+É o mecanismo natural para uma investigação que passa por vários pontos do sistema e precisa voltar ao ponto de partida sem digitar caminhos longos.
+
+### `CDPATH`: atalho útil e perigoso
+
+A variável `CDPATH` faz para o `cd` o que o `PATH` faz para comandos: define diretórios onde procurar o destino.
+
+```bash
+export CDPATH=".:$HOME:$HOME/projetos"
+cd recon           # encontra ~/projetos/recon de qualquer lugar
+```
+
+A conveniência é real, mas há duas armadilhas. Primeira: com `CDPATH` definido, `cd` passa a imprimir o caminho para onde foi, e isso quebra scripts que capturam a saída. Segunda: se `.` não for o primeiro elemento, um `cd algum-diretorio` pode levar você para um `algum-diretorio` de outro lugar, e não para o que está bem à sua frente. Use no `~/.zshrc`, nunca em script.
+
+## `ls`: ler a saída, não só listar
+
+O `ls` sozinho já é útil, mas o formato longo é onde a informação está:
+
+```bash
+ls -l /etc/passwd
+# -rw-r--r-- 1 root root 2891 Jul 14 09:22 /etc/passwd
+```
+
+@fig-ls-longo disseca essa linha.
+
+::: {#fig-ls-longo}
+```{.tikz}
+%%| filename: anatomia-do-ls-l
+%%| alt: Linha do ls -l dissecada em tipo, permissoes, links, dono, grupo, tamanho, data e nome
+\begin{tikzpicture}[
+    campo/.style={rounded corners=2pt,minimum height=0.6cm,align=center,font=\small\ttfamily,inner sep=3pt,draw=manualgray},
+    tipo/.style={campo,fill=manualred!16,draw=manualred,thick},
+    perm/.style={campo,fill=manualblue!14,draw=manualblue,thick},
+    meta/.style={campo,fill=manualgray!14},
+    nome/.style={campo,fill=manualgreen!16,draw=manualgreen,thick},
+    rot/.style={font=\scriptsize,manualgray,align=center,text width=2.4cm},
+    seta/.style={manualgray,thin,-{Stealth[length=3.5pt]}}
+  ]
+  \node[tipo] (t)  at (0,0)     {-};
+  \node[perm] (p)  at (1.4,0)   {rw-r-{}-r-{}-};
+  \node[meta] (n)  at (3.2,0)   {1};
+  \node[meta] (u)  at (4.2,0)   {root};
+  \node[meta] (g)  at (5.5,0)   {root};
+  \node[meta] (s)  at (6.8,0)   {2891};
+  \node[meta] (d)  at (8.5,0)   {Jul 14 09:22};
+  \node[nome] (f)  at (10.9,0)  {/etc/passwd};
+
+  \node[rot] (rt) at (-1.0,1.9)  {\textbf{tipo}\\\texttt{-} arquivo, \texttt{d} diretório, \texttt{l} link};
+  \node[rot] (rp) at (1.6,-1.9)  {\textbf{permissões}\\dono, grupo, outros};
+  \node[rot] (rn) at (3.4,1.9)   {\textbf{links}\\quantos nomes apontam ao inode};
+  \node[rot] (ru) at (5.1,-1.9)  {\textbf{dono e grupo}};
+  \node[rot] (rs) at (7.0,1.9)   {\textbf{tamanho}\\em bytes};
+  \node[rot] (rd) at (9.0,-1.9)  {\textbf{modificação}\\do conteúdo};
+  \node[rot] (rf) at (11.0,1.9)  {\textbf{nome}};
+
+  \draw[seta] (rt.south) -- (t.north);
+  \draw[seta] (rp.north) -- (p.south);
+  \draw[seta] (rn.south) -- (n.north);
+  \draw[seta] (ru.north) -- (u.south);
+  \draw[seta] (rs.south) -- (s.north);
+  \draw[seta] (rd.north) -- (d.south);
+  \draw[seta] (rf.south) -- (f.north);
+\end{tikzpicture}
+```
+Sete campos numa linha. Os três primeiros são o assunto dos Volumes 3 e 4.
+:::
+
+As opções que valem memorizar:
+
+```bash
+ls -a          # inclui ocultos (nomes iniciados por ponto)
+ls -A          # ocultos, mas sem . e ..
+ls -l          # formato longo
+ls -h          # tamanhos legíveis (K, M, G) — só faz sentido com -l
+ls -t          # ordena por data de modificação, mais recente primeiro
+ls -S          # ordena por tamanho
+ls -r          # inverte a ordem
+ls -R          # desce recursivamente
+ls -d          # o diretório em si, não o conteúdo
+ls -i          # mostra o inode
+ls -1          # um por linha
+```
+
+Combinações que se tornam reflexo com o tempo:
+
+```bash
+ls -lah              # o padrão de trabalho: longo, ocultos, legível
+ls -lt | head        # os arquivos mexidos por último
+ls -lSh | head       # os maiores arquivos do diretório
+ls -ld /var/log      # informação sobre o diretório, não sobre o conteúdo
+ls -la ~/.ssh        # arquivos ocultos onde eles realmente importam
+```
+
+O `-d` merece destaque porque resolve uma confusão frequente: sem ele, `ls -l /var/log` lista o **conteúdo** do diretório; com ele, mostra a linha do próprio diretório — permissões, dono e data. É o que você quer ao investigar por que não consegue entrar em algum lugar.
+
+### Arquivos ocultos não são secretos
+
+Um arquivo cujo nome começa com ponto simplesmente não aparece no `ls` comum. Não há permissão especial, não há atributo escondido: é uma convenção do `ls`, herdada de um acidente histórico. A pasta pessoal está cheia deles:
+
+```bash
+ls -a ~ | head -20
+```
+
+É onde vivem `.zshrc`, `.bashrc`, `.ssh`, `.config` e o histórico do shell. Ignorar o `-a` significa achar que o diretório pessoal está vazio quando ele está cheio de configuração.
+
+### Cores e classificação
+
+O Kali já vem com `ls` colorido por alias. As cores seguem a variável `LS_COLORS` e distinguem diretório, executável, link, arquivo compactado e link quebrado. Um complemento útil quando as cores não estão disponíveis — por exemplo, dentro de um cano:
+
+```bash
+ls -F /etc | head
+```
+
+O `-F` acrescenta um sufixo ao nome: `/` para diretório, `*` para executável, `@` para link simbólico, `|` para FIFO. Funciona em qualquer terminal e sobrevive a redirecionamento.
+
+## Links simbólicos e o caminho "de verdade"
+
+Boa parte da árvore do Linux moderno é feita de links. Isso cria uma ambiguidade sobre o que é o diretório atual:
+
+```bash
+cd /bin
+pwd            # /bin
+pwd -P         # /usr/bin  — o caminho fisico, resolvendo os links
+pwd -L         # /bin      — o caminho logico, como voce chegou (padrao)
+```
+
+O shell guarda o caminho **lógico**: aquele pelo qual você chegou. O `-P` (*physical*) resolve todos os links e mostra a localização real. A mesma distinção vale para o `cd`:
+
+```bash
+cd -P /bin && pwd     # entra resolvendo os links
+```
+
+Isso importa em scripts que sobem níveis com `..`. Depois de entrar num diretório por um link, `cd ..` pelo caminho lógico volta para o pai do **link**, enquanto o caminho físico volta para o pai do **alvo**. Os dois podem ser lugares completamente diferentes. Links simbólicos têm capítulo próprio no Volume 3.
+
+Para resolver um caminho até a forma canônica, sem ambiguidade:
+
+```bash
+readlink -f ~/../kali/./Documentos
+realpath ../..
+```
+
+Ambos devolvem o caminho absoluto, sem `.`, sem `..` e sem links pelo meio. Em script, é a maneira correta de transformar o que o usuário digitou em algo confiável.
+
+## Onde o script está: o caminho que mais quebra
+
+Um script que precisa ler um arquivo ao lado dele não pode usar caminho relativo simples, porque o diretório de trabalho é de quem **chamou** o script, não de onde ele está. A forma robusta:
+
+```bash
+#!/usr/bin/env bash
+DIR_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cat "$DIR_SCRIPT/dados.txt"
+```
+
+Duas ferramentas complementares aparecem aí e valem por si:
+
+```bash
+basename /etc/ssh/sshd_config      # sshd_config
+dirname  /etc/ssh/sshd_config      # /etc/ssh
+```
+
+O tema completo é do Volume 12, mas o padrão acima resolve o problema hoje.
+
+## 🐉 No Kali
+
+- **O diretório pessoal do usuário `kali` é `/home/kali`; o do root é `/root`.** Depois de um `sudo -i`, o `~` aponta para outro lugar, e arquivos criados ali não estão no seu diretório. É a explicação para "salvei o relatório e não acho mais".
+- **Ferramentas clonadas do GitHub costumam ir para `/opt`.** Diferentemente de `/usr/bin`, `/opt` não está no `PATH`, então navegar até lá e chamar com `./` é a rotina normal — e é o caso de uso mais frequente de `pushd` e `popd`.
+- **O Zsh do Kali aceita `cd` implícito.** Digitar só `/var/log` e apertar Enter muda de diretório, sem escrever `cd`. É a opção `AUTO_CD`, ativada no `~/.zshrc` padrão. Prático, mas não funciona em Bash nem em script.
+- **O autocompletar do Zsh é mais esperto que o do Bash.** `cd /u/l/b` seguido de `Tab` expande para `/usr/local/bin`. Em máquinas remotas com Bash, esse recurso não existe.
+- **Wordlists ficam em `/usr/share/wordlists`**, com a `rockyou.txt` frequentemente compactada em `.gz` numa instalação nova. Vale conhecer `ls -lh /usr/share/wordlists` como primeiro reflexo antes de procurar por toda parte.
+- **`ls -la ~/.ssh` deve ser rotina.** Chaves privadas com permissão frouxa fazem o cliente SSH recusar a conexão — e, num sistema compartilhado, expõem a chave. O assunto é do Volume 4, mas o hábito de olhar começa aqui.
+- **Cuidado com o `pwd` num shell de contêiner.** Dentro de um Docker, o caminho é relativo ao sistema de arquivos do contêiner e não corresponde ao do host. O Volume 16 trata do porquê.
+
+> **Nota sobre a família RHEL.** Navegação é idêntica: `pwd`, `cd`, `ls`, `.`, `..` e o til fazem parte do POSIX [@posix2018]. A diferença aparece no conteúdo dos diretórios, não na forma de andar por eles. O Bash é o padrão lá, então `AUTO_CD` e o autocompletar de caminho abreviado não estão disponíveis.
+
+## 🧪 Laboratório
+
+Roteiro na VM. Tudo acontece dentro de `/tmp` e do seu diretório pessoal.
+
+1. **Confirme que o cwd pertence ao processo.**
+
+   ```bash
+   pwd
+   ls -l /proc/$$/cwd
+   cd /var/log
+   ls -l /proc/$$/cwd
+   cd -
+   ```
+
+   Esperado: o link em `/proc` acompanha o `cd`. Você está olhando o dado que o kernel guarda, não uma variável do shell.
+
+2. **Prove que um script não muda o seu diretório.**
+
+   ```bash
+   cd /tmp
+   printf '#!/bin/bash\ncd /etc\npwd\n' > muda-dir.sh
+   chmod +x muda-dir.sh
+   ./muda-dir.sh
+   pwd
+   source ./muda-dir.sh
+   pwd
+   cd /tmp
+   ```
+
+   Esperado: o script imprime `/etc`, mas o seu `pwd` continua `/tmp`. Com `source`, o shell atual se move de verdade. Essa diferença de duas letras é uma das mais importantes do manual.
+
+3. **Monte uma árvore de teste e navegue por caminhos relativos.**
+
+   ```bash
+   mkdir -p /tmp/lab009/alfa/beta/gama
+   cd /tmp/lab009/alfa/beta/gama
+   pwd
+   cd ../..
+   pwd
+   cd ./beta/gama
+   pwd
+   cd ../../../..
+   pwd
+   ```
+
+   Esperado: a cada passo o `pwd` confirma a posição. Repare que `../..` do último nível chega em `alfa`, e mais dois níveis chegam em `/tmp`.
+
+4. **Reproduza a armadilha da abertura do capítulo.**
+
+   ```bash
+   mkdir -p /tmp/lab009/configuracoes
+   cd /tmp/lab009/alfa
+   ls ../configuracoes          # funciona
+   cd /tmp/lab009/alfa/beta
+   ls ../configuracoes          # falha
+   ls ../../configuracoes       # funciona
+   ```
+
+   Esperado: o mesmo texto acerta e erra conforme o diretório. Esse é o motivo de scripts de produção usarem caminho absoluto ou resolverem o caminho do próprio script.
+
+5. **Veja `.` e `..` como entradas reais.**
+
+   ```bash
+   cd /tmp/lab009/alfa
+   ls -a
+   ls -ldi . .. ../alfa
+   ```
+
+   Esperado: `.` e `..` aparecem na listagem, e o inode de `..` coincide com o do diretório pai. Não são invenção do shell — estão gravados no sistema de arquivos.
+
+6. **Alterne com `cd -` e explore a pilha.**
+
+   ```bash
+   cd /etc/apt
+   cd /var/log
+   cd -
+   cd -
+   pushd /usr/share
+   pushd /tmp
+   dirs -v
+   popd
+   popd
+   pwd
+   ```
+
+   Esperado: `cd -` alterna entre dois pontos; `dirs -v` mostra a pilha numerada; cada `popd` desempilha um nível.
+
+7. **Descubra o til que não expande.**
+
+   ```bash
+   echo ~
+   echo "~"
+   echo "$HOME"
+   ls "~" 2>/dev/null || echo "falhou por causa das aspas"
+   ```
+
+   Esperado: sem aspas, o til vira o caminho; entre aspas, permanece literal e o `ls` procura um arquivo chamado til. Em script, `"$HOME"` é a forma correta.
+
+8. **Explore a saída do `ls -l` campo a campo.**
+
+   ```bash
+   ls -l /etc/passwd
+   ls -ld /etc
+   ls -l /bin
+   ls -lh /usr/share/wordlists 2>/dev/null || ls -lh /usr/share | head
+   ```
+
+   Esperado: o primeiro caractere muda entre traço, `d` e `l`. Confira cada campo contra @fig-ls-longo.
+
+9. **Compare as ordenações.**
+
+   ```bash
+   cd /tmp/lab009
+   touch antigo.txt && sleep 2 && touch novo.txt
+   head -c 200000 /dev/urandom > grande.bin
+   ls -lt
+   ls -lSh
+   ls -ltr
+   ```
+
+   Esperado: `-t` coloca `novo.txt` primeiro, `-S` coloca `grande.bin` primeiro, `-r` inverte. O `ls -ltr` é o padrão de quem investiga log: o mais recente fica na última linha, junto ao prompt.
+
+10. **Encontre os arquivos ocultos do seu diretório pessoal.**
+
+    ```bash
+    ls ~ | wc -l
+    ls -A ~ | wc -l
+    ls -ld ~/.ssh ~/.config ~/.zshrc 2>/dev/null
+    ```
+
+    Esperado: a segunda contagem é bem maior. A configuração toda estava lá, apenas fora da listagem padrão.
+
+11. **Veja a diferença entre caminho lógico e físico.**
+
+    ```bash
+    cd /bin
+    pwd
+    pwd -P
+    cd ..
+    pwd
+    cd /bin && cd -P . && cd .. && pwd
+    ```
+
+    Esperado: `pwd` diz `/bin`, `pwd -P` diz `/usr/bin`, e o `cd ..` leva a lugares diferentes conforme o modo. É a mesma armadilha que faz um script de instalação se perder.
+
+12. **Canonize caminhos bagunçados.**
+
+    ```bash
+    readlink -f /tmp/lab009/alfa/../alfa/./beta
+    realpath ~/..
+    basename /usr/share/wordlists/rockyou.txt
+    dirname  /usr/share/wordlists/rockyou.txt
+    ```
+
+    Esperado: caminhos limpos e absolutos. Em script, sempre canonize o que veio de fora antes de usar.
+
+13. **Limpe.**
+
+    ```bash
+    cd /tmp
+    rm -rf /tmp/lab009 /tmp/muda-dir.sh
+    ```
+
+    Repare que o `rm -rf` só aparece aqui com um caminho absoluto e específico, digitado por inteiro. Esse é o hábito a cultivar, e o tema do próximo capítulo.
+
+## Resumo
+
+- **O diretório de trabalho é um atributo do processo**, visível em `/proc/<PID>/cwd`. Cada aba do terminal tem o seu, e um processo filho herda o do pai sem nunca devolver mudanças.
+- **Um script que faz `cd` não move o seu shell** — ele move o próprio processo, que morre em seguida. Para mover o shell atual, é `source`.
+- **Caminho absoluto começa em `/` e vale de qualquer lugar; relativo depende do cwd.** O mesmo texto acerta ou erra conforme o ponto de partida.
+- **`.` e `..` são entradas reais no sistema de arquivos**, não sintaxe do shell — por isso `./script.sh` funciona sem o diretório atual estar no `PATH`.
+- **O til é expandido pelo shell e só fora de aspas.** Dentro de aspas, use `"$HOME"`.
+- **`cd -` alterna entre dois diretórios; `pushd` e `popd` gerenciam uma pilha** quando são mais de dois.
+- **A saída de `ls -l` tem sete campos**: tipo, permissões, contagem de links, dono, grupo, tamanho, data e nome. `ls -lah`, `ls -ltr` e `ls -ld` cobrem a maior parte das necessidades reais.
+- **`pwd` mostra o caminho lógico; `pwd -P` resolve os links.** A diferença muda o resultado de um `cd ..` e é fonte comum de scripts que se perdem.

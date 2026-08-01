@@ -1,3 +1,538 @@
 # Curingas, globbing e expansão de chaves {#sec-cap013}
 
-*(em elaboracao)*
+Você tem cinco relatórios num diretório e quer arquivá-los:
+
+```bash
+mv *.txt arquivo/
+```
+
+O diretório `arquivo` não existe — você esqueceu de criá-lo. O shell expande `*.txt` para `a.txt b.txt c.txt d.txt e.txt`, e o `mv` recebe seis argumentos: cinco arquivos e um destino chamado `arquivo/`. Como o destino não existe, ele reclama e não faz nada. Sorte.
+
+Agora imagine a mesma linha sem a barra final:
+
+```bash
+mv *.txt arquivo
+```
+
+O `mv` recebe `a.txt b.txt c.txt d.txt e.txt arquivo`. Nenhum deles é diretório. Comportamento com múltiplas origens e destino que não é diretório: erro. Continua havendo sorte.
+
+Mas se existir um arquivo chamado `e.txt` e mais nada, e a linha for `mv *.txt e.txt`, o shell expande para `mv e.txt e.txt` e o `mv` reclama que são o mesmo arquivo. E se forem dois — `mv a.txt e.txt` — o conteúdo de `e.txt` é destruído em silêncio.
+
+O ponto não é decorar cada caso. É perceber que **o programa nunca viu o asterisco**. Quem procurou os arquivos, montou a lista e escolheu a ordem foi o shell, antes de o comando existir. Um curinga não é uma instrução: é um texto que vira outros textos. Este capítulo mostra exatamente como essa transformação acontece, em que ordem, e como conferir o resultado antes de executar qualquer coisa.
+
+## A ordem das expansões
+
+O shell não faz uma expansão: faz uma sequência delas, sempre na mesma ordem, sobre a mesma linha. @fig-ordem-expansoes mostra o encadeamento completo.
+
+::: {#fig-ordem-expansoes}
+```{.tikz}
+%%| filename: ordem-das-expansoes-do-shell
+%%| alt: Sequencia de expansoes do shell da chave ao globbing e a remocao de aspas
+\begin{tikzpicture}[
+    et/.style={draw=manualgray,rounded corners=2pt,text width=2.5cm,align=center,font=\scriptsize,minimum height=0.95cm,inner sep=3pt,fill=manualblue!8},
+    des/.style={et,fill=manualyellow!22,draw=manualyellow,thick},
+    glo/.style={et,fill=manualgreen!16,draw=manualgreen,thick},
+    fim/.style={et,fill=manualgray!12},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center,text width=2.6cm}
+  ]
+  \node[des] (e1) at (0,0)     {\textbf{1. Chaves}\\\texttt{\{a,b\}}};
+  \node[et]  (e2) at (3.2,0)   {\textbf{2. Til}\\\texttt{$\sim$}};
+  \node[et]  (e3) at (6.4,0)   {\textbf{3. Parâmetros}\\\texttt{\$VAR}};
+  \node[et]  (e4) at (9.6,0)   {\textbf{4. Comandos}\\\texttt{\$(cmd)}};
+
+  \node[et]  (e5) at (9.6,-2.2) {\textbf{5. Aritmética}\\\texttt{\$((1+2))}};
+  \node[et]  (e6) at (6.4,-2.2) {\textbf{6. Divisão em palavras}\\pelo \texttt{IFS}};
+  \node[glo] (e7) at (3.2,-2.2) {\textbf{7. Globbing}\\\texttt{*} \texttt{?} \texttt{[ ]}};
+  \node[fim] (e8) at (0,-2.2)   {\textbf{8. Remoção de aspas}};
+
+  \foreach \de/\pa in {e1/e2,e2/e3,e3/e4} { \draw[fl] (\de) -- (\pa); }
+  \draw[fl] (e4) -- (e5);
+  \foreach \de/\pa in {e5/e6,e6/e7,e7/e8} { \draw[fl] (\de) -- (\pa); }
+
+  \node[nt,manualyellow,text width=3.0cm] at (0,1.5)  {não olha o disco: gera texto do nada};
+  \node[nt,manualgreen,text width=3.0cm]  at (3.2,-3.7) {olha o disco: só produz o que existe};
+  \node[nt,text width=4.4cm] at (7.6,-3.9) {O programa só é executado \textbf{depois} das oito etapas, com a lista final de palavras.};
+\end{tikzpicture}
+```
+Oito etapas, sempre nesta ordem. Chaves vêm primeiro; globbing, quase por último.
+:::
+
+Duas consequências dessa ordem explicam praticamente todas as surpresas:
+
+**Chaves são expandidas antes de tudo e não consultam o sistema de arquivos.** `mkdir {a,b,c}` funciona mesmo que nada exista, porque a expansão de chaves gera texto puro. Já `*` só produz nomes que existem de fato.
+
+**Globbing acontece depois da substituição de variáveis.** Isso significa que um curinga guardado numa variável **é** expandido quando a variável é usada sem aspas — comportamento útil às vezes, desastroso na maioria:
+
+```bash
+PADRAO="*.txt"
+echo $PADRAO      # expande: lista os arquivos
+echo "$PADRAO"    # literal: imprime *.txt
+```
+
+A ferramenta de conferência é sempre a mesma, e custa dois segundos:
+
+```bash
+echo mv *.txt arquivo/       # ve a linha final, ja expandida, sem executar
+```
+
+## Globbing: os curingas do shell
+
+Os curingas básicos são quatro:
+
+| Padrão | Casa com |
+|--------|----------|
+| `*` | qualquer sequência de caracteres, inclusive vazia |
+| `?` | exatamente um caractere qualquer |
+| `[abc]` | um caractere entre os listados |
+| `[a-z]` | um caractere na faixa |
+| `[!abc]` | um caractere que **não** esteja na lista |
+| `[[:digit:]]` | uma classe POSIX: dígito, letra, espaço, etc. |
+
+: Curingas básicos do shell {#tbl-curingas}
+
+@fig-glob-casamento mostra como cada padrão se comporta sobre a mesma listagem.
+
+::: {#fig-glob-casamento}
+```{.tikz}
+%%| filename: casamento-de-padroes-glob
+%%| alt: Tabela comparando quais nomes de arquivo casam com cada padrao de globbing
+\begin{tikzpicture}[
+    nome/.style={font=\scriptsize\ttfamily,anchor=west},
+    pad/.style={font=\scriptsize\ttfamily,manualblue,anchor=center},
+    sim/.style={font=\scriptsize\bfseries,manualgreen,anchor=center},
+    nao/.style={font=\scriptsize,manualgray,anchor=center},
+    grade/.style={manualgray!35,thin}
+  ]
+  \foreach \nn/\idx in {log1.txt/0,log2.txt/1,log10.txt/2,nota.md/3,.oculto/4,dados.csv/5} {
+    \pgfmathsetmacro{\yy}{-0.5*\idx}
+    \node[nome] at (-0.1,\yy) {\nn};
+    \draw[grade] (-0.25,\yy-0.25) -- (9.1,\yy-0.25);
+  }
+
+  \foreach \pp/\cc in {{*.txt}/0,{log?.txt}/1,{log[12].txt}/2,{*}/3,{.*}/4} {
+    \pgfmathsetmacro{\xx}{2.9+1.5*\cc}
+    \node[pad] at (\xx,0.5) {\pp};
+    \draw[grade] (\xx-0.75,0.28) -- (\xx-0.75,-2.75);
+  }
+  \draw[grade] (9.1,0.28) -- (9.1,-2.75);
+  \draw[grade] (-0.25,0.28) -- (9.1,0.28);
+
+  \foreach \xx/\yy/\st/\tx in {%
+      2.9/0/sim/sim,    4.4/0/sim/sim,    5.9/0/sim/sim,    7.4/0/sim/sim,    8.9/0/nao/não,
+      2.9/-0.5/sim/sim, 4.4/-0.5/sim/sim, 5.9/-0.5/sim/sim, 7.4/-0.5/sim/sim, 8.9/-0.5/nao/não,
+      2.9/-1.0/sim/sim, 4.4/-1.0/nao/não, 5.9/-1.0/nao/não, 7.4/-1.0/sim/sim, 8.9/-1.0/nao/não,
+      2.9/-1.5/nao/não, 4.4/-1.5/nao/não, 5.9/-1.5/nao/não, 7.4/-1.5/sim/sim, 8.9/-1.5/nao/não,
+      2.9/-2.0/nao/não, 4.4/-2.0/nao/não, 5.9/-2.0/nao/não, 7.4/-2.0/nao/não, 8.9/-2.0/sim/sim,
+      2.9/-2.5/nao/não, 4.4/-2.5/nao/não, 5.9/-2.5/nao/não, 7.4/-2.5/sim/sim, 8.9/-2.5/nao/não}
+    { \node[\st] at (\xx,\yy) {\tx}; }
+\end{tikzpicture}
+```
+O asterisco não casa com nomes ocultos, e `?` casa com exatamente um caractere.
+:::
+
+Três regras que não são óbvias:
+
+**`*` não cruza a barra.** `ls /etc/*` lista o conteúdo de um nível só; para descer, é preciso `*/*` ou globbing recursivo.
+
+**`*` não casa com arquivos ocultos.** `rm *` não apaga `.bashrc` — proteção deliberada, para que um `*` descuidado não leve a configuração junto. Para incluir ocultos:
+
+```bash
+setopt dotglob        # zsh
+shopt -s dotglob      # bash
+ls .[!.]*             # forma portavel: ponto, um caractere que nao seja ponto, resto
+```
+
+**A ordenação é do shell, não do programa.** E ela é alfabética segundo a localidade atual, o que produz `log1, log10, log2` — não a ordem numérica. Para ordem natural, o `ls -v` ou o `sort -V` resolvem depois.
+
+### Classes POSIX
+
+```bash
+ls [[:digit:]]*        # nomes que comecam com digito
+ls [[:upper:]]*        # que comecam com maiuscula
+ls *[[:space:]]*       # que contem espaco
+```
+
+As classes disponíveis são `alpha`, `digit`, `alnum`, `upper`, `lower`, `space`, `punct`, `xdigit`. Diferentemente de `[a-z]`, elas respeitam a localidade e não deixam letras acentuadas de fora.
+
+### Quando nada casa
+
+O comportamento diverge entre shells, e a diferença aparece cedo:
+
+```bash
+ls *.formato-inexistente
+# bash: ls: cannot access '*.formato-inexistente': No such file or directory
+# zsh:  zsh: no matches found: *.formato-inexistente
+```
+
+No Bash, o padrão é passado **literalmente** ao comando, que reclama de um arquivo com aquele nome esquisito. No Zsh, o shell aborta antes de executar. O comportamento do Zsh é mais seguro — imagine `rm *.bak` num diretório sem nenhum `.bak`: no Bash, o `rm` receberia o texto `*.bak`; no Zsh, nada acontece.
+
+Para controlar isso:
+
+```bash
+shopt -s nullglob     # bash: padrao sem correspondencia vira lista VAZIA
+shopt -s failglob     # bash: padrao sem correspondencia vira erro (como o zsh)
+setopt nullglob       # zsh: idem
+setopt nomatch        # zsh: o padrao (aborta), ja ativo
+shopt -s nocaseglob   # bash: ignora maiusculas e minusculas
+setopt nocaseglob     # zsh: idem
+```
+
+O `nullglob` é essencial em scripts com laços:
+
+```bash
+for arquivo in *.log; do
+    echo "processando $arquivo"
+done
+```
+
+Sem `nullglob`, num diretório sem nenhum `.log` esse laço executa **uma vez** com a variável valendo o texto `*.log` — e o script processa um arquivo que não existe.
+
+## Globbing recursivo
+
+Descer a árvore inteira com um único padrão:
+
+```bash
+setopt extended_glob      # zsh: ja costuma vir ativo
+ls **/*.conf              # zsh: todos os .conf, em qualquer profundidade
+
+shopt -s globstar         # bash: precisa ser ativado
+ls **/*.conf              # bash: mesmo efeito
+```
+
+Sem `globstar`, o `**` no Bash se comporta como um `*` comum — silenciosamente, sem aviso. É uma fonte clássica de script que "funciona no Zsh e não no Bash".
+
+Para árvores muito grandes, o globbing recursivo é caro: o shell monta a lista inteira em memória antes de executar o comando. O `find` é a ferramenta certa nesse caso, e é tema do Volume 3.
+
+### Qualificadores de glob do Zsh
+
+Um recurso poderoso que não existe no Bash. Entre parênteses, depois do padrão, o Zsh aceita filtros:
+
+```bash
+ls *(.)              # so arquivos comuns
+ls *(/)              # so diretorios
+ls *(@)              # so links simbolicos
+ls *(*)              # so executaveis
+ls *(.Lm+10)         # arquivos com mais de 10 MB
+ls *(.om[1,5])       # os 5 mais recentes
+ls **/*(.Lm+100)     # arquivos grandes em toda a arvore
+```
+
+É `find` embutido na sintaxe do shell. Ótimo interativamente, inútil em script portável.
+
+## Expansão de chaves
+
+Chaves não procuram nada: elas **geram** texto. É a única expansão que produz nomes de arquivos que ainda não existem, e por isso é a ferramenta natural para criar estruturas.
+
+```bash
+echo {a,b,c}                 # a b c
+echo arquivo{1,2,3}.txt      # arquivo1.txt arquivo2.txt arquivo3.txt
+echo {1..10}                 # 1 2 3 4 5 6 7 8 9 10
+echo {01..10}                # 01 02 03 ... 10  (com zero a esquerda)
+echo {a..e}                  # a b c d e
+echo {0..20..5}              # 0 5 10 15 20  (com passo)
+echo {10..1}                 # contagem regressiva
+```
+
+Combinações se multiplicam — é produto cartesiano:
+
+```bash
+echo {a,b}{1,2}              # a1 a2 b1 b2
+echo {2024..2026}-{01..12}   # 36 combinacoes de ano e mes
+mkdir -p projeto/{doc,src,teste}/{entrada,saida}
+```
+
+Os idiomas mais úteis do dia a dia:
+
+```bash
+cp config.conf{,.bak}                    # vira: cp config.conf config.conf.bak
+mv relatorio.txt{,-antigo}               # renomeia acrescentando sufixo
+diff arquivo.{antigo,novo}               # vira: diff arquivo.antigo arquivo.novo
+touch teste-{01..10}.txt                 # dez arquivos numerados
+mkdir -p /tmp/lab/{a,b,c}/{in,out}
+```
+
+O `cp config.conf{,.bak}` merece atenção: a chave com um elemento vazio produz o nome original e o nome com sufixo, nessa ordem. É o backup mais curto que existe, e vira reflexo rapidamente.
+
+Chaves e curingas se combinam, e aí a ordem de @fig-ordem-expansoes importa: as chaves são expandidas primeiro, gerando padrões, e cada padrão passa então pelo globbing:
+
+```bash
+ls *.{txt,md,csv}       # vira: ls *.txt *.md *.csv, e cada um e resolvido no disco
+```
+
+## Aspas desligam tudo
+
+```bash
+echo *.txt        # expande
+echo "*.txt"      # literal
+echo '*.txt'      # literal
+echo \*.txt       # literal
+```
+
+Aspas simples desligam **todas** as expansões. Aspas duplas desligam globbing e chaves, mas mantêm variáveis e substituição de comandos:
+
+```bash
+V=teste
+echo "$V *.txt {a,b}"     # teste *.txt {a,b}
+echo '$V *.txt {a,b}'     # $V *.txt {a,b}
+```
+
+Em scripts, a regra que evita a maior parte dos bugs continua sendo a de @sec-cap006: **variáveis sempre entre aspas duplas**, exceto quando você quiser deliberadamente que ocorram divisão em palavras e globbing.
+
+## Onde o globbing machuca
+
+**Nome de arquivo com espaço.** O globbing produz nomes corretos, mas se você passar por uma variável sem aspas, a divisão em palavras da etapa 6 quebra o nome:
+
+```bash
+for f in *.txt; do  cp $f  /tmp/;  done      # quebra com "meu arquivo.txt"
+for f in *.txt; do  cp "$f" /tmp/;  done     # correto
+```
+
+Repare que o `for` sobre o glob está certo: a lista chega ao laço já dividida corretamente. O problema é o uso da variável sem aspas depois.
+
+**Nome começando com traço.** Um arquivo `-rf` no diretório transforma `rm *` em `rm -rf <resto>`. O antídoto é o `--` de @sec-cap006:
+
+```bash
+rm -- *
+rm ./*
+```
+
+**Lista de argumentos longa demais.** Existe um limite de tamanho para a linha de comando (na casa de dois megabytes em sistemas típicos). Num diretório com centenas de milhares de arquivos:
+
+```bash
+rm *.log
+# bash: /usr/bin/rm: Argument list too long
+```
+
+A solução é não montar a lista inteira de uma vez:
+
+```bash
+find . -maxdepth 1 -name '*.log' -delete
+find . -maxdepth 1 -name '*.log' -print0 | xargs -0 rm
+```
+
+O `-print0` e o `-0` usam o byte zero como separador em vez do espaço — é a única forma completamente segura de passar nomes arbitrários entre programas, já que o zero é o único caractere proibido num nome de arquivo.
+
+::: {.callout-warning}
+## Sempre ensaie um curinga antes de um comando destrutivo
+
+```bash
+ls   *.bak            # 1. veja o que casa
+echo rm *.bak         # 2. veja a linha final
+rm   *.bak            # 3. so entao
+```
+
+O passo 2 é o mais valioso: ele mostra exatamente a linha que será executada, com a expansão já resolvida, sem executar nada. Um espaço a mais, um arquivo inesperado ou um padrão que casou demais aparecem ali.
+:::
+
+## 🐉 No Kali
+
+- **O Zsh aborta em padrão sem correspondência, e isso protege.** `rm *.pcap` num diretório sem captura nenhuma não faz nada no Zsh, enquanto no Bash o `rm` receberia o texto literal. Ao rodar scripts vindos de tutoriais escritos para Bash, essa diferença aparece.
+- **Qualificadores de glob resolvem triagem de coleta.** Depois de uma captura longa, `ls -lh *.pcap(.om[1,3])` mostra os três arquivos mais recentes, e `ls **/*(.Lm+50)` encontra tudo acima de 50 MB numa árvore de evidências. Só funciona no Zsh.
+- **Wordlists e resultados se acumulam rápido.** `ls /usr/share/wordlists/**/*.txt` (com `globstar` no Bash) dá o panorama; para árvores muito grandes, prefira `find`, que não monta a lista inteira em memória.
+- **`nmap -oA base` já usa a lógica de chaves na prática**: ele gera `base.nmap`, `base.gnmap` e `base.xml`. Para inspecionar os três, `ls -l base.{nmap,gnmap,xml}`.
+- **Backup antes de editar configuração de ferramenta.** `sudo cp /etc/proxychains4.conf{,.bak}` leva dois segundos e já salvou muita gente. Vale para `/etc/apt/sources.list`, `/etc/hosts` e qualquer arquivo que você vá editar com privilégio.
+- **Nome de arquivo vindo de ferramenta pode conter qualquer coisa.** Saídas de fuzzing e de download automático produzem nomes com espaço, aspas, quebra de linha e caracteres de controle. Ao processar em lote, é `find -print0` com `xargs -0`, sempre — nunca `ls | xargs`.
+- **Cuidado com `rm *` em `/var/log` ou em diretório de evidência.** O `*` não pega ocultos, mas pega tudo o mais, inclusive coisas que você não listou antes. `pwd`, `ls -la`, `echo rm ...` e só então o comando.
+
+> **Nota sobre a família RHEL.** O globbing básico é POSIX [@posix2018] e idêntico. Como o Bash é o padrão lá, `globstar`, `nullglob` e `extglob` precisam ser ativados explicitamente com `shopt`, e os qualificadores de glob do Zsh não existem. Um script que dependa de `**` sem `shopt -s globstar` falha silenciosamente, sem mensagem nenhuma.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`. Nenhum passo executa comando destrutivo sem ensaio.
+
+1. **Monte um diretório de teste.**
+
+   ```bash
+   mkdir -p /tmp/lab013 && cd /tmp/lab013
+   touch log1.txt log2.txt log10.txt nota.md dados.csv .oculto
+   mkdir -p sub/{a,b}
+   touch sub/a/interno.txt sub/b/outro.txt
+   ls -a
+   ```
+
+   Esperado: seis arquivos, um deles oculto, e uma subárvore criada com chaves.
+
+2. **Confira o casamento de cada padrão.**
+
+   ```bash
+   echo *.txt
+   echo log?.txt
+   echo log[12].txt
+   echo log[0-9]*.txt
+   echo *
+   echo .*
+   echo [[:alpha:]]*
+   ```
+
+   Esperado: `log?.txt` **não** inclui `log10.txt`; `*` não inclui `.oculto`; `.*` traz o oculto e também `.` e `..`. Compare com @fig-glob-casamento.
+
+3. **Veja a ordenação alfabética morder.**
+
+   ```bash
+   echo log*.txt
+   ls -v log*.txt
+   ```
+
+   Esperado: `log1 log10 log2` na expansão do shell, e a ordem numérica correta só com `ls -v`. Quem ordena o glob é o shell, e ele ordena como texto.
+
+4. **Prove que `*` não cruza a barra.**
+
+   ```bash
+   echo *.txt
+   echo */*.txt
+   echo **/*.txt
+   ```
+
+   Esperado: o primeiro só pega o nível atual, o segundo só o nível abaixo, e o terceiro — no Zsh — pega os dois. Repita com `bash -c 'echo **/*.txt'` e depois com `bash -O globstar -c 'echo **/*.txt'` para ver a diferença.
+
+5. **Compare o comportamento quando nada casa.**
+
+   ```bash
+   echo *.inexistente
+   bash -c 'echo *.inexistente'
+   bash -O nullglob -c 'echo *.inexistente'
+   ```
+
+   Esperado: erro no Zsh, texto literal no Bash, linha vazia no Bash com `nullglob`. Três filosofias diferentes para o mesmo padrão.
+
+6. **Veja por que `nullglob` importa em laço.**
+
+   ```bash
+   bash -c 'for f in *.inexistente; do echo "processando: $f"; done'
+   bash -O nullglob -c 'for f in *.inexistente; do echo "processando: $f"; done'
+   ```
+
+   Esperado: o primeiro executa uma vez com o texto do padrão; o segundo não executa nenhuma. O primeiro é o bug clássico de script de backup.
+
+7. **Experimente a expansão de chaves.**
+
+   ```bash
+   echo {a,b,c}
+   echo item-{1..5}.txt
+   echo item-{01..05}.txt
+   echo {0..20..5}
+   echo {a,b}{1,2}
+   echo {2025..2026}-{01..03}
+   ```
+
+   Esperado: geração de texto puro, sem consultar o disco. Repare no zero à esquerda preservado em `{01..05}`.
+
+8. **Use os idiomas de chave do dia a dia.**
+
+   ```bash
+   cd /tmp/lab013
+   echo "config original" > app.conf
+   cp app.conf{,.bak}
+   ls app.conf*
+   echo "config nova" > app.conf
+   diff app.conf{.bak,}
+   ```
+
+   Esperado: o backup criado numa linha curtíssima e o `diff` comparando as duas versões com o nome digitado uma vez só.
+
+9. **Veja a diferença entre chaves e curingas.**
+
+   ```bash
+   cd /tmp/lab013
+   echo {x,y,z}.txt        # gera nomes que NAO existem
+   echo *.txt              # so nomes que existem
+   mkdir -p novo/{p,q,r}   # funciona: chaves nao consultam o disco
+   ls novo
+   ```
+
+   Esperado: as chaves inventam nomes; o asterisco só encontra. Essa é a diferença essencial entre as duas expansões.
+
+10. **Observe a interação entre variável e globbing.**
+
+    ```bash
+    cd /tmp/lab013
+    PADRAO="*.txt"
+    echo $PADRAO
+    echo "$PADRAO"
+    ```
+
+    Esperado: expandido sem aspas, literal com aspas. Guardar padrões em variáveis e usá-los sem aspas é uma técnica válida — e uma fonte de bug quando não é intencional.
+
+11. **Reproduza o problema do nome com espaço.**
+
+    ```bash
+    cd /tmp/lab013
+    touch "meu arquivo.txt"
+    for f in *.txt; do echo "[$f]"; done
+    for f in *.txt; do cp $f /tmp/lab013/novo/ 2>&1 | head -2; done
+    for f in *.txt; do cp "$f" /tmp/lab013/novo/; done
+    ls /tmp/lab013/novo
+    ```
+
+    Esperado: o laço mostra o nome inteiro entre colchetes (o glob está certo), mas o `cp` sem aspas quebra o nome em dois. As aspas na variável resolvem.
+
+12. **Trate um nome que começa com traço.**
+
+    ```bash
+    cd /tmp/lab013
+    touch ./-arquivo-problema
+    ls *
+    ls -- *
+    rm -- ./-arquivo-problema
+    ```
+
+    Esperado: o primeiro `ls` interpreta o nome como opções; com `--` funciona. Imagine o mesmo com `rm -rf` no lugar do `ls`.
+
+13. **Ensaie antes de apagar.**
+
+    ```bash
+    cd /tmp/lab013
+    touch descartavel{1..5}.tmp
+    ls *.tmp
+    echo rm *.tmp
+    rm *.tmp
+    ls *.tmp 2>/dev/null || echo "nenhum sobrou"
+    ```
+
+    Esperado: os três passos na ordem. Faça do `echo` na frente do comando destrutivo um reflexo permanente.
+
+14. **Experimente os qualificadores do Zsh.**
+
+    ```bash
+    cd /tmp/lab013
+    head -c 200000 /dev/urandom > grande.bin
+    ls *(.)          # so arquivos comuns
+    ls *(/)          # so diretorios
+    ls *(.om[1,3])   # os tres mais recentes
+    ls *(.Lk+100)    # maiores que 100 KB
+    ```
+
+    Esperado: filtros por tipo, data e tamanho sem sair do shell. Rode `bash -c 'ls *(.)'` para confirmar que isso não existe no Bash.
+
+15. **Contorne o limite de argumentos.**
+
+    ```bash
+    mkdir -p /tmp/lab013/muitos && cd /tmp/lab013/muitos
+    touch arquivo{00001..20000}.log
+    ls | wc -l
+    find . -maxdepth 1 -name '*.log' -print0 | xargs -0 rm
+    ls | wc -l
+    ```
+
+    Esperado: vinte mil arquivos criados e removidos sem estourar a linha de comando. Com muitos mais, `rm *.log` falharia com "Argument list too long".
+
+16. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -la /tmp/lab013
+    rm -rf /tmp/lab013
+    ```
+
+## Resumo
+
+- **Quem expande curingas é o shell, não o programa.** O comando recebe uma lista de nomes já resolvida e nunca vê o asterisco — por isso não existe "desfazer" baseado no padrão original.
+- **A ordem das expansões é fixa**: chaves, til, variáveis, comandos, aritmética, divisão em palavras, globbing e remoção de aspas. Chaves geram texto do nada; globbing só produz o que existe no disco.
+- **`*` não cruza a barra e não casa com ocultos.** Para descer a árvore, é `**` com `globstar` no Bash ou `extended_glob` no Zsh; para incluir ocultos, `dotglob`.
+- **Padrão sem correspondência age de forma diferente em cada shell**: o Bash entrega o texto literal, o Zsh aborta. Em script Bash com laço sobre glob, `nullglob` é praticamente obrigatório.
+- **Expansão de chaves é produto cartesiano de texto puro.** `cp config{,.bak}`, `mkdir -p projeto/{doc,src}/{in,out}` e `touch teste-{01..10}.txt` são os idiomas que mais economizam digitação.
+- **Aspas simples desligam todas as expansões; aspas duplas preservam variáveis e substituição de comandos**, mas desligam globbing e chaves.
+- **Nome com espaço quebra em variável sem aspas**, e nome começando com traço vira opção. As defesas são `"$var"` e o separador `--`.
+- **`echo` na frente de um comando destrutivo é o ensaio mais barato que existe**, e mostra exatamente a linha que seria executada.
+- **Listas enormes estouram o limite da linha de comando.** `find -print0` com `xargs -0` resolve, e é também a única forma segura de passar nomes arbitrários entre programas.

@@ -1,3 +1,561 @@
 # Histórico, atalhos de teclado e produtividade no terminal {#sec-cap014}
 
-*(em elaboracao)*
+Você digitou uma linha de noventa caracteres:
+
+```bash
+nmap -sV -sC --top-ports 1000 -oA resultados/varredura-inicial 192.168.56.0/24
+```
+
+Aperta Enter e vê o erro: o diretório `resultados` não existe. A correção é criar o diretório e repetir a linha. Muita gente faz isso segurando a seta para a esquerda até o cursor chegar ao ponto certo, ou pior — apagando tudo com Backspace e digitando de novo.
+
+Existem duas teclas que resolvem isso. `Ctrl+A` leva o cursor ao início da linha instantaneamente. E, no fim das contas, nem era preciso: bastava rodar `mkdir -p resultados` e depois `!!` para repetir o comando anterior inteiro.
+
+Este capítulo é sobre a diferença entre operar o terminal e ser fluente nele. As ferramentas são três: o editor de linha, que faz da linha de comando um pequeno editor de texto; o histórico, que transforma tudo o que você já digitou num banco de dados pesquisável; e o autocompletar, que reduz caminhos longos a três teclas. Nenhuma delas é difícil. Todas rendem pelo resto da vida.
+
+## O editor de linha
+
+Aquilo que responde às suas teclas antes do Enter não é o terminal nem o comando: é uma biblioteca de edição de linha dentro do shell. No Bash é a **Readline**; no Zsh é a **ZLE** (*Zsh Line Editor*). As duas usam, por padrão, atalhos herdados do editor Emacs — e é por isso que `Ctrl+A` significa "início da linha" em tantos lugares do Unix.
+
+@fig-atalhos-linha mostra o efeito dos principais atalhos sobre uma linha real.
+
+::: {#fig-atalhos-linha}
+```{.tikz}
+%%| filename: atalhos-de-edicao-de-linha
+%%| alt: Linha de comando com o cursor no meio e as regioes afetadas por cada atalho de edicao
+\begin{tikzpicture}[
+    seg/.style={font=\small\ttfamily,inner sep=1pt,minimum height=0.42cm,anchor=west,draw=none},
+    chave/.style={decorate,decoration={brace,amplitude=4pt},thick},
+    rot/.style={font=\scriptsize,align=center},
+    mov/.style={thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[seg] (s1) at (0,0) {nmap\ };
+  \node[seg,right=0pt of s1] (s2) {-sV\ };
+  \node[seg,right=0pt of s2] (s3) {-{}-top-ports\ };
+  \node[seg,right=0pt of s3] (s4) {1000\ };
+  \node[seg,right=0pt of s4] (s5) {alvo.local};
+
+  \draw[manualred,very thick] ($(s4.east)+(0,0.26)$) -- ($(s4.east)+(0,-0.26)$);
+  \node[font=\scriptsize,manualred] at ($(s4.east)+(0,1.05)$) {cursor};
+
+  % Ctrl+W: apaga a palavra anterior
+  \draw[chave,manualblue] ($(s4.south east)+(0,-0.1)$) -- ($(s4.south west)+(0,-0.1)$);
+  \node[rot,manualblue,text width=3.0cm] at ($(s4.south)+(-0.7,-0.8)$) {\texttt{Ctrl+W}\\apaga a palavra anterior};
+
+  % Ctrl+K: do cursor ao fim
+  \draw[chave,manualgreen] ($(s5.south east)+(0,-0.1)$) -- ($(s5.south west)+(0,-0.1)$);
+  \node[rot,manualgreen,text width=2.3cm] at ($(s5.south)+(1.0,-0.8)$) {\texttt{Ctrl+K}\\apaga até o fim};
+
+  % Ctrl+U: do inicio ao cursor
+  \draw[chave,manualyellow] ($(s4.south east)+(0,-1.7)$) -- ($(s1.south west)+(0,-1.7)$);
+  \node[rot,manualyellow,text width=3.4cm] at ($(s3.south)+(0,-2.5)$) {\texttt{Ctrl+U}\\apaga do início até o cursor};
+
+  % movimentos
+  \draw[mov,manualgray] ($(s4.north east)+(0,0.4)$) -- ($(s1.north west)+(0,0.4)$);
+  \node[rot,manualgray] at ($(s2.north)+(0,0.62)$) {\texttt{Ctrl+A}};
+  \draw[mov,manualgray] ($(s4.north east)+(0.15,0.4)$) -- ($(s5.north east)+(0,0.4)$);
+  \node[rot,manualgray] at ($(s5.north)+(0.2,0.62)$) {\texttt{Ctrl+E}};
+
+  \node[rot,manualgray,text width=3.7cm,align=left] at (9.9,-2.2) {\texttt{Alt+B} e \texttt{Alt+F} andam de palavra em palavra.\\\texttt{Ctrl+Y} cola o trecho apagado.};
+\end{tikzpicture}
+```
+O que os atalhos apagam depende da posição do cursor. `Ctrl+Y` traz de volta o último trecho removido.
+:::
+
+A lista que vale memorizar, dividida por função:
+
+| Atalho | Ação |
+|--------|------|
+| `Ctrl+A` / `Ctrl+E` | início / fim da linha |
+| `Ctrl+B` / `Ctrl+F` | um caractere para trás / para frente |
+| `Alt+B` / `Alt+F` | uma palavra para trás / para frente |
+| `Ctrl+W` | apaga a palavra antes do cursor |
+| `Alt+D` | apaga a palavra depois do cursor |
+| `Ctrl+K` | apaga do cursor até o fim |
+| `Ctrl+U` | apaga do início até o cursor (Bash) ou a linha toda (Zsh) |
+| `Ctrl+Y` | cola o último trecho apagado |
+| `Ctrl+T` | troca os dois caracteres em torno do cursor |
+| `Alt+T` | troca as duas palavras em torno do cursor |
+| `Alt+.` | insere o último argumento do comando anterior |
+| `Ctrl+_` | desfaz a última edição |
+| `Ctrl+L` | limpa a tela, mantendo a linha em edição |
+| `Ctrl+X` `Ctrl+E` | abre a linha atual no editor definido em `EDITOR` |
+
+: Atalhos de edição de linha {#tbl-atalhos-edicao}
+
+O `Alt+.` é o mais subestimado. Depois de `mkdir -p /tmp/projeto/evidencias`, digitar `cd ` e apertar `Alt+.` insere o caminho inteiro. Repetir o atalho percorre os últimos argumentos de comandos anteriores.
+
+O `Ctrl+X` seguido de `Ctrl+E` resolve o caso do comando que ficou grande demais: ele abre a linha no seu editor, e ao salvar e sair, o shell executa o resultado. Ideal para montar um pipeline longo com calma.
+
+### Os atalhos de controle de processo
+
+Estes não são do editor de linha: são do driver do terminal, o PTY de @sec-cap008. Por isso funcionam mesmo com o programa ocupado.
+
+| Atalho | Efeito |
+|--------|--------|
+| `Ctrl+C` | envia `SIGINT`: pede que o programa termine |
+| `Ctrl+Z` | envia `SIGTSTP`: suspende o programa; `fg` retoma |
+| `Ctrl+D` | fim de arquivo na entrada; num prompt vazio, encerra o shell |
+| `Ctrl+S` | **congela** a saída do terminal |
+| `Ctrl+Q` | descongela a saída |
+
+: Atalhos tratados pelo driver do terminal {#tbl-atalhos-controle}
+
+::: {.callout-warning}
+## `Ctrl+S` é o motivo número um de "meu terminal travou"
+
+`Ctrl+S` é um resquício dos terminais físicos: ele manda o controle de fluxo parar a saída. A tela congela, as teclas não aparecem, e tudo parece perdido. O programa continua rodando normalmente — só a exibição parou.
+
+O conserto é `Ctrl+Q`.
+
+Como o atalho é acionado por engano com frequência (a mão vai em `Ctrl+S` de "salvar"), muita gente o desativa de vez:
+
+```bash
+stty -ixon        # coloque no ~/.zshrc
+```
+
+Com isso, `Ctrl+S` fica livre para outros usos — no Bash, por exemplo, ele passa a servir para busca no histórico para frente.
+:::
+
+### Modo vi
+
+Quem prefere as teclas do vi:
+
+```bash
+set -o vi      # ativa
+set -o emacs   # volta ao padrao
+bindkey -v     # zsh
+bindkey -e     # zsh, volta ao emacs
+```
+
+No modo vi, `Esc` entra em modo de comando e todas as teclas de movimentação do vi valem na linha. É uma escolha pessoal; o importante é saber que existe, porque um dia você vai cair numa máquina configurada assim e vai precisar entender por que `Esc` mudou tudo.
+
+## O histórico
+
+Cada comando executado é guardado numa lista em memória e, ao final da sessão, gravado num arquivo.
+
+```bash
+history                   # lista tudo, numerado
+history 20                # os 20 ultimos
+history | grep nmap       # busca por texto
+echo "$HISTFILE"          # onde fica: ~/.zsh_history ou ~/.bash_history
+wc -l "$HISTFILE"
+```
+
+@fig-fluxo-historico mostra o caminho dos comandos entre a memória e o disco — e explica por que o histórico às vezes some.
+
+::: {#fig-fluxo-historico}
+```{.tikz}
+%%| filename: fluxo-do-historico-do-shell
+%%| alt: Caminho de um comando da linha digitada para a lista em memoria e para o arquivo de historico
+\begin{tikzpicture}[
+    cx/.style={draw=manualgray,rounded corners=3pt,text width=3.1cm,align=center,font=\scriptsize,minimum height=1.0cm,inner sep=3pt,fill=manualblue!9},
+    mem/.style={cx,fill=manualyellow!20,draw=manualyellow,thick},
+    dis/.style={cx,fill=manualgreen!14,draw=manualgreen,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left,text width=4.1cm}
+  ]
+  \node[cx]  (dig) at (0,0)     {você digita\\e aperta Enter};
+  \node[mem] (mm)  at (4.0,0)   {\textbf{lista em memória}\\limite: \texttt{HISTSIZE}};
+  \node[dis] (fa)  at (9.6,0)   {\textbf{arquivo}\\\texttt{HISTFILE}\\limite: \texttt{HISTFILESIZE}};
+
+  \draw[fl] (dig) -- (mm);
+  \draw[fl] (mm) -- node[font=\scriptsize,manualgray,above,align=center]{ao sair\\da sessão} (fa);
+  \draw[fl,dashed,manualgreen] (fa.south) -- ++(0,-1.1) -| node[font=\scriptsize,manualgreen,pos=0.25,below]{ao iniciar a sessão} (mm.south);
+
+  \node[nt,manualred] at (4.2,2.1) {\textbf{Duas abas abertas:} a que fechar por último sobrescreve o arquivo e apaga o histórico da outra.};
+  \node[nt,manualgreen,text width=5.0cm] at (4.4,-2.6) {\textbf{Correção:} \texttt{setopt INC\_APPEND\_HISTORY} no Zsh, \texttt{shopt -s histappend} com \texttt{PROMPT\_COMMAND} no Bash.};
+\end{tikzpicture}
+```
+O histórico vive em dois lugares. Sem configuração, a gravação é só na saída — e a última sessão a fechar vence.
+:::
+
+### Configuração que vale a pena
+
+No `~/.zshrc`:
+
+```bash
+HISTFILE=~/.zsh_history
+HISTSIZE=50000                 # comandos na memoria
+SAVEHIST=50000                 # comandos no arquivo
+setopt INC_APPEND_HISTORY      # grava na hora, nao so ao sair
+setopt SHARE_HISTORY           # abas compartilham o historico ao vivo
+setopt HIST_IGNORE_DUPS        # nao repete comandos identicos seguidos
+setopt HIST_IGNORE_SPACE       # comando iniciado com espaco nao entra
+setopt HIST_REDUCE_BLANKS      # normaliza espacos
+setopt EXTENDED_HISTORY        # grava data e duracao
+```
+
+O equivalente no `~/.bashrc`:
+
+```bash
+HISTSIZE=50000
+HISTFILESIZE=50000
+HISTCONTROL=ignoreboth         # ignoredups + ignorespace
+HISTTIMEFORMAT='%F %T '        # carimbo de data em cada linha
+shopt -s histappend
+PROMPT_COMMAND='history -a'    # grava a cada comando
+```
+
+O `HISTTIMEFORMAT` transforma o histórico em registro de auditoria pessoal: você passa a saber **quando** rodou cada coisa. Numa investigação, isso vale ouro.
+
+### Busca e reuso
+
+O atalho central é `Ctrl+R`: busca reversa incremental.
+
+```
+Ctrl+R          entra no modo de busca
+digite parte    o shell mostra o candidato mais recente
+Ctrl+R de novo  candidato anterior
+Enter           executa
+seta ou Ctrl+E  edita antes de executar
+Ctrl+G          cancela
+```
+
+No Bash, `Ctrl+S` faz a busca para frente — desde que `stty -ixon` esteja ativo. E as setas para cima e para baixo, no Zsh do Kali, já buscam por prefixo: digite `nmap` e aperte a seta para cima para percorrer apenas os comandos que começam com `nmap`.
+
+A **expansão de histórico** trabalha por sintaxe, e é o que economiza mais digitação:
+
+| Expressão | Significado |
+|-----------|-------------|
+| `!!` | o comando anterior inteiro |
+| `!$` | o último argumento do comando anterior |
+| `!^` | o primeiro argumento do comando anterior |
+| `!*` | todos os argumentos do comando anterior |
+| `!142` | o comando número 142 do histórico |
+| `!-3` | três comandos atrás |
+| `!nmap` | o último comando que começou com `nmap` |
+| `!?erro?` | o último comando que **contém** `erro` |
+| `^velho^novo` | repete o anterior trocando a primeira ocorrência |
+| `!!:p` | **mostra** o comando sem executar |
+
+: Expansão de histórico {#tbl-expansao-historico}
+
+Os idiomas que aparecem todo dia:
+
+```bash
+apt update              # esqueceu o sudo
+sudo !!                 # vira: sudo apt update
+
+mkdir -p /tmp/relatorios/2026/janeiro
+cd !$                   # vira: cd /tmp/relatorios/2026/janeiro
+
+grep erro /var/log/sysog     # erro de digitacao
+^sysog^syslog                # repete com o nome corrigido
+
+nmap -sV alvo.local
+!!:p                    # mostra a linha sem executar — util para conferir
+```
+
+O `:p` é a rede de proteção: ele imprime o comando que **seria** executado e o coloca no histórico, para você revisar e chamar de novo com a seta para cima. Antes de um `!!` que envolva `rm` ou `sudo`, use `!!:p` primeiro.
+
+### O histórico é um risco de segurança
+
+Tudo o que você digita fica gravado em texto puro, inclusive senhas passadas na linha de comando:
+
+```bash
+mysql -u root -pSenhaSecreta123      # esta senha esta agora no ~/.zsh_history
+curl -u admin:senha https://alvo/    # esta tambem
+```
+
+Três defesas:
+
+**Espaço no início.** Com `HIST_IGNORE_SPACE` ativo, um comando que começa com espaço não entra no histórico:
+
+```bash
+ mysql -u root -pSenhaSecreta123
+```
+
+**Padrões ignorados.** No Bash, `HISTIGNORE='*password*:*secret*:*token*'` filtra por padrão.
+
+**Limpeza pontual.**
+
+```bash
+history -d 145           # remove a entrada 145
+history -c               # limpa a lista em memoria
+history -w               # grava a lista limpa por cima do arquivo
+```
+
+Vale a consciência da outra ponta: num sistema que não é seu, o histórico é **evidência**, e apagá-lo é uma ação registrada e frequentemente ilegal. Num teste autorizado, o escopo do contrato define o que pode ser tocado; fora dele, mexer em registro de terceiro é crime no Brasil (Lei 12.737/2012). A lição defensiva vale igual: o histórico de um usuário comprometido conta a história inteira do que foi feito, e é por isso que ele é um dos primeiros arquivos que uma resposta a incidente examina.
+
+## Autocompletar
+
+`Tab` completa; `Tab` duas vezes lista as opções.
+
+```bash
+cd /usr/sh<Tab>              # completa para /usr/share/
+apt install nma<Tab><Tab>    # lista os pacotes que comecam com nma
+systemctl status ss<Tab>     # completa nomes de servico
+git che<Tab>                 # completa subcomandos do git
+kill -<Tab><Tab>             # lista os sinais
+```
+
+O autocompletar não é genérico: cada programa registra as próprias regras. Isso significa que `apt install` completa **nomes de pacotes**, `systemctl` completa **nomes de unidades** e `git checkout` completa **nomes de ramos**. Os scripts que fazem isso ficam em `/usr/share/bash-completion/completions/` e em `/usr/share/zsh/functions/Completion/`.
+
+O Zsh vai além, com menu navegável por setas:
+
+```bash
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+```
+
+E aceita caminhos abreviados: `cd /u/s/w` seguido de `Tab` expande para `/usr/share/wordlists`.
+
+## Produtividade além dos atalhos
+
+**Aliases** para o que você repete:
+
+```bash
+alias ll='ls -lah'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ports='ss -tulpn'
+alias myip='curl -s ifconfig.me'
+```
+
+**Funções** quando é preciso receber argumento — alias não recebe:
+
+```bash
+mkcd() { mkdir -p "$1" && cd "$1"; }
+extrair() {
+  case "$1" in
+    *.tar.gz) tar xzf "$1" ;;
+    *.tar.xz) tar xJf "$1" ;;
+    *.zip)    unzip "$1"   ;;
+    *)        echo "formato desconhecido: $1" ;;
+  esac
+}
+```
+
+Aliases e funções vão no `~/.zshrc`, como visto em @sec-cap008.
+
+**`fc`** edita o comando anterior no editor e executa ao salvar. É o irmão mais velho do `Ctrl+X Ctrl+E`.
+
+**`fzf`**, um localizador difuso, substitui o `Ctrl+R` por uma busca interativa muito melhor:
+
+```bash
+sudo apt install fzf
+# no ~/.zshrc:
+source /usr/share/doc/fzf/examples/key-bindings.zsh
+```
+
+Depois disso, `Ctrl+R` abre uma lista filtrável do histórico inteiro, e `Ctrl+T` insere um caminho escolhido interativamente.
+
+**`watch`** repete um comando em intervalos:
+
+```bash
+watch -n 2 'ss -tunp | head -20'
+watch -d -n 1 'ls -lh /tmp/coleta'     # -d destaca as diferencas
+```
+
+**`Ctrl+Z` e `fg`** valem ser tratados como atalho de edição: suspender o `vim`, rodar dois comandos, e voltar com `fg` é mais rápido do que abrir outra aba. O tema completo — jobs, `bg`, `nohup` — é do Volume 5.
+
+## 🐉 No Kali
+
+- **O Zsh do Kali já vem com busca por prefixo nas setas.** Digitar `nmap` e apertar a seta para cima percorre apenas os comandos que começam com `nmap`, e não o histórico inteiro. É o recurso que mais economiza tempo depois do `Ctrl+R`.
+- **`kali-tweaks` não configura o histórico** — isso é edição manual do `~/.zshrc`. Vale acrescentar `HISTSIZE`, `SAVEHIST` e `EXTENDED_HISTORY` num arquivo novo em vez de alterar o padrão da distribuição.
+- **Senha de ferramenta na linha de comando vai para o histórico.** `hydra`, `smbclient`, `mysql`, `curl -u` e `sshpass` são os casos mais comuns. Prefira o prompt interativo da própria ferramenta, um arquivo de credenciais com permissão `600`, ou o espaço inicial com `HIST_IGNORE_SPACE`.
+- **`EXTENDED_HISTORY` gera a linha do tempo do seu trabalho.** Num teste autorizado, o histórico com carimbo de data é insumo direto do relatório: o que foi executado, contra quem e quando. Combine com `script -T tempo.log sessao.log` para gravar a sessão inteira, saída incluída.
+- **`Ctrl+C` numa varredura longa perde o progresso.** Ferramentas como `nmap` e `gobuster` aceitam continuar de onde pararam (`--resume`), mas só se a saída estiver sendo gravada em arquivo. Comece sempre com `-oA` ou `-o`, e prefira `tmux` a deixar a varredura presa à aba.
+- **`Ctrl+S` congela a saída de uma varredura em andamento** e assusta bastante quem acha que travou. `Ctrl+Q` devolve, e `stty -ixon` no `~/.zshrc` evita o susto de vez.
+- **O autocompletar do `apt` é lento na primeira vez** depois de um `apt update` no repositório rolling, porque o cache precisa ser reconstruído. Não é travamento.
+- **`fzf` não vem instalado**, mas está no repositório e transforma a navegação em árvores de wordlists e de resultados.
+
+> **Nota sobre a família RHEL.** Readline, atalhos e expansão de histórico são iguais, já que o Bash é o mesmo. As diferenças são as opções de configuração — `shopt`/`HISTCONTROL` em vez de `setopt` — e a ausência da busca por prefixo nas setas, que é um recurso do Zsh.
+
+## 🧪 Laboratório
+
+Roteiro na VM. A maior parte é prática de teclado; faça de verdade, não só leia.
+
+1. **Pratique a movimentação sem apagar nada.**
+
+   Digite a linha abaixo **sem apertar Enter**:
+
+   ```bash
+   nmap -sV -sC --top-ports 1000 -oA resultados/inicial 192.168.56.0/24
+   ```
+
+   Agora: `Ctrl+A` (início), `Ctrl+E` (fim), `Alt+B` cinco vezes, `Alt+F` três vezes, `Ctrl+A`, `Ctrl+K` (apaga tudo), `Ctrl+Y` (traz de volta), `Ctrl+C` para descartar.
+
+   Esperado: o cursor salta em vez de rastejar, e `Ctrl+Y` restaura o que `Ctrl+K` removeu. Compare com @fig-atalhos-linha.
+
+2. **Corrija sem apagar tudo.**
+
+   Digite `ls -la /etc/sshh` e, sem apertar Enter: `Ctrl+W` (apaga a última palavra), depois digite `/etc/ssh` e aperte Enter.
+
+   Esperado: uma correção em duas teclas em vez de nove Backspaces.
+
+3. **Reutilize o último argumento.**
+
+   ```bash
+   mkdir -p /tmp/lab014/relatorios/2026
+   ```
+
+   Agora digite `cd ` e aperte `Alt+.`, depois Enter.
+
+   ```bash
+   pwd
+   ```
+
+   Esperado: você está em `/tmp/lab014/relatorios/2026` sem ter digitado o caminho de novo. Repita `Alt+.` várias vezes para percorrer argumentos anteriores.
+
+4. **Edite uma linha longa no editor.**
+
+   Digite um pipeline qualquer sem apertar Enter e pressione `Ctrl+X` seguido de `Ctrl+E`.
+
+   Esperado: a linha abre no editor definido em `EDITOR` (`nano` por padrão). Salve e saia — o shell executa. Ideal para pipelines com muitos estágios.
+
+5. **Congele e descongele o terminal de propósito.**
+
+   ```bash
+   ping -c 20 127.0.0.1
+   ```
+
+   Durante a execução, aperte `Ctrl+S`. Espere alguns segundos. Aperte `Ctrl+Q`.
+
+   Esperado: a saída para e depois volta **de uma vez**, com tudo o que aconteceu no intervalo. O programa nunca parou. Acrescente `stty -ixon` ao `~/.zshrc` se quiser desativar o atalho.
+
+6. **Inspecione o histórico.**
+
+   ```bash
+   history | tail -20
+   history | wc -l
+   echo "$HISTFILE"
+   ls -lh "$HISTFILE"
+   history | grep mkdir
+   ```
+
+   Esperado: a lista numerada, o caminho do arquivo e as ocorrências filtradas. Repare no tamanho do arquivo — ele guarda meses de trabalho.
+
+7. **Use a busca reversa.**
+
+   Aperte `Ctrl+R` e digite `mkdir`. Aperte `Ctrl+R` de novo para ver ocorrências anteriores. Aperte a seta para a direita para editar em vez de executar, e `Ctrl+G` para cancelar.
+
+   Esperado: navegação instantânea por comandos de semanas atrás. Este é o atalho que mais rende do capítulo.
+
+8. **Exercite a expansão de histórico.**
+
+   ```bash
+   ls /tmp/lab014
+   !!
+   echo /tmp/lab014/relatorios
+   ls !$
+   mkdir -p /tmp/lab014/a/b/c
+   cd !$
+   pwd
+   cd /tmp/lab014
+   ```
+
+   Esperado: `!!` repete a linha inteira e `!$` reaproveita o último argumento.
+
+9. **Confira antes de repetir.**
+
+   ```bash
+   ls -la /tmp/lab014
+   !!:p
+   !ls:p
+   ```
+
+   Esperado: o comando é **mostrado** e não executado, ficando disponível na seta para cima. Adote isso antes de qualquer `!!` que envolva `sudo` ou `rm`.
+
+10. **Corrija um erro de digitação com `^velho^novo`.**
+
+    ```bash
+    ls /tmp/lab104
+    ^lab104^lab014
+    ```
+
+    Esperado: a segunda linha reexecuta com o nome corrigido. Funciona só na primeira ocorrência do texto.
+
+11. **Esqueça o `sudo` de propósito.**
+
+    ```bash
+    apt update
+    sudo !!
+    ```
+
+    Esperado: erro de permissão na primeira, execução correta na segunda. É o idioma mais usado do histórico inteiro.
+
+12. **Mantenha uma senha fora do histórico.**
+
+    ```bash
+    setopt HIST_IGNORE_SPACE
+     echo "senha-secreta-de-teste"
+    echo "esta entra normalmente"
+    history | tail -3
+    ```
+
+    Repare no **espaço antes** do segundo comando. Esperado: a linha com a senha não aparece no histórico; a outra sim. Confirme também com `grep senha-secreta "$HISTFILE"`, que não deve retornar nada.
+
+13. **Remova uma entrada específica.**
+
+    ```bash
+    echo "comando que eu nao queria registrar"
+    history | tail -3
+    history -d $(history | tail -2 | head -1 | awk '{print $1}')
+    history | tail -3
+    ```
+
+    Esperado: a entrada some da lista. Lembre-se de que isso vale para a **sua** máquina — em sistema de terceiros, o histórico é registro e apagá-lo tem consequências legais.
+
+14. **Ative o carimbo de data.**
+
+    ```bash
+    setopt EXTENDED_HISTORY
+    echo "comando com carimbo"
+    fc -li -3
+    ```
+
+    Esperado: as últimas entradas com data e hora. Com isso ativo permanentemente no `~/.zshrc`, o seu histórico vira uma linha do tempo do trabalho.
+
+15. **Explore o autocompletar contextual.**
+
+    ```bash
+    cd /usr/sh<Tab>
+    ```
+
+    Depois experimente, sempre com `Tab` duas vezes: `apt install nma`, `systemctl status ss`, `kill -`, `git che` (dentro de um repositório).
+
+    Esperado: cada programa completa o que faz sentido para ele — pacotes, unidades, sinais, ramos. Não é uma lista genérica de arquivos.
+
+16. **Crie um alias e uma função.**
+
+    ```bash
+    alias ll='ls -lah'
+    mkcd() { mkdir -p "$1" && cd "$1"; }
+    ll /tmp/lab014
+    mkcd /tmp/lab014/novo/nivel
+    pwd
+    ```
+
+    Esperado: o alias funciona e a função cria e entra no diretório. Se quiser mantê-los, acrescente ao final do `~/.zshrc`.
+
+17. **Instale e experimente o `fzf`.**
+
+    ```bash
+    sudo apt install -y fzf
+    source /usr/share/doc/fzf/examples/key-bindings.zsh
+    ```
+
+    Aperte `Ctrl+R` e digite pedaços soltos de um comando antigo.
+
+    Esperado: busca difusa sobre o histórico inteiro, muito superior ao `Ctrl+R` padrão. Se gostar, coloque a linha do `source` no `~/.zshrc`.
+
+18. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -la /tmp/lab014
+    rm -rf /tmp/lab014
+    ```
+
+## Resumo
+
+- **A linha de comando é um editor**, servido pela Readline no Bash e pela ZLE no Zsh. `Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+K`, `Ctrl+U`, `Ctrl+Y` e `Alt+.` substituem centenas de toques em setas e Backspace.
+- **`Ctrl+C`, `Ctrl+Z`, `Ctrl+D`, `Ctrl+S` e `Ctrl+Q` são do driver do terminal**, não do shell — por isso funcionam mesmo com o programa ocupado.
+- **`Ctrl+S` congela a saída e não trava nada.** `Ctrl+Q` devolve, e `stty -ixon` desliga o atalho de vez.
+- **O histórico vive em memória e só vai ao arquivo ao sair**, a menos que você configure gravação incremental. Sem isso, a última aba a fechar sobrescreve o histórico das outras.
+- **`Ctrl+R` é o atalho de maior retorno do capítulo.** Complementado por `!!`, `!$`, `sudo !!` e `^velho^novo`, ele elimina a maior parte da redigitação.
+- **`!!:p` mostra sem executar.** Use antes de qualquer repetição que envolva `sudo` ou comando destrutivo.
+- **Senha na linha de comando fica gravada em texto puro.** Espaço inicial com `HIST_IGNORE_SPACE`, `HISTIGNORE` e prompt interativo da ferramenta são as defesas; do lado defensivo, o histórico é uma das primeiras fontes examinadas numa resposta a incidente.
+- **O autocompletar é contextual**: cada programa registra as próprias regras, completando pacotes, unidades, ramos ou sinais conforme o comando.
+- **Alias para o que se repete, função para o que precisa de argumento**, e as duas coisas no arquivo de configuração interativo do shell.

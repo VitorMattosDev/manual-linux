@@ -1,3 +1,530 @@
 # Manipulando arquivos e diretórios: cp, mv, rm, mkdir {#sec-cap010}
 
-*(em elaboracao)*
+Você termina o relatório de um teste e quer guardá-lo em segurança:
+
+```bash
+mv relatorio-final.md backups/
+```
+
+Nenhum erro. Nenhuma mensagem. Você segue em frente. Uma semana depois, procura o relatório em `backups/` e não encontra nada — porque o diretório `backups` nunca existiu. O `mv` fez exatamente o que você pediu: **renomeou** `relatorio-final.md` para um arquivo chamado `backups`. O conteúdo está lá, inteiro, com o nome errado e sem extensão. Se naquela mesma semana você tivesse rodado a linha de novo com outro relatório, o primeiro teria sido sobrescrito sem aviso nenhum.
+
+Essa família de comandos — `cp`, `mv`, `rm`, `mkdir` — é a que você mais vai usar e a única que pode destruir trabalho de forma irreversível. Não há lixeira. Não há `Ctrl+Z`. O `rm` não pede confirmação, o `mv` não avisa antes de sobrescrever, e o `cp` faz o mesmo. A ferramenta obedece.
+
+Este capítulo trata desses quatro comandos com o cuidado que eles merecem: primeiro o modelo mental do que cada um faz de verdade no sistema de arquivos, depois as opções, e por fim os hábitos que separam quem já perdeu dados de quem ainda não perdeu.
+
+## Nomes e conteúdo são coisas separadas
+
+Antes das opções, um modelo que explica os três comandos de uma vez. No Linux, o **nome** de um arquivo e o **conteúdo** dele vivem em lugares diferentes. Um diretório é uma tabela que associa nomes a números de inode; o inode é a estrutura que guarda metadados e aponta para os blocos de dados. @fig-cp-mv-ln mostra o efeito de cada operação nesse arranjo.
+
+::: {#fig-cp-mv-ln}
+```{.tikz}
+%%| filename: cp-mv-ln-no-nivel-do-inode
+%%| alt: Efeito de cp, mv e ln sobre entradas de diretorio e inodes
+\begin{tikzpicture}[
+    ent/.style={draw=manualblue,fill=manualblue!10,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.7cm,minimum height=0.5cm,inner sep=2pt},
+    ino/.style={draw=manualred,fill=manualred!10,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.5cm,minimum height=0.5cm,inner sep=2pt},
+    novo/.style={ino,fill=manualgreen!14,draw=manualgreen,thick},
+    tit/.style={font=\scriptsize\bfseries,manualgray},
+    ap/.style={manualgray,thin,-{Stealth[length=4pt]}},
+    apn/.style={manualgreen,thick,-{Stealth[length=4pt]}}
+  ]
+  % --- painel 1: cp
+  \node[tit] at (0,1.0) {\texttt{cp a.txt b.txt}};
+  \node[ent] (c1) at (-0.85,0.3) {a.txt};
+  \node[ent] (c2) at (-0.85,-0.5) {b.txt};
+  \node[ino] (ci) at (1.15,0.3)  {inode 42};
+  \node[novo](cn) at (1.15,-0.5) {inode 77};
+  \draw[ap]  (c1) -- (ci);
+  \draw[apn] (c2) -- (cn);
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (0.15,-1.6) {dois nomes, \textbf{dois} conteúdos; ocupa espaço em dobro};
+
+  % --- painel 2: mv
+  \node[tit] at (5.2,1.0) {\texttt{mv a.txt b.txt}};
+  \node[ent] (m1) at (4.35,0.3)  {b.txt};
+  \node[ino] (mi) at (6.35,0.3)  {inode 42};
+  \draw[ap]  (m1) -- (mi);
+  \node[ent,draw=manualgray,fill=manualgray!8,text=manualgray] (m0) at (4.35,-0.5) {a.txt};
+  \draw[auxiliar] (m0.north east) -- (m0.south west);
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (5.35,-1.6) {só a \textbf{entrada} muda de nome; o conteúdo não é tocado};
+
+  % --- painel 3: ln
+  \node[tit] at (10.4,1.0) {\texttt{ln a.txt b.txt}};
+  \node[ent] (l1) at (9.55,0.3)  {a.txt};
+  \node[ent] (l2) at (9.55,-0.5) {b.txt};
+  \node[ino] (li) at (11.55,-0.1) {inode 42};
+  \draw[ap]  (l1) -- (li);
+  \draw[apn] (l2) -- (li);
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (10.55,-1.6) {dois nomes, \textbf{um} conteúdo; espaço não muda};
+
+  \draw[auxiliar] (2.9,1.3) -- (2.9,-2.1);
+  \draw[auxiliar] (8.1,1.3) -- (8.1,-2.1);
+\end{tikzpicture}
+```
+Azul são nomes, vermelho é conteúdo. Copiar duplica o conteúdo; mover mexe só no nome.
+:::
+
+Três consequências práticas seguem daí:
+
+**`mv` dentro do mesmo sistema de arquivos é instantâneo**, mesmo para um arquivo de 40 GB. O comando só reescreve uma entrada de diretório. Já `mv` **entre** sistemas de arquivos diferentes — do disco para um pendrive, por exemplo — não pode fazer isso: ele copia os dados e depois apaga a origem, e aí demora e pode ser interrompido no meio.
+
+**`cp` é a operação cara.** Ela lê e escreve o conteúdo inteiro, ocupa espaço adicional e leva tempo proporcional ao tamanho.
+
+**`rm` não apaga dados; apaga um nome.** Ele remove a entrada de diretório e decrementa o contador de links do inode. O conteúdo só é liberado quando esse contador chega a zero **e** nenhum processo tem o arquivo aberto. É por isso que apagar um log enquanto um serviço escreve nele não libera espaço em disco — o assunto reaparece no Volume 3.
+
+## `mkdir`: criando diretórios
+
+```bash
+mkdir relatorios
+mkdir -p projetos/cliente/2026/evidencias    # cria toda a cadeia
+mkdir -v teste                               # informa o que criou
+mkdir -m 700 privado                         # ja nasce com a permissao
+```
+
+O `-p` (*parents*) faz duas coisas úteis: cria os diretórios intermediários que faltarem e **não reclama** se o alvo já existir. Essa segunda propriedade é o que torna a opção obrigatória em scripts:
+
+```bash
+mkdir /tmp/trabalho          # falha se ja existir, e o script para com set -e
+mkdir -p /tmp/trabalho       # idempotente: pode rodar mil vezes
+```
+
+O `-m` define a permissão no momento da criação, o que é diferente de criar e depois rodar `chmod`. Entre uma coisa e outra existe uma janela em que o diretório está aberto a todos — irrelevante na sua máquina, relevante num servidor compartilhado.
+
+Combinado com a expansão de chaves de @sec-cap013, o `mkdir` cria estruturas inteiras numa linha:
+
+```bash
+mkdir -p projeto/{doc,src,teste}/{entrada,saida}
+```
+
+Para remover, `rmdir` só funciona com diretório vazio — e é justamente essa recusa que o torna seguro:
+
+```bash
+rmdir vazio
+rmdir -p a/b/c        # remove c, depois b, depois a, enquanto estiverem vazios
+```
+
+## `touch`: criar e carimbar
+
+```bash
+touch arquivo.txt        # cria vazio, ou atualiza a data se ja existir
+touch a.txt b.txt c.txt  # varios de uma vez
+```
+
+O propósito original do `touch` não é criar arquivos, e sim mexer nos carimbos de tempo. Todo arquivo tem três:
+
+| Carimbo | Significado | Ver com |
+|---------|-------------|---------|
+| `mtime` | última modificação do **conteúdo** | `ls -l` |
+| `atime` | último **acesso** (leitura) | `ls -lu` |
+| `ctime` | última mudança nos **metadados** (permissão, dono, nome) | `ls -lc` |
+
+: Os três carimbos de tempo de um arquivo {#tbl-carimbos}
+
+```bash
+touch -d "2020-01-01 10:00" antigo.txt   # define uma data especifica
+touch -r modelo.txt copia.txt            # copia a data de outro arquivo
+touch -a arquivo.txt                     # so o atime
+touch -m arquivo.txt                     # so o mtime
+stat arquivo.txt                         # mostra os tres de uma vez
+```
+
+O `ctime` **não** pode ser definido pelo `touch` — ele é atualizado pelo kernel a cada mudança de metadado, inclusive pelo próprio `touch`. Isso tem peso em perícia digital: alguém pode falsificar `mtime` e `atime` com facilidade, mas um `ctime` mais recente que os outros dois é sinal de que o arquivo foi mexido depois da data que ele exibe.
+
+## `cp`: copiar com intenção
+
+```bash
+cp origem.txt destino.txt              # copia para um novo nome
+cp arquivo.txt /tmp/                   # copia para dentro de um diretorio
+cp a.txt b.txt c.txt /tmp/backup/      # varios para um diretorio (ele deve existir)
+cp -r pasta/ /tmp/                     # recursivo: obrigatorio para diretorios
+```
+
+As opções que mudam o resultado de verdade:
+
+```bash
+cp -i   # pergunta antes de sobrescrever (interactive)
+cp -n   # nunca sobrescreve (no-clobber), sem perguntar
+cp -u   # so copia se a origem for mais nova (update)
+cp -v   # mostra cada arquivo copiado (verbose)
+cp -p   # preserva mtime, dono e permissoes
+cp -a   # arquivamento: -r + -p + preserva links simbolicos
+cp --backup=numbered   # renomeia o antigo em vez de destruir
+```
+
+O `-a` é o padrão para copiar árvores que precisam continuar iguais — um diretório de configuração, uma coleta de evidências, o conteúdo de um sistema de arquivos. Sem ele, permissões viram as do seu `umask`, datas viram "agora" e links simbólicos são seguidos e copiados como arquivos comuns, o que pode inflar a cópia absurdamente.
+
+### A barra final muda o resultado
+
+Este é um detalhe que causa surpresa genuína:
+
+```bash
+cp -r origem  destino/    # se destino existe: cria destino/origem
+cp -r origem/ destino/    # no cp do GNU, o mesmo resultado
+rsync -a origem  destino/ # cria destino/origem
+rsync -a origem/ destino/ # copia o CONTEUDO de origem para dentro de destino
+```
+
+No `cp`, a barra final na origem tem pouco efeito. No `rsync`, ela muda tudo. Como as duas ferramentas convivem no mesmo trabalho, o hábito seguro é sempre testar com `--dry-run` no `rsync` e conferir o resultado do `cp` com `ls` antes de confiar.
+
+O que **sempre** importa é se o destino existe e é um diretório:
+
+```bash
+cp a.txt b.txt          # b.txt nao existe -> cria uma copia com esse nome
+cp a.txt b.txt          # b.txt existe como arquivo -> SOBRESCREVE, sem avisar
+cp a.txt pasta          # pasta existe como diretorio -> cria pasta/a.txt
+```
+
+## `mv`: mover e renomear são a mesma coisa
+
+Não existe comando `rename` padrão no Unix porque não é preciso: mover um arquivo para o mesmo diretório com outro nome **é** renomear. @fig-mv-destino mostra a decisão que o `mv` toma — e é ela que explica o desastre da abertura do capítulo.
+
+::: {#fig-mv-destino}
+```{.tikz}
+%%| filename: decisao-do-mv-conforme-o-destino
+%%| alt: Arvore de decisao do mv conforme o destino nao existir, ser diretorio ou ser arquivo existente
+\begin{tikzpicture}[
+    cx/.style={draw=manualyellow,fill=manualyellow!16,rounded corners=3pt,text width=3.6cm,align=center,font=\scriptsize,minimum height=0.9cm,inner sep=3pt},
+    ok/.style={draw=manualgreen,fill=manualgreen!13,rounded corners=2pt,text width=3.5cm,align=center,font=\scriptsize,minimum height=1.0cm,inner sep=3pt},
+    peri/.style={draw=manualred,fill=manualred!13,rounded corners=2pt,text width=3.5cm,align=center,font=\scriptsize,minimum height=1.0cm,inner sep=3pt},
+    ramo/.style={manualgray,thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[cx] (q) at (0,0) {\texttt{mv origem destino}\\o \textbf{destino} existe?};
+
+  \node[ok]   (r1) at (-4.6,-2.4) {\textbf{não existe}\\$\rightarrow$ renomeia origem para \texttt{destino}};
+  \node[ok]   (r2) at (0,-2.4)    {\textbf{existe e é diretório}\\$\rightarrow$ move para \texttt{destino/origem}};
+  \node[peri] (r3) at (4.6,-2.4)  {\textbf{existe e é arquivo}\\$\rightarrow$ \textcolor{manualred}{\textbf{sobrescreve}} sem aviso};
+
+  \draw[ramo] (q.south west) -- (r1.north);
+  \draw[ramo] (q.south)      -- (r2.north);
+  \draw[ramo] (q.south east) -- (r3.north);
+
+  \node[font=\scriptsize,manualred,align=center,text width=8.2cm] at (1.4,-4.2) {O primeiro caso é o que morde: um diretório de destino digitado errado vira um arquivo com nome de diretório, silenciosamente.};
+
+  \node[font=\scriptsize,manualgreen,align=center,text width=4.6cm] at (-4.6,-4.4) {Antídotos:\\\texttt{mv -i}, \texttt{mv -n}, \texttt{mv origem destino/}};
+\end{tikzpicture}
+```
+Três resultados completamente diferentes para a mesma linha de comando.
+:::
+
+O antídoto barato: **sempre terminar o destino com barra** quando a intenção é mover para dentro de um diretório.
+
+```bash
+mv relatorio.md backups/     # se backups nao existir, ERRA em vez de renomear
+```
+
+Com a barra, um destino inexistente produz "Not a directory" — que é exatamente o que se quer ouvir.
+
+As opções úteis:
+
+```bash
+mv -i   # pergunta antes de sobrescrever
+mv -n   # nunca sobrescreve
+mv -v   # mostra o que foi movido
+mv -u   # so move se a origem for mais nova
+mv --backup=numbered   # preserva o antigo como destino.~1~
+```
+
+### `mv` é atômico e isso tem uso
+
+Dentro do mesmo sistema de arquivos, `mv` é uma operação **atômica**: em nenhum instante o destino existe pela metade. Isso dá um padrão valioso para escrever arquivos de configuração sem risco:
+
+```bash
+comando-que-gera-a-saida > /etc/servico/config.novo
+mv /etc/servico/config.novo /etc/servico/config
+```
+
+Se algo falhar na geração, o arquivo antigo continua íntegro. Qualquer processo que leia a configuração vê a versão antiga ou a nova, nunca um arquivo cortado no meio. Escrever direto no destino não oferece essa garantia.
+
+### Renomear muitos arquivos
+
+O `mv` renomeia um por vez. Para lotes, o Debian e o Kali trazem o `rename` em Perl:
+
+```bash
+rename 's/\.jpeg$/\.jpg/' *.jpeg          # troca a extensao
+rename -n 's/ /_/g' *                     # -n = simulacao, nao altera nada
+rename 'y/A-Z/a-z/' *                     # tudo para minusculas
+```
+
+O `-n` mostra o que aconteceria sem fazer nada. É o `--dry-run` desta ferramenta, e usá-lo antes de cada execução real deveria ser reflexo.
+
+## `rm`: o comando sem volta
+
+```bash
+rm arquivo.txt
+rm a.txt b.txt c.txt
+rm -r pasta/              # recursivo: obrigatorio para diretorios
+rm -f arquivo             # forca: nao pergunta, nao reclama de inexistente
+rm -rf pasta/             # a combinacao famosa e perigosa
+rm -i arquivo             # pergunta a cada arquivo
+rm -I *.txt               # pergunta UMA vez se forem mais de tres
+rm -v arquivo             # mostra o que apagou
+rm -- -arquivo-estranho   # nome que comeca com traco
+```
+
+O `-I` maiúsculo é subestimado: ele dá uma única confirmação para operações em lote, sem a irritação do `-i` perguntando arquivo por arquivo. É o meio-termo que realmente se usa.
+
+::: {.callout-warning}
+## Não existe lixeira, e o `rm -rf` não pede licença
+
+`rm` não move nada para lugar nenhum. Recuperar exige ferramenta de perícia, backup, ou sorte — e nos sistemas de arquivos modernos, com journaling e SSD com TRIM, geralmente nem isso funciona.
+
+Antes de qualquer `rm -rf`, aplique três verificações:
+
+```bash
+pwd                     # 1. onde estou?
+ls -la caminho/         # 2. e isto mesmo que eu quero apagar?
+rm -rf caminho/         # 3. so entao
+```
+
+Trocar o passo 2 por `echo rm -rf caminho/` também funciona: o `echo` mostra a linha final, já expandida, sem executar.
+:::
+
+Quatro linhas que já destruíram sistemas de verdade:
+
+```bash
+rm -rf / caminho/       # o espaco depois da barra apaga a raiz inteira
+rm -rf "$DIR"/*         # se DIR estiver vazia, isto vira rm -rf /*
+rm -rf .*               # em shells antigos, o .. entrava no glob e subia a arvore
+cd /caminho ; rm -rf *  # se o cd falhar, apaga o diretorio em que voce esta
+```
+
+A quarta é a mesma armadilha de @sec-cap006: `&&` em vez de `;`. As demais têm a mesma raiz — o shell expande antes, e o `rm` obedece ao resultado da expansão, não à sua intenção.
+
+O `rm` moderno recusa `rm -rf /` graças a `--preserve-root`, que é o padrão. Mas a proteção cobre só a raiz literal: `rm -rf /*` passa, e `rm -rf "$VAZIA"/*` também.
+
+### Lixeira de verdade no terminal
+
+Existe um caminho seguro, e vale adotá-lo:
+
+```bash
+sudo apt install trash-cli
+trash-put arquivo.txt      # vai para ~/.local/share/Trash
+trash-list
+trash-restore
+trash-empty 30             # esvazia o que tem mais de 30 dias
+```
+
+O `trash-put` usa a mesma lixeira da interface gráfica, o que significa que dá para recuperar pelo gerenciador de arquivos. Muita gente experiente coloca `alias rm='trash-put'` no `~/.zshrc` — mas isso tem um custo: você se acostuma com uma rede de proteção que **não existe** em servidores, contêineres nem scripts. A alternativa mais honesta é criar um alias novo, `alias lixo='trash-put'`, e deixar o `rm` sendo o que ele é.
+
+## Copiar árvores grandes: quando `cp` não basta
+
+Para diretórios grandes, através da rede, ou quando é preciso poder retomar de onde parou, o `rsync` é a ferramenta certa mesmo localmente:
+
+```bash
+rsync -av --dry-run origem/ destino/    # SEMPRE simule primeiro
+rsync -av origem/ destino/              # so entao execute
+rsync -av --progress origem/ destino/   # com barra de progresso
+```
+
+Ele copia só o que mudou, preserva metadados com `-a`, mostra o que fará com `--dry-run` e retoma transferências interrompidas. O uso remoto é do Volume 13.
+
+## 🐉 No Kali
+
+- **Não instale `alias rm='rm -i'` e confie nele.** Numa VM descartável, tudo bem; num pentest com shell numa máquina alvo autorizada, o alias não existe e o reflexo aprendido falha. Pior: `rm -f` ignora o `-i` do alias silenciosamente.
+- **Coleta de evidências pede `cp -a` ou `rsync -a`.** Preservar `mtime`, dono e permissões faz parte da integridade do material. Uma cópia com `cp` simples carimba todos os arquivos com a data de hoje e destrói justamente o dado que interessa.
+- **Para imagem de disco, `cp` não serve.** Use `dd` ou, melhor, `dcfldd`, que já vem no Kali e calcula o hash durante a cópia. `dd` escrito no dispositivo errado destrói o disco inteiro sem confirmação — confira o alvo com `lsblk` antes, e prefira ensaiar com um arquivo-imagem criado por `losetup`. O tema completo é do Volume 8.
+- **Wordlists comprimidas precisam ser descompactadas antes do uso**, e `gunzip` remove o `.gz` original por padrão. Para manter o arquivo compactado: `gunzip -k`, ou `zcat rockyou.txt.gz > /tmp/rockyou.txt`. Nunca descompacte dentro de `/usr/share`, que é território do gerenciador de pacotes (@sec-cap005) — trabalhe em `/tmp` ou no seu diretório pessoal.
+- **`/opt` é onde as ferramentas clonadas moram**, e mover um clone de Git com `mv` é seguro: o diretório `.git` vai junto. Já copiar com `cp -r` sem `-a` desfaz links simbólicos internos e pode inflar o resultado.
+- **Trabalhe em `/tmp` para testes destrutivos.** Ele é limpo a cada boot, e no Kali costuma estar em disco, não em RAM — então cuidado com arquivos grandes se o espaço for apertado. Confira com `df -h /tmp`.
+- **`trash-cli` não vem instalado**, mas está no repositório. Numa VM de estudo é uma adição sensata.
+
+> **Nota sobre a família RHEL.** Os quatro comandos são os mesmos do GNU coreutils e se comportam identicamente. A diferença notável é que o Fedora e o RHEL vêm com `alias rm='rm -i'` para o root por padrão, o que dá uma falsa sensação de rede de proteção ao migrar entre as famílias — no Debian e no Kali, esse alias não existe.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`, sem tocar em nada do sistema.
+
+1. **Prepare a área de trabalho.**
+
+   ```bash
+   mkdir -p /tmp/lab010/{origem,destino,backup}
+   cd /tmp/lab010
+   ls -R
+   ```
+
+   Esperado: três diretórios criados numa linha. A expansão de chaves é do próximo tema do volume, mas o resultado já é visível.
+
+2. **Confirme que `mkdir -p` é idempotente.**
+
+   ```bash
+   mkdir /tmp/lab010/origem ; echo "status: $?"
+   mkdir -p /tmp/lab010/origem ; echo "status: $?"
+   ```
+
+   Esperado: erro e status não-zero na primeira, silêncio e status `0` na segunda. É por isso que scripts usam `-p` mesmo quando não há níveis a criar.
+
+3. **Crie arquivos e observe os três carimbos.**
+
+   ```bash
+   cd /tmp/lab010/origem
+   touch a.txt b.txt c.txt
+   stat a.txt
+   touch -d "2020-01-01 10:00" antigo.txt
+   ls -l
+   ls -lc antigo.txt
+   ```
+
+   Esperado: `antigo.txt` mostra 2020 no `ls -l` (mtime) mas a data de hoje no `ls -lc` (ctime). Essa discrepância é a assinatura de um carimbo alterado.
+
+4. **Veja o efeito do `cp` no inode.**
+
+   ```bash
+   cd /tmp/lab010/origem
+   echo "conteudo original" > a.txt
+   cp a.txt copia.txt
+   ls -li a.txt copia.txt
+   echo "alterado" >> copia.txt
+   cat a.txt
+   ```
+
+   Esperado: inodes diferentes, e alterar a cópia não mexe no original. Compare com @fig-cp-mv-ln.
+
+5. **Veja o efeito do `mv` no inode.**
+
+   ```bash
+   ls -li copia.txt
+   mv copia.txt renomeada.txt
+   ls -li renomeada.txt
+   ```
+
+   Esperado: **o mesmo número de inode**. Só o nome mudou; o conteúdo nunca foi lido nem reescrito.
+
+6. **Reproduza o desastre da abertura.**
+
+   ```bash
+   cd /tmp/lab010/origem
+   echo "relatorio importante" > relatorio.md
+   mv relatorio.md nao-existe/
+   mv relatorio.md nao-existe
+   ls -l
+   cat nao-existe
+   ```
+
+   Esperado: com barra, erro claro. Sem barra, silêncio — e um arquivo chamado `nao-existe` contendo o seu relatório. Adote a barra como hábito permanente.
+
+7. **Veja o `cp` sobrescrever sem avisar, e depois se proteger.**
+
+   ```bash
+   cd /tmp/lab010/origem
+   echo "versao 1" > alvo.txt
+   echo "versao 2" > fonte.txt
+   cp fonte.txt alvo.txt
+   cat alvo.txt
+   echo "versao 3" > fonte.txt
+   cp -n fonte.txt alvo.txt
+   cat alvo.txt
+   cp --backup=numbered fonte.txt alvo.txt
+   ls -l alvo*
+   ```
+
+   Esperado: a primeira cópia destrói a versão 1 em silêncio; o `-n` recusa; o `--backup=numbered` copia e preserva o antigo como `alvo.txt.~1~`.
+
+8. **Compare `cp -r` com `cp -a`.**
+
+   ```bash
+   cd /tmp/lab010
+   mkdir -p arvore/sub
+   echo dados > arvore/sub/arquivo.txt
+   chmod 700 arvore/sub
+   touch -d "2019-05-05" arvore/sub/arquivo.txt
+   cp -r  arvore copia-r
+   cp -a  arvore copia-a
+   ls -ld arvore/sub copia-r/sub copia-a/sub
+   ls -l  arvore/sub/arquivo.txt copia-r/sub/arquivo.txt copia-a/sub/arquivo.txt
+   ```
+
+   Esperado: a cópia com `-a` mantém permissão `700` e a data de 2019; a cópia com `-r` não. Para evidências ou backup, é sempre `-a`.
+
+9. **Use o `mv` atômico.**
+
+   ```bash
+   cd /tmp/lab010
+   echo "config antiga" > config.txt
+   printf 'config nova\nlinha 2\n' > config.txt.novo
+   mv config.txt.novo config.txt
+   cat config.txt
+   ```
+
+   Esperado: a troca acontece de uma vez. Nenhum leitor jamais veria um arquivo pela metade.
+
+10. **Simule uma renomeação em lote antes de executar.**
+
+    ```bash
+    cd /tmp/lab010/origem
+    touch foto1.jpeg foto2.jpeg foto3.jpeg
+    rename -n 's/\.jpeg$/\.jpg/' *.jpeg
+    rename    's/\.jpeg$/\.jpg/' *.jpeg
+    ls
+    ```
+
+    Esperado: o `-n` lista as mudanças planejadas sem aplicar; a segunda linha aplica. Sempre nessa ordem.
+
+11. **Experimente as confirmações do `rm`.**
+
+    ```bash
+    cd /tmp/lab010/origem
+    touch d1.txt d2.txt d3.txt d4.txt d5.txt
+    rm -I d*.txt
+    touch e1.txt e2.txt
+    rm -i e1.txt e2.txt
+    ```
+
+    Esperado: o `-I` pergunta uma única vez para o lote; o `-i` pergunta uma vez por arquivo. O `-I` é o que se usa na prática.
+
+12. **Veja o `echo` como ensaio de um comando destrutivo.**
+
+    ```bash
+    cd /tmp/lab010
+    DIR=""
+    echo rm -rf "$DIR"/*
+    DIR="/tmp/lab010/destino"
+    echo rm -rf "$DIR"/*
+    ```
+
+    Esperado: a primeira linha imprime `rm -rf /*`. Você acabou de ver, sem consequências, o que uma variável vazia faz com um comando destrutivo. **Não remova o `echo`** desse primeiro caso.
+
+13. **Compare `rmdir` com `rm -r`.**
+
+    ```bash
+    cd /tmp/lab010
+    mkdir -p cheio/sub && touch cheio/sub/arquivo
+    rmdir cheio          # falha: nao esta vazio
+    rmdir cheio/sub      # falha: nao esta vazio
+    rm -r cheio          # funciona
+    ```
+
+    Esperado: o `rmdir` recusa duas vezes. Essa recusa é uma função de segurança — use-o quando a intenção for remover algo que **deveria** estar vazio.
+
+14. **Instale e teste uma lixeira.**
+
+    ```bash
+    sudo apt install -y trash-cli
+    cd /tmp/lab010
+    touch recuperavel.txt
+    trash-put recuperavel.txt
+    trash-list
+    trash-restore
+    ls
+    ```
+
+    Esperado: o arquivo some, aparece na lista da lixeira e volta com o `trash-restore`. Considere um alias `lixo` no `~/.zshrc` — sem renomear o `rm`.
+
+15. **Limpe.**
+
+    ```bash
+    pwd
+    ls -la /tmp/lab010
+    rm -rf /tmp/lab010
+    ```
+
+    Os três passos, na ordem, como no aviso do capítulo. Faça disso um ritual.
+
+## Resumo
+
+- **Nome e conteúdo são separados.** `cp` duplica o conteúdo, `mv` mexe apenas na entrada de diretório e `rm` remove um nome — o conteúdo só desaparece quando nenhum nome e nenhum processo apontam mais para ele.
+- **`mv` no mesmo sistema de arquivos é instantâneo e atômico**, o que dá o padrão seguro de gerar em arquivo temporário e mover por cima. Entre sistemas de arquivos, ele vira cópia mais remoção.
+- **`mv origem destino` faz três coisas diferentes** conforme o destino não existir, ser diretório ou ser arquivo. Terminar o destino com barra transforma o caso perigoso em erro.
+- **`mkdir -p` é idempotente** e por isso obrigatório em scripts; `rmdir` só remove diretório vazio, e essa recusa é um recurso de segurança.
+- **`cp -a` preserva permissões, datas e links**; `cp -r` sozinho carimba tudo com a data de hoje e aplica o seu `umask`. Para backup ou evidência, é sempre `-a`.
+- **Não existe lixeira.** Antes de qualquer `rm -rf`: `pwd`, `ls -la` no alvo, e só então o comando. Trocar `rm` por `echo rm` é o ensaio mais barato que existe.
+- **Variável vazia em caminho destrutivo é a falha clássica.** `rm -rf "$DIR"/*` com `DIR` vazia vira `rm -rf /*`, e `--preserve-root` não protege desse caso.
+- **`rename -n` e `rsync --dry-run` simulam antes de agir.** Toda ferramenta de lote tem um modo de ensaio, e usá-lo primeiro custa dois segundos.

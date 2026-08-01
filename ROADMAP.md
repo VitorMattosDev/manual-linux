@@ -20,13 +20,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 2 — O Terminal e o Shell
 
-- [ ] **cap 008** - Emulador de terminal e shell: bash, zsh e o padrão do Kali - `vol02/cap008-emulador-de-terminal-e-shell-bash-zsh-e-o.qmd`
-- [ ] **cap 009** - Navegação: pwd, cd, ls e caminhos absolutos e relativos - `vol02/cap009-navegacao-pwd-cd-ls-e-caminhos-absolutos-e.qmd`
-- [ ] **cap 010** - Manipulando arquivos e diretórios: cp, mv, rm, mkdir - `vol02/cap010-manipulando-arquivos-e-diretorios-cp-mv-rm.qmd`
-- [ ] **cap 011** - Visualizando conteúdo: cat, less, head, tail e more - `vol02/cap011-visualizando-conteudo-cat-less-head-tail-e.qmd`
-- [ ] **cap 012** - Redirecionamento e pipes: stdin, stdout e stderr - `vol02/cap012-redirecionamento-e-pipes-stdin-stdout-e-stderr.qmd`
-- [ ] **cap 013** - Curingas, globbing e expansão de chaves - `vol02/cap013-curingas-globbing-e-expansao-de-chaves.qmd`
-- [ ] **cap 014** - Histórico, atalhos de teclado e produtividade no terminal - `vol02/cap014-historico-atalhos-de-teclado-e-produtividade.qmd`
+- [x] **cap 008** - Emulador de terminal e shell: bash, zsh e o padrão do Kali - `vol02/cap008-emulador-de-terminal-e-shell-bash-zsh-e-o.qmd`
+- [x] **cap 009** - Navegação: pwd, cd, ls e caminhos absolutos e relativos - `vol02/cap009-navegacao-pwd-cd-ls-e-caminhos-absolutos-e.qmd`
+- [x] **cap 010** - Manipulando arquivos e diretórios: cp, mv, rm, mkdir - `vol02/cap010-manipulando-arquivos-e-diretorios-cp-mv-rm.qmd`
+- [x] **cap 011** - Visualizando conteúdo: cat, less, head, tail e more - `vol02/cap011-visualizando-conteudo-cat-less-head-tail-e.qmd`
+- [x] **cap 012** - Redirecionamento e pipes: stdin, stdout e stderr - `vol02/cap012-redirecionamento-e-pipes-stdin-stdout-e-stderr.qmd`
+- [x] **cap 013** - Curingas, globbing e expansão de chaves - `vol02/cap013-curingas-globbing-e-expansao-de-chaves.qmd`
+- [x] **cap 014** - Histórico, atalhos de teclado e produtividade no terminal - `vol02/cap014-historico-atalhos-de-teclado-e-produtividade.qmd`
 
 ### Volume 3 — Arquivos e o Sistema de Arquivos
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (7 concluidos).
+**Total:** 103 capitulos em 16 volumes (14 concluidos).
 
