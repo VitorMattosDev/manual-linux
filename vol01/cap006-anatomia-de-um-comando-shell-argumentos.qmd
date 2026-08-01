@@ -1,3 +1,417 @@
 # Anatomia de um comando: shell, argumentos, opções e sintaxe {#sec-cap006}
 
-*(em elaboracao)*
+Você copia de um tutorial a linha que deveria resolver o problema, cola no terminal, aperta Enter — e recebe uma mensagem que não faz sentido nenhum. Talvez `unknown option`, talvez `No such file or directory` apontando para um arquivo que existe, talvez o comando execute e faça algo diferente do prometido. Em quase todos esses casos, o problema não está no programa: está no que o **shell** fez com a sua linha antes de o programa sequer começar a rodar.
+
+Um exemplo que pega todo mundo pelo menos uma vez:
+
+```bash
+rm arquivo com espaco.txt
+```
+
+Isso não apaga um arquivo chamado `arquivo com espaco.txt`. Apaga três arquivos — `arquivo`, `com` e `espaco.txt` — ou reclama que nenhum deles existe. O `rm` nunca viu a linha que você digitou; ele recebeu três argumentos separados, porque quem separou foi o shell, e o shell separa por espaço.
+
+Este capítulo desmonta a linha de comando peça por peça: quem lê, quem separa, quem procura o programa, quem executa, quem informa o resultado. É o capítulo que transforma "digitar comandos" em "entender o que está acontecendo", e todo o Volume 2 depende dele.
+
+## O que acontece entre o Enter e a saída
+
+Quando você aperta Enter, o shell executa uma sequência de etapas bem definida. @fig-ciclo-comando mostra o caminho.
+
+::: {#fig-ciclo-comando}
+```{.tikz}
+%%| filename: ciclo-de-execucao-do-comando
+%%| alt: Etapas que o shell percorre entre a leitura da linha e o codigo de saida do programa
+\begin{tikzpicture}[
+    etapa/.style={draw=manualgray,rounded corners=3pt,text width=2.5cm,minimum height=1.0cm,align=center,font=\scriptsize,fill=manualblue!8,inner sep=3pt},
+    shell/.style={etapa,fill=manualblue!14,draw=manualblue,thick},
+    kern/.style={etapa,fill=manualred!12,draw=manualred,thick},
+    volta/.style={etapa,fill=manualgreen!13,draw=manualgreen,thick},
+    fluxo/.style={manualgray,thick,-{Stealth[length=5pt]}}
+  ]
+  \node[shell] (le)  at (0,0)     {\textbf{1. Ler}\\a linha inteira, até o Enter};
+  \node[shell] (sep) at (3.3,0)   {\textbf{2. Separar}\\em palavras, pelos espaços};
+  \node[shell] (exp) at (6.6,0)   {\textbf{3. Expandir}\\curingas, variáveis, chaves};
+  \node[shell] (res) at (9.9,0)   {\textbf{4. Resolver}\\alias, função, builtin, PATH};
+
+  \node[kern]  (fk)  at (9.9,-2.3) {\textbf{5. Criar processo}\\o shell se duplica};
+  \node[kern]  (ex)  at (6.6,-2.3) {\textbf{6. Substituir}\\o programa toma o lugar};
+  \node[volta] (wa)  at (3.3,-2.3) {\textbf{7. Esperar}\\o shell aguarda o fim};
+  \node[volta] (st)  at (0,-2.3)   {\textbf{8. Status}\\guarda o código de saída};
+
+  \foreach \a/\b in {le/sep,sep/exp,exp/res} { \draw[fluxo] (\a) -- (\b); }
+  \draw[fluxo] (res) -- (fk);
+  \foreach \a/\b in {fk/ex,ex/wa,wa/st} { \draw[fluxo] (\a) -- (\b); }
+  \draw[fluxo,dashed] (st.north) -- ++(0,0.9) -- node[font=\scriptsize,manualgray,above]{novo prompt} ++(0,0.4) -| (le.north);
+
+  \node[font=\scriptsize,manualblue] at (4.95,1.2) {tudo isto é trabalho do \textbf{shell}};
+  \node[font=\scriptsize,manualred] at (8.25,-3.3) {aqui entra o \textbf{kernel}};
+\end{tikzpicture}
+```
+O programa só começa a existir na etapa 6. Tudo que dá errado antes disso é responsabilidade do shell.
+:::
+
+As quatro primeiras etapas são inteiramente do shell, e é nelas que mora a maior parte da confusão de quem está começando. A etapa 5 usa a chamada de sistema `fork`, que duplica o processo do shell; a 6 usa `execve`, que substitui o programa duplicado pelo programa pedido, mantendo o mesmo processo. É por isso que um comando executado no terminal é **filho** do shell — e é isso que permite ao shell esperar por ele e recolher o resultado [@kerrisk2010tlpi].
+
+## Anatomia da linha
+
+Toda linha de comando tem a mesma estrutura: um nome de comando seguido de zero ou mais palavras. O programa recebe essas palavras numeradas, e é ele — não o shell — quem decide o que cada uma significa. @fig-anatomia disseca um exemplo real.
+
+::: {#fig-anatomia}
+```{.tikz}
+%%| filename: anatomia-da-linha-de-comando
+%%| alt: Linha de comando dissecada em nome do comando, opcoes curtas, opcao longa com valor e operando
+\begin{tikzpicture}[
+    tok/.style={rounded corners=2pt,minimum height=0.65cm,align=center,font=\small\ttfamily,inner sep=4pt,draw=manualgray},
+    cmd/.style={tok,fill=manualred!14,draw=manualred,thick},
+    opc/.style={tok,fill=manualblue!12,draw=manualblue},
+    val/.style={tok,fill=manualgreen!14,draw=manualgreen},
+    ope/.style={tok,fill=manualyellow!22},
+    rot/.style={font=\scriptsize,manualgray,align=center,text width=2.6cm},
+    seta/.style={manualgray,thin,-{Stealth[length=3.5pt]}}
+  ]
+  \node[cmd] (c)  at (0,0)     {nmap};
+  \node[opc] (o1) at (1.5,0)   {-sV};
+  \node[opc] (o2) at (3.35,0)  {-{}-top-ports};
+  \node[val] (v1) at (5.4,0)   {100};
+  \node[opc] (o3) at (6.6,0)   {-oN};
+  \node[val] (v2) at (8.2,0)   {saida.txt};
+  \node[ope] (p)  at (10.9,0)  {192.168.56.0/24};
+
+  \node[rot] (rc) at (-0.2,1.7)  {\textbf{nome do comando}\\o que será executado};
+  \node[rot] (r1) at (2.2,-1.5)  {\textbf{opção curta}\\um traço, uma letra};
+  \node[rot] (r2) at (4.4,1.7)   {\textbf{opção longa}\\dois traços, palavra};
+  \node[rot] (r3) at (6.6,-1.5)  {\textbf{valor da opção}\\pertence à opção anterior};
+  \node[rot] (r4) at (9.0,1.7)   {\textbf{opção com valor}\\arquivo de saída};
+  \node[rot] (r5) at (10.9,-1.5) {\textbf{operando}\\o alvo do trabalho};
+
+  \draw[seta] (rc.south) -- (c.north);
+  \draw[seta] (r1.north) -- (o1.south);
+  \draw[seta] (r2.south) -- (o2.north);
+  \draw[seta] (r3.north) -- (v1.south);
+  \draw[seta] (r4.south) -- (v2.north);
+  \draw[seta] (r5.north) -- (p.south);
+
+  \draw[auxiliar,dashed] (0.75,-0.45) rectangle (9.1,0.45);
+  \node[font=\scriptsize,manualgray] at (4.9,-0.72) {tudo isto são \emph{opções}: modificam o comportamento};
+\end{tikzpicture}
+```
+O shell entrega essas sete palavras ao `nmap`; a interpretação de cada uma é decisão do programa.
+:::
+
+O ponto essencial: **para o shell, todas as palavras depois do nome do comando são iguais**. Ele não sabe que `-sV` é opção e `192.168.56.0/24` é alvo. Quem sabe é o `nmap`, ao ler seu vetor de argumentos. Isso explica por que a mesma sintaxe funciona diferente em programas diferentes, e por que não existe uma regra universal de "sempre pode inverter a ordem".
+
+## Onde o shell procura o comando
+
+Ao chegar na etapa 4, o shell precisa decidir o que executar. E ele consulta cinco possibilidades, **nesta ordem**:
+
+1. **Palavra-chave** da linguagem do shell: `if`, `for`, `while`, `case`, `function`. Não são programas, são sintaxe.
+2. **Alias**: um apelido definido por você ou pela distribuição.
+3. **Função** do shell, definida na sessão ou num arquivo de inicialização.
+4. **Comando embutido** (*builtin*): implementado dentro do próprio shell — `cd`, `echo`, `export`, `pwd`, `read`, `type`.
+5. **Executável no `PATH`**: um arquivo em disco, procurado nos diretórios listados na variável `PATH`.
+
+O comando que revela essa decisão é o `type`:
+
+```bash
+type -a ls
+type -a cd
+type -a echo
+type -a nmap
+type -a if
+```
+
+Num Kali padrão, `type -a ls` costuma revelar que `ls` é primeiro um **alias** (com opções de cor já embutidas) e só depois o executável `/usr/bin/ls`. Isso tem consequência prática enorme: quando você escreve um script e chama `ls`, o alias **não** vale — aliases não são herdados por scripts. O comportamento muda, e a origem da diferença é essa.
+
+`echo` aparece duas vezes: como builtin do shell e como `/usr/bin/echo`. Os dois têm diferenças sutis de opções, e o builtin é o que roda. Já `cd` só pode ser builtin — um programa externo não conseguiria mudar o diretório do shell que o chamou, porque mudaria apenas o seu próprio.
+
+### O `PATH` e por que o diretório atual não está nele
+
+`PATH` é uma variável com uma lista de diretórios separados por dois-pontos. O shell percorre essa lista **da esquerda para a direita** e usa o primeiro que contiver um arquivo executável com o nome pedido:
+
+```bash
+echo "$PATH"
+echo "$PATH" | tr ':' '\n'
+which -a python3
+```
+
+A ordem importa. Se `/usr/local/bin` vem antes de `/usr/bin` — e vem, em qualquer instalação normal —, um programa que você compilou e instalou em `/usr/local/bin` tem precedência sobre o da distribuição. É exatamente o comportamento desejado, e é o motivo de `/usr/local` existir, como visto em @sec-cap005.
+
+Repare no que **não** está no `PATH`: o diretório atual. No Windows, um executável na pasta corrente é encontrado automaticamente; no Linux, não. Por isso um script no diretório onde você está exige o prefixo explícito:
+
+```bash
+./meu-script.sh
+```
+
+Isso não é inconveniência — é segurança. Se `.` estivesse no `PATH`, bastaria alguém deixar um arquivo chamado `ls` num diretório gravável para que o seu próximo `ls` executasse o programa dele. Com um administrador logado como root, isso é escalada de privilégio imediata. A regra vale para sempre: **nunca acrescente `.` ao `PATH`**.
+
+O shell também mantém um cache dos caminhos já resolvidos, o que ocasionalmente confunde:
+
+```bash
+hash -r    # esquece o cache; no Zsh, rehash
+```
+
+Se você acabou de instalar um programa e o shell insiste em dizer que ele não existe, essa é a linha que resolve.
+
+## Opções: as convenções que existem e as que não existem
+
+Não há uma regra universal, mas há três convenções fortes.
+
+**Opções curtas POSIX**: um traço e uma letra, como `-l`, `-a`, `-v`. Podem ser **agrupadas** quando não têm valor: `ls -l -a -h` equivale a `ls -lah`. Quando uma opção curta exige valor, ele vem como palavra seguinte (`-o saida.txt`) ou colado (`-osaida.txt`), conforme o programa. Se agrupar uma opção que exige valor, ela precisa ser a última do grupo.
+
+**Opções longas GNU**: dois traços e uma palavra, como `--all`, `--recursive`, `--help` [@gnucoding]. São mais legíveis e melhores para scripts, porque um `--recursive` daqui a um ano ainda se explica sozinho, enquanto `-r` exige consulta ao manual. O valor vem com sinal de igual (`--output=saida.txt`) ou como palavra seguinte (`--output saida.txt`), e a maioria dos programas GNU aceita as duas formas.
+
+**O separador `--`**: marca o **fim das opções**. Tudo depois dele é tratado como operando, mesmo que comece com traço. Esse é o antídoto para um problema real:
+
+```bash
+# criar um arquivo cujo nome comeca com traco
+touch ./-arquivo-estranho
+
+# isto falha: o rm interpreta -arquivo-estranho como opcoes
+rm -arquivo-estranho
+
+# isto funciona
+rm -- -arquivo-estranho
+# ou
+rm ./-arquivo-estranho
+```
+
+Vale conhecer as exceções que quebram a convenção, porque são comuns. O `tar` histórico aceita opções sem traço nenhum (`tar xzf pacote.tar.gz`). O `ps` aceita três estilos diferentes de sintaxe — Unix (`ps -ef`), BSD (`ps aux`) e GNU (`ps --pid 1`) — e `ps aux` sem traço não é erro de digitação. O `dd` usa `opcao=valor` sem traço algum. O `find` usa opções de uma letra com traço único e nome longo (`-name`, `-type`, `-exec`), e é sensível à ordem dos argumentos. Quando a sintaxe parecer estranha, o manual é a resposta — tema de @sec-cap007.
+
+## O código de saída
+
+Todo programa, ao terminar, devolve um número inteiro ao seu pai. Por convenção universal no Unix, **zero significa sucesso** e qualquer outro valor significa algum tipo de falha. O shell guarda esse número na variável especial de status:
+
+```bash
+ls /etc > /dev/null
+echo $?          # 0
+
+ls /nao-existe 2> /dev/null
+echo $?          # 2
+
+grep raiz-inexistente /etc/passwd
+echo $?          # 1
+```
+
+Alguns valores têm significado convencional: `1` é erro genérico, `2` costuma ser erro de uso, `126` significa que o arquivo existe mas não é executável, `127` significa comando não encontrado, e valores acima de `128` indicam término por sinal (`130` é interrupção por `Ctrl+C`, que é o sinal 2 somado a 128).
+
+O código de saída é o que dá sentido aos operadores de encadeamento:
+
+```bash
+comando_a ; comando_b      # executa b sempre, independente de a
+comando_a && comando_b     # executa b só se a teve sucesso
+comando_a || comando_b     # executa b só se a falhou
+comando_a &                # executa a em segundo plano, devolve o prompt
+```
+
+Na prática, `&&` é o que separa uma linha correta de uma linha perigosa:
+
+```bash
+cd /tmp/trabalho && rm -rf ./*      # seguro: só apaga se o cd funcionou
+cd /tmp/trabalho ; rm -rf ./*       # perigoso: se o cd falhar, apaga o diretório atual
+```
+
+::: {.callout-warning}
+## A diferença entre `&&` e `;` já destruiu sistemas
+
+A segunda linha acima, com o `cd` falhando por um erro de digitação no caminho, executa `rm -rf ./*` no diretório em que você estiver — que pode ser o seu diretório pessoal ou a raiz. Adote `&&` como padrão em qualquer sequência em que o segundo comando pressuponha o sucesso do primeiro. Em scripts, o mecanismo definitivo é `set -e`, tema do Volume 12.
+:::
+
+## Quatro armadilhas que valem conhecer agora
+
+**Espaços em nomes de arquivo.** O caso da abertura. A solução é aspas ou escape:
+
+```bash
+ls "arquivo com espaco.txt"
+ls arquivo\ com\ espaco.txt
+```
+
+Em scripts, a regra que evita 90% dos bugs é sempre colocar variáveis entre aspas duplas: `rm "$arquivo"`, nunca `rm $arquivo`. O assunto tem capítulo próprio no Volume 9.
+
+**`sudo` não se estende ao redirecionamento.** Esta linha falha mesmo com `sudo`:
+
+```bash
+sudo echo "linha" > /etc/arquivo-protegido
+```
+
+O motivo é que o redirecionamento `>` é feito **pelo shell**, que roda como você, antes de o `sudo` sequer começar. O `sudo` eleva o `echo`, não o redirecionamento. As soluções corretas usam `tee` ou um shell elevado:
+
+```bash
+echo "linha" | sudo tee -a /etc/arquivo-protegido > /dev/null
+```
+
+**Aliases mudam o comportamento do que você acha que está rodando.** Se `rm` está com alias para `rm -i`, você se acostuma com a confirmação — e perde a rede de proteção em qualquer outra máquina ou dentro de um script. Para forçar o programa real, ignorando o alias, prefixe com barra invertida ou use `command`:
+
+```bash
+\rm arquivo
+command rm arquivo
+```
+
+**Variável vazia em caminho destrutivo.** Em `rm -rf "$DIR"/`, se `DIR` estiver vazia a linha vira `rm -rf /`. Sistemas modernos protegem esse caso específico com `--preserve-root`, mas a proteção não cobre variações. A defesa é validar antes, e o assunto volta no Volume 12.
+
+## O shell é um programa como outro qualquer
+
+Uma última percepção que arruma tudo no lugar: o shell não é o terminal, e não é o sistema. É apenas mais um programa, que por acaso lê linhas e executa outros programas.
+
+```bash
+echo "$SHELL"          # o shell definido para o seu usuario
+ps -p $$ -o comm=      # o shell que esta rodando agora
+cat /etc/shells        # os shells instalados
+```
+
+Repare que `$SHELL` e o shell em execução podem divergir: `$SHELL` vem do cadastro do usuário, e o segundo comando mostra a realidade. Você pode iniciar outro shell a qualquer momento, digitando `bash` ou `sh`, e sair dele com `exit` — voltando ao anterior. Cada um é um processo, com pai e filhos, e a hierarquia é visível:
+
+```bash
+pstree -p $$ 2>/dev/null | head -5
+```
+
+Essa perspectiva é o que torna previsível o comportamento de scripts, de `sudo`, de sessões SSH e de contêineres: em todos os casos há um shell rodando, com um pai e um ambiente herdado.
+
+## 🐉 No Kali
+
+- **O shell padrão é o Zsh** desde a versão 2020.4, não o Bash. Para o que este capítulo cobre, os dois são praticamente idênticos — separação de palavras, `PATH`, opções, código de saída e operadores funcionam igual. As diferenças aparecem em recursos avançados e na configuração, temas dos Volumes 2 e 15.
+- **`rehash` no lugar de `hash -r`.** Se um programa recém-instalado não é encontrado, o Zsh limpa o cache com `rehash`. O Bash usa `hash -r`. Nas versões recentes do Zsh, o cache costuma se atualizar sozinho.
+- **A distribuição define aliases próprios**, principalmente para colorir saídas (`ls`, `grep`, `diff`, `ip`). Confira o que está ativo com `alias` sem argumentos e investigue qualquer surpresa com `type -a <comando>`. Lembre-se: aliases não valem dentro de scripts.
+- **Os scripts do Kali ficam disponíveis no `PATH` como qualquer programa**, porque são pacotes normais em `/usr/bin` (@sec-cap005). Ferramenta clonada à mão em `/opt` não está no `PATH` e exige caminho completo ou um link em `/usr/local/bin`.
+- **`sudo` está configurado para o usuário `kali`** por pertencer ao grupo `sudo`. Isso significa que quase todo comando administrativo neste manual começa com `sudo` — e a linha correspondente é registrada em `/var/log/auth.log`. Privilégios são o Volume 4.
+- **Ferramentas de segurança abusam de sintaxes não convencionais.** `hashcat` usa `-m` com números de modo, `sqlmap` mistura opções longas com valores obrigatórios, `msfconsole` tem sua própria linguagem de comandos que não é shell. Ler a ajuda antes de improvisar economiza tempo.
+- **Cuidado com comandos copiados de artigos.** Além do risco óbvio de executar algo destrutivo, há o truque de esconder um comando extra num bloco formatado para parecer inofensivo ao ser copiado. Cole sempre num editor antes de executar, ou digite. É a versão prática do que este capítulo ensina: o shell obedece à linha, não à sua intenção.
+
+> **Nota sobre a família RHEL.** Bash é o padrão em Fedora e RHEL, e o `PATH` de root inclui `/usr/sbin` por padrão em ambas as famílias. Tudo o mais deste capítulo é idêntico — separação de palavras, resolução de comando, opções, códigos de saída e operadores fazem parte da especificação POSIX [@posix2018], não da distribuição.
+
+## 🧪 Laboratório
+
+Roteiro na VM. Os passos criam apenas arquivos descartáveis em `/tmp` e no diretório pessoal.
+
+1. **Veja o shell que está de fato rodando.**
+
+   ```bash
+   echo "$SHELL"
+   ps -p $$ -o pid,ppid,comm
+   cat /etc/shells
+   ```
+
+   Esperado: `/usr/bin/zsh` no Kali padrão, o PID do seu shell e o PID do processo pai (o emulador de terminal). Anote os dois números.
+
+2. **Descubra o que cada nome realmente é.**
+
+   ```bash
+   type -a ls
+   type -a cd
+   type -a echo
+   type -a nmap
+   type -a if
+   ```
+
+   Esperado: `ls` provavelmente como alias antes do executável, `cd` como builtin, `echo` como builtin **e** arquivo, `nmap` como arquivo em `/usr/bin`, `if` como palavra reservada. Cinco categorias diferentes, cinco respostas diferentes.
+
+3. **Explore o `PATH` e a ordem de precedência.**
+
+   ```bash
+   echo "$PATH" | tr ':' '\n' | nl
+   which -a python3
+   ```
+
+   Esperado: a lista numerada de diretórios e, no `which -a`, todos os caminhos encontrados na ordem de busca. Confirme que `/usr/local/bin` aparece antes de `/usr/bin`.
+
+4. **Prove que o diretório atual não está no `PATH`.**
+
+   ```bash
+   cd /tmp
+   printf '#!/bin/bash\necho "executei do diretorio atual"\n' > teste-path.sh
+   chmod +x teste-path.sh
+   teste-path.sh
+   ./teste-path.sh
+   ```
+
+   Esperado: o primeiro falha com "command not found", o segundo funciona. Essa diferença é uma decisão de segurança, não um descuido — sem ela, um arquivo malicioso deixado num diretório compartilhado seria executado por engano.
+
+5. **Reproduza a armadilha do espaço.**
+
+   ```bash
+   cd /tmp
+   touch "arquivo com espaco.txt"
+   ls arquivo com espaco.txt
+   ls "arquivo com espaco.txt"
+   ```
+
+   Esperado: o primeiro `ls` reclama de três arquivos inexistentes e depois lista o que encontrar; o segundo funciona. Repare que a mensagem de erro **nomeia as três palavras separadamente** — é a evidência de que o shell dividiu a linha antes de chamar o programa.
+
+6. **Use o separador de fim de opções.**
+
+   ```bash
+   cd /tmp
+   touch ./-arquivo-estranho
+   ls -l -arquivo-estranho
+   ls -l -- -arquivo-estranho
+   rm -- -arquivo-estranho
+   ```
+
+   Esperado: o primeiro `ls` trata o nome como um punhado de opções inválidas; com `--` funciona. Guarde esse recurso — ele resolve todo caso de nome de arquivo que começa com traço, situação comum ao lidar com arquivos gerados por ferramentas.
+
+7. **Observe códigos de saída.**
+
+   ```bash
+   ls /etc > /dev/null; echo "status: $?"
+   ls /nao-existe 2> /dev/null; echo "status: $?"
+   grep xyzabc /etc/passwd; echo "status: $?"
+   comando-inexistente; echo "status: $?"
+   ```
+
+   Esperado: `0`, um valor não-zero, `1` (o `grep` não achou nada) e `127` (comando não encontrado). Memorize o `127`: ele é a resposta padrão para erro de digitação e para programa não instalado.
+
+8. **Compare os operadores de encadeamento.**
+
+   ```bash
+   cd /tmp && echo "chegou"
+   cd /diretorio-que-nao-existe && echo "NAO deve aparecer"
+   cd /diretorio-que-nao-existe ; echo "APARECE, e este e o perigo"
+   cd /diretorio-que-nao-existe || echo "tratamento de erro"
+   ```
+
+   Esperado: a segunda linha não imprime nada, a terceira imprime mesmo com o `cd` falhando, e a quarta imprime a mensagem de tratamento. Essa é, em quatro linhas, a diferença entre um script que falha com segurança e um que continua fazendo estrago.
+
+9. **Verifique a armadilha do `sudo` com redirecionamento.**
+
+   ```bash
+   sudo echo "teste" > /tmp/protegido-teste.txt
+   ls -l /tmp/protegido-teste.txt
+   echo "teste" | sudo tee /tmp/protegido-teste2.txt > /dev/null
+   ls -l /tmp/protegido-teste2.txt
+   ```
+
+   Esperado: os dois arquivos são criados, mas repare no **dono** de cada um. No primeiro caso o arquivo pertence a você, porque quem redirecionou foi o seu shell; no segundo pertence ao root, porque quem escreveu foi o `tee` elevado. Num diretório onde você não tem permissão de escrita, a primeira forma simplesmente falharia.
+
+10. **Contorne um alias.**
+
+    ```bash
+    alias | head -10
+    type -a ls
+    ls /etc | head -3
+    \ls /etc | head -3
+    command ls /etc | head -3
+    ```
+
+    Esperado: a saída com cores no primeiro `ls` e sem cores nos dois seguintes, se houver alias configurado. A conclusão prática: o que você vê interativamente pode não ser o que um script verá.
+
+11. **Limpe o cache de comandos.**
+
+    ```bash
+    printf '#!/bin/bash\necho novo\n' | sudo tee /usr/local/bin/comando-novo > /dev/null
+    sudo chmod +x /usr/local/bin/comando-novo
+    comando-novo
+    hash -r 2>/dev/null || rehash
+    comando-novo
+    which comando-novo
+    sudo rm /usr/local/bin/comando-novo
+    ```
+
+    Esperado: o comando funciona (Zsh recente atualiza o cache sozinho) ou funciona só depois do `rehash`. De qualquer forma, `which` confirma o caminho `/usr/local/bin/comando-novo` — o lugar correto para algo instalado à mão, conforme @sec-cap005.
+
+## Resumo
+
+- **O shell processa a linha antes de o programa existir**: lê, separa em palavras pelos espaços, expande curingas e variáveis, resolve o nome do comando e só então cria o processo. Quase todo erro estranho acontece nessas etapas.
+- **Para o shell, todas as palavras após o comando são equivalentes.** Distinguir opção de operando é decisão do programa que as recebe, e por isso não existe sintaxe universal.
+- **A resolução do nome segue uma ordem fixa**: palavra-chave, alias, função, builtin, executável no `PATH`. O comando `type -a` mostra qual delas venceu, e essa resposta explica diferenças entre o terminal e um script.
+- **O diretório atual não está no `PATH`, por segurança.** Executar algo do diretório corrente exige `./`, e acrescentar `.` ao `PATH` é abrir uma porta de escalada de privilégio.
+- **As convenções de opção são três**: curtas agrupáveis com um traço, longas legíveis com dois traços, e `--` marcando o fim das opções. Programas antigos e ferramentas de segurança rompem essas convenções com frequência.
+- **Zero é sucesso; qualquer outro valor é falha.** O código de saída é o que dá sentido a `&&` e `||` — e trocar `&&` por `;` numa sequência destrutiva é um dos erros mais caros que se pode cometer no terminal.
+- **`sudo` eleva o comando, não o redirecionamento**, porque quem redireciona é o shell. A forma correta de escrever em arquivo protegido passa por `tee` ou por um shell elevado.
