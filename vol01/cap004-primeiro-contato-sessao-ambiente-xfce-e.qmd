@@ -1,3 +1,335 @@
 # Primeiro contato: sessão, ambiente Xfce e organização do sistema {#sec-cap004}
 
-*(em elaboracao)*
+A VM subiu, a tela de login apareceu, a senha foi aceita. E agora existe uma área de trabalho azul-escura com um dragão, um painel no topo com ícones que você não reconhece, e um menu com treze categorias numeradas cheias de nomes obscuros. A primeira reação de quem vem do Windows costuma ser tentar achar o "Meu Computador"; a segunda, abrir o navegador de arquivos e descobrir que não existem letras de unidade. Nenhuma dessas coisas é falta — é outro modelo.
+
+Este capítulo faz o inventário do que você está vendo. Vamos percorrer o caminho do boot até o prompt, entender o que é uma sessão e quem a monta, conhecer as peças do Xfce e o que cada uma faz, decifrar o menu de ferramentas do Kali, ler o prompt do terminal caractere a caractere e, por fim, fazer os ajustes que evitam frustração na primeira semana — teclado brasileiro à frente de todos.
+
+## Do boot ao prompt: quem entrega a tela de login
+
+Entre ligar a máquina e ver a tela de login existe uma cadeia de responsabilidades bem definida, e conhecê-la resolve metade dos problemas de "travou no boot". @fig-cadeia-sessao mostra a sequência.
+
+::: {#fig-cadeia-sessao}
+```{.tikz}
+%%| filename: do-boot-a-sessao
+%%| alt: Cadeia do boot ate a sessao grafica, do firmware ao gerenciador de janelas do Xfce
+\begin{tikzpicture}[
+    etapa/.style={draw=manualgray,rounded corners=2pt,text width=2.25cm,minimum height=0.95cm,align=center,font=\scriptsize,fill=manualblue!8,inner sep=3pt},
+    nucleo/.style={etapa,fill=manualred!13,draw=manualred,thick},
+    sessao/.style={etapa,fill=manualgreen!13,draw=manualgreen,thick},
+    fluxo/.style={manualgray,thick,-{Stealth[length=5pt]}}
+  ]
+  \node[etapa]  (fw)  at (0,0)    {\textbf{Firmware}\\UEFI ou BIOS};
+  \node[etapa]  (gr)  at (2.9,0)  {\textbf{GRUB}\\escolhe o kernel};
+  \node[nucleo] (ke)  at (5.8,0)  {\textbf{Kernel}\\monta a raiz};
+  \node[nucleo] (sd)  at (8.7,0)  {\textbf{systemd}\\PID 1, sobe os serviços};
+  \node[etapa]  (gt)  at (11.6,0) {\textbf{graphical\\.target}};
+
+  \node[etapa]  (dm)  at (11.6,-2.0) {\textbf{LightDM}\\tela de login};
+  \node[etapa]  (pam) at (8.7,-2.0)  {\textbf{PAM}\\autentica o usuário};
+  \node[sessao] (xs)  at (5.8,-2.0)  {\textbf{Sessão Xfce}\\xfce4-session};
+  \node[sessao] (wm)  at (2.9,-2.0)  {\textbf{xfwm4, painel,\\Thunar}};
+  \node[sessao] (tt)  at (0,-2.0)    {\textbf{Terminal}\\o seu prompt};
+
+  \foreach \a/\b in {fw/gr,gr/ke,ke/sd,sd/gt} { \draw[fluxo] (\a) -- (\b); }
+  \draw[fluxo] (gt) -- (dm);
+  \foreach \a/\b in {dm/pam,pam/xs,xs/wm,wm/tt} { \draw[fluxo] (\a) -- (\b); }
+
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (1.45,-3.3) {tudo isso é opcional: sem interface gráfica, o systemd para no \texttt{multi-user.target}};
+  \draw[auxiliar,-{Stealth[length=4pt]}] (3.3,-3.3) -- (8.0,-3.3) -- (8.0,-2.6);
+\end{tikzpicture}
+```
+Do firmware ao prompt. O ambiente gráfico é a última camada, e a única que pode ser dispensada por inteiro.
+:::
+
+O **firmware** (UEFI na maioria das máquinas atuais) inicializa o hardware e procura um carregador de inicialização. O **GRUB** apresenta o menu de kernels e carrega o escolhido na memória. O **kernel** assume a máquina, monta o sistema de arquivos raiz e inicia o primeiro processo do espaço de usuário. Esse primeiro processo é o **systemd**, que recebe o PID 1 e é responsável por subir todo o resto na ordem correta.
+
+O systemd trabalha com **targets**, que são estados desejados do sistema. O `multi-user.target` corresponde a um sistema completo com rede e serviços, mas sem interface gráfica. O `graphical.target` é o `multi-user.target` mais um gerenciador de sessão gráfica. Trocar entre os dois é uma decisão de um comando, e é exatamente o que se faz num servidor:
+
+```bash
+systemctl get-default              # qual é o alvo padrão
+sudo systemctl set-default multi-user.target   # desligar a interface gráfica no boot
+```
+
+No `graphical.target` sobe o **LightDM**, o gerenciador de sessão que desenha a tela de login. Quando você digita a senha, quem a verifica não é o LightDM: é o **PAM**, o subsistema de autenticação, tema do Volume 4. Com a autenticação aprovada, o LightDM inicia a **sessão Xfce**, que por sua vez sobe as peças do ambiente. Tudo o que você vê na tela é a última camada dessa pilha — e é a mais descartável.
+
+Prova disso está a um atalho de distância. Pressione `Ctrl+Alt+F3`: a interface gráfica some e aparece um login em texto puro. É um **console virtual**, um terminal ligado direto ao kernel, sem X, sem Xfce, sem nada. Há vários deles (`F1` a `F6`), e é aí que você vai trabalhar no dia em que a sessão gráfica não subir. `Ctrl+Alt+F7` (ou `F2`, conforme a instalação) volta para o ambiente gráfico, que continuou rodando o tempo todo.
+
+## O que é uma sessão
+
+Sessão é o conjunto de processos que pertencem a um login seu, mais o ambiente que eles compartilham. O systemd rastreia isso explicitamente:
+
+```bash
+loginctl list-sessions
+loginctl show-session $XDG_SESSION_ID
+whoami
+id
+```
+
+A saída mostra o identificador da sessão, o usuário dono, o assento (`seat0`, o conjunto teclado-monitor-mouse) e o tipo (`x11`, `wayland` ou `tty`). Esse registro é o que permite ao sistema saber que você está fisicamente na máquina — e é por isso que um usuário logado localmente pode montar um pendrive sem `sudo`, enquanto o mesmo usuário conectado por SSH não pode.
+
+Junto com a sessão vem um punhado de variáveis de ambiente que o resto do sistema consulta o tempo todo:
+
+```bash
+echo $DISPLAY $XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP
+echo $HOME $USER $SHELL
+env | grep ^XDG | sort
+```
+
+`DISPLAY` diz a qual servidor gráfico os programas devem se conectar — se estiver vazia, nenhum programa gráfico abre, e esse é o erro número um de quem tenta rodar uma ferramenta com interface por SSH. `XDG_SESSION_TYPE` diz se a sessão é X11 ou Wayland. `XDG_CURRENT_DESKTOP` diz qual ambiente está no comando. As variáveis `XDG_CONFIG_HOME`, `XDG_DATA_HOME` e `XDG_CACHE_HOME` definem onde as configurações do usuário são gravadas, assunto que volta em @sec-cap005.
+
+Sobre X11 e Wayland: o Kali com Xfce usa **X11** por padrão, através do servidor Xorg. Wayland é o substituto moderno e já é padrão em outros ambientes, mas boa parte das ferramentas de segurança — captura de tela, automação de janelas, compartilhamento remoto — ainda depende de particularidades do X11. Se você mudar para Wayland por conta própria, espere encontrar ferramentas que param de funcionar.
+
+## As peças do Xfce
+
+O Kali adotou o **Xfce** como ambiente padrão a partir da versão 2019.4, substituindo o GNOME. A razão é prática: Xfce consome pouca memória, roda bem numa VM com 2 GB, não depende de aceleração gráfica sofisticada e se comporta de forma previsível. Numa distribuição que a maior parte dos usuários roda virtualizada, isso vale mais do que efeitos visuais.
+
+Xfce não é um programa único, e sim um conjunto de processos independentes. Vale saber os nomes, porque quando algo trava você mata e reinicia apenas a peça quebrada:
+
+```bash
+ps -e -o comm= | grep -E 'xfce|xfwm|xfdesktop|xfsettings|lightdm' | sort -u
+```
+
+O **xfwm4** é o gerenciador de janelas: desenha as bordas, os botões de fechar e maximizar, e decide qual janela fica na frente. Se as janelas ficarem sem barra de título, é ele que caiu — `xfwm4 --replace &` conserta. O **xfce4-panel** é a barra; ele hospeda o menu, a lista de janelas, o relógio e a bandeja. O **xfdesktop** desenha o papel de parede e os ícones da área de trabalho. O **xfsettingsd** aplica tema, fontes, cursor e configurações de teclado e mouse. O **Thunar** é o gerenciador de arquivos. O **xfce4-session** é quem coordena tudo e restaura o estado ao relogar.
+
+A configuração de todos eles vive em `~/.config/xfce4/`, em arquivos XML. Isso significa que a personalização do seu ambiente é copiável: leve esse diretório para outra máquina e o ambiente vai junto. É a semente da ideia de *dotfiles*, tema do Volume 15.
+
+### O que fazer no painel na primeira hora
+
+Três coisas rendem retorno imediato.
+
+**Áreas de trabalho.** O Xfce vem com várias, e alternar entre elas é `Ctrl+Alt+←` e `Ctrl+Alt+→`. Numa auditoria, a organização típica é uma área para o terminal, uma para o navegador com a documentação, uma para as ferramentas gráficas e uma para as anotações. É o equivalente barato de ter quatro monitores.
+
+**Atalhos de teclado.** Os que mais economizam tempo já vêm configurados: `Super` abre o menu, `Alt+Tab` alterna janelas, `Alt+F2` executa um comando, e `Super+←`/`Super+→` encaixam a janela em metade da tela. O terminal suspenso, que aparece deslizando do topo da tela ao toque de uma tecla, costuma estar em `F12` — vale conferir e ajustar em *Configurações → Teclado → Atalhos de aplicativo*.
+
+**O relógio e a bandeja.** A bandeja é onde aparecem os indicadores de rede (NetworkManager), volume e atualizações. Clicar no ícone de rede é a forma mais rápida de trocar de Wi-Fi ou conferir a conexão VPN.
+
+## O menu Kali: treze categorias e uma metodologia
+
+O menu de aplicações do Kali não está organizado alfabeticamente por acaso. As categorias numeradas seguem, aproximadamente, a ordem em que as fases de um teste de invasão acontecem — o menu é uma metodologia disfarçada de menu. @fig-menu-kali resume.
+
+::: {#fig-menu-kali}
+```{.tikz}
+%%| filename: categorias-do-menu-kali
+%%| alt: As treze categorias do menu de ferramentas do Kali agrupadas por fase de um teste de invasao
+\begin{tikzpicture}[
+    fase/.style={draw=manualblue,thick,rounded corners=3pt,text width=2.6cm,minimum height=0.7cm,align=center,font=\scriptsize\bfseries,fill=manualblue!12,inner sep=3pt},
+    cat/.style={draw=manualgray,rounded corners=2pt,text width=3.5cm,minimum height=0.52cm,align=left,font=\scriptsize,fill=white,inner sep=3pt},
+    lig/.style={manualgray,-{Stealth[length=3.5pt]}}
+  ]
+  \node[fase] (f1) at (0,0)    {Reconhecimento};
+  \node[fase] (f2) at (0,-2.0) {Análise};
+  \node[fase] (f3) at (0,-4.2) {Exploração};
+  \node[fase] (f4) at (0,-6.4) {Pós-exploração};
+  \node[fase] (f5) at (0,-8.0) {Registro};
+
+  \node[cat] (c1) at (4.4,0.35)  {01 Coleta de informações};
+  \node[cat] (c2) at (4.4,-0.3)  {06 Ataques a redes sem fio};
+
+  \node[cat] (c3) at (4.4,-1.4)  {02 Análise de vulnerabilidades};
+  \node[cat] (c4) at (4.4,-2.05) {03 Aplicações web};
+  \node[cat] (c5) at (4.4,-2.7)  {04 Bancos de dados};
+
+  \node[cat] (c6) at (4.4,-3.6)  {05 Ataques a senhas};
+  \node[cat] (c7) at (4.4,-4.25) {08 Ferramentas de exploração};
+  \node[cat] (c8) at (4.4,-4.9)  {13 Engenharia social};
+
+  \node[cat] (c9)  at (4.4,-5.8) {09 Sniffing e spoofing};
+  \node[cat] (c10) at (4.4,-6.45){10 Pós-exploração};
+  \node[cat] (c11) at (4.4,-7.1) {07 Engenharia reversa};
+
+  \node[cat] (c12) at (4.4,-7.9) {11 Forense};
+  \node[cat] (c13) at (4.4,-8.55){12 Relatórios};
+
+  \foreach \f/\c in {f1/c1,f1/c2,f2/c3,f2/c4,f2/c5,f3/c6,f3/c7,f3/c8,f4/c9,f4/c10,f4/c11,f5/c12,f5/c13} {
+    \draw[lig] (\f.east) -- (\c.west);
+  }
+\end{tikzpicture}
+```
+As categorias do menu mapeiam, em linhas gerais, as fases de um trabalho de auditoria.
+:::
+
+O agrupamento não é rígido — `nmap` aparece em mais de uma categoria, e ferramentas grandes servem a várias fases —, mas a lógica ajuda a navegar. Duas observações práticas: o menu mostra apenas as ferramentas **instaladas**, então uma instalação `headless` ou enxuta terá categorias quase vazias; e a maioria absoluta dessas ferramentas é de linha de comando, de modo que clicar no item do menu geralmente só abre um terminal com a ajuda do programa. O menu serve para descobrir o que existe, não para operar.
+
+Para explorar o que está instalado sem depender do menu:
+
+```bash
+ls /usr/share/kali-menu/applications/ | head -20
+ls /usr/bin | wc -l
+```
+
+## O terminal e o prompt
+
+O terminal é onde este manual vive a partir do próximo volume, mas vale decifrar o prompt já. Num Kali padrão, com Zsh, ele ocupa duas linhas: a primeira abre com um traçado em L, seguido de `(kali` + um símbolo redondo de separação + `kali)` e, entre colchetes, `[~]`; a segunda fecha o traçado e termina em `$`. Em texto simples, o equivalente é:
+
+```bash
+(kali@kali)-[~]
+$
+```
+
+A primeira linha traz o **usuário** (`kali`), um separador, o **nome da máquina** (`kali`) e, entre colchetes, o **diretório atual** — `~` é uma abreviação para o seu diretório pessoal, `/home/kali`. A segunda linha traz o **símbolo do prompt**: `$` para usuário comum, `#` para root. Esse detalhe importa: `#` no começo da linha significa que você está com privilégio total e cada comando pode destruir o sistema.
+
+Neste manual, os blocos de comando aparecem sem o prompt, para que possam ser copiados e colados diretamente. Quando o prompt aparece, é porque a saída do comando também está sendo mostrada.
+
+O prompt do Kali muda de cor conforme o resultado do último comando — se algo falhou, ele fica vermelho. É um retorno visual que economiza um `echo $?` a cada passo, e vem da configuração do Zsh que o pacote `kali-defaults` instala. Personalizar isso é assunto do Volume 15.
+
+Alguns atalhos do próprio emulador de terminal, que não são atalhos do shell:
+
+- `Ctrl+Shift+T` abre uma aba nova; `Ctrl+Shift+W` fecha.
+- `Ctrl+Shift+C` e `Ctrl+Shift+V` copiam e colam. O `Shift` é obrigatório porque `Ctrl+C` já tem significado antigo e importante: interromper o programa em execução.
+- `Ctrl+Shift++` e `Ctrl+-` ajustam o tamanho da fonte.
+- Selecionar com o mouse já copia, e o clique do botão do meio cola — herança do X11 que funciona em qualquer aplicação.
+
+## Organização do sistema: onde as coisas estão
+
+Uma primeira orientação, que @sec-cap005 aprofunda: **não existem letras de unidade**. Há uma única árvore, começando em `/`, e todo dispositivo aparece pendurado em algum ponto dela. O seu diretório pessoal é `/home/kali`, abreviado como `~`, e é o único lugar onde você escreve sem privilégio elevado. Os programas ficam em `/usr/bin`; as configurações do sistema, em `/etc`; as configurações do seu usuário, em `~/.config`; os dados variáveis e logs, em `/var`.
+
+Duas convenções valem desde já. Arquivos e diretórios cujo nome começa com ponto são **ocultos** — `ls` não os mostra, `ls -a` mostra. É onde vivem quase todas as configurações pessoais. E o sistema **diferencia maiúsculas de minúsculas**: `Documentos` e `documentos` são diretórios diferentes, o que surpreende quem vem do Windows.
+
+Uma organização de trabalho que poupa dor de cabeça, criada logo no primeiro dia:
+
+```bash
+mkdir -p ~/lab/{ferramentas,alvos,notas,capturas}
+mkdir -p ~/clientes
+tree -L 2 ~/lab 2>/dev/null || ls -R ~/lab
+```
+
+Manter material de cliente fora do diretório de laboratório é higiene profissional, e separar por diretório é o mínimo. Criptografia por cliente é o passo seguinte, no Volume 8.
+
+## Os ajustes do primeiro dia
+
+Quatro configurações evitam sofrimento desnecessário.
+
+**Teclado brasileiro.** É o primeiro item, porque sem ele você não digita `/`, `?`, `ç` nem acentos corretamente — e o caractere `/` é onipresente no Linux.
+
+```bash
+sudo dpkg-reconfigure keyboard-configuration
+sudo setupcon                     # aplica no console de texto
+setxkbmap -model abnt2 -layout br # aplica na sessão gráfica, imediatamente
+```
+
+Na tela do `dpkg-reconfigure`, escolha *Generic 105-key PC* e depois *Portuguese (Brazil)* — variante ABNT2 para teclados com a tecla `ç` dedicada. Para tornar permanente na sessão gráfica, use também *Configurações → Teclado → Layout*.
+
+**Fuso horário.** Logs com horário errado atrapalham qualquer correlação de eventos:
+
+```bash
+timedatectl
+sudo timedatectl set-timezone America/Sao_Paulo
+timedatectl set-ntp true
+```
+
+**Idioma do sistema.** O Kali instala em inglês por padrão. Se quiser português, o pacote de localização se ajusta com `sudo dpkg-reconfigure locales`, escolhendo `pt_BR.UTF-8`. Vale um alerta: **mensagens de erro em português são muito mais difíceis de pesquisar**. A recomendação prática é manter o sistema em inglês e o teclado em português — que é o arranjo mais comum entre profissionais brasileiros de infraestrutura.
+
+**Resolução e tela.** Se a janela da VM não redimensiona sozinha, faltam as ferramentas de convidado (@sec-cap003). Com elas instaladas, o ajuste é automático; sem elas, `xrandr` resolve manualmente.
+
+## 🐉 No Kali
+
+- **Xfce desde a versão 2019.4**, com tema próprio, papel de parede do dragão e o menu Whisker. Existem imagens alternativas com GNOME e KDE, mas o Xfce é o padrão testado e o que a documentação assume.
+- **Zsh é o shell padrão desde a 2020.4**, com o prompt de duas linhas descrito acima. Bash continua instalado e disponível — `chsh -s /bin/bash` troca, e `kali-tweaks` também oferece a opção. As diferenças entre os dois são tema de @sec-cap006 e do Volume 2.
+- **`kali-tweaks`** concentra os ajustes da distribuição: ramo de repositório, shell padrão, serviços de rede, modo undercover e hardening. É o primeiro lugar a procurar antes de sair editando arquivos.
+- **O menu de ferramentas vem do pacote `kali-menu`**, que instala os arquivos `.desktop` em `/usr/share/kali-menu/applications/`. Categoria vazia significa ferramenta não instalada, não menu quebrado — instale o metapacote da área correspondente.
+- **Serviços de rede não sobem no boot.** SSH, PostgreSQL (usado pelo Metasploit) e servidores web ficam desabilitados até você habilitá-los explicitamente. Ferramenta que "não conecta no banco" quase sempre é o PostgreSQL parado.
+- **`kali-undercover`** troca a aparência do Xfce por uma imitação de Windows, útil em campo. Rodar de novo desfaz.
+- **Os atalhos de captura de tela** usam `xfce4-screenshooter`, e as imagens caem em `~/Pictures` por padrão. Vale trocar o destino para a pasta do trabalho em curso — evidência espalhada é evidência perdida.
+
+> **Nota sobre a família RHEL.** Fedora e RHEL usam GNOME com GDM em vez de Xfce com LightDM, e já rodam Wayland por padrão. A cadeia conceitual é idêntica — firmware, GRUB, kernel, systemd, target gráfico, gerenciador de sessão, PAM, ambiente — e todos os comandos `systemctl`, `loginctl` e `timedatectl` funcionam igual.
+
+## 🧪 Laboratório
+
+Roteiro na VM recém-instalada. Os passos 1 a 6 são de leitura; do 7 em diante há alterações reversíveis.
+
+1. **Percorra a cadeia da sessão.**
+
+   ```bash
+   systemctl get-default
+   systemctl status lightdm --no-pager | head -8
+   loginctl list-sessions
+   loginctl show-session $XDG_SESSION_ID | head -15
+   ```
+
+   Esperado: alvo padrão `graphical.target`, LightDM ativo, e uma sessão sua com `Type=x11`, `Seat=seat0` e `Remote=no`. Guarde o número da sessão.
+
+2. **Visite um console virtual.** Pressione `Ctrl+Alt+F3`, faça login com o mesmo usuário e rode:
+
+   ```bash
+   tty
+   echo "$XDG_SESSION_TYPE"
+   who
+   ```
+
+   Esperado: `/dev/tty3`, tipo `tty` e duas sessões suas listadas pelo `who` — a gráfica e esta. Volte com `Ctrl+Alt+F7` (ou `F2`) e confirme que a sessão gráfica continuou intacta. Essa é a saída de emergência quando o ambiente gráfico congela.
+
+3. **Inspecione as variáveis da sessão gráfica.**
+
+   ```bash
+   echo "$DISPLAY | $XDG_SESSION_TYPE | $XDG_CURRENT_DESKTOP"
+   env | grep -E '^XDG_(CONFIG|DATA|CACHE)' | sort
+   ```
+
+   Esperado: `DISPLAY` com algo como `:0.0`, tipo `x11`, ambiente `XFCE`. Compare com a saída do mesmo comando no console virtual do passo anterior, onde `DISPLAY` está vazia — é a razão de programas gráficos não abrirem por ali.
+
+4. **Identifique os processos do Xfce.**
+
+   ```bash
+   ps -e -o pid,comm --sort=comm | grep -E 'xf|lightdm'
+   ```
+
+   Esperado: `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, `xfsettingsd`, `lightdm` e `Xorg`. Relacione cada nome com o elemento visual correspondente na tela.
+
+5. **Provoque e conserte uma falha controlada do gerenciador de janelas.**
+
+   ```bash
+   xfwm4 --replace &
+   ```
+
+   Esperado: as janelas piscam e voltam com as bordas redesenhadas. Esse é o comando que salva a sessão quando as janelas perdem barra de título ou param de responder ao arrastar — em vez de reiniciar a máquina, reinicia-se apenas a peça.
+
+6. **Leia o prompt.** Observe as duas linhas, identifique usuário, máquina e diretório. Depois:
+
+   ```bash
+   pwd
+   whoami
+   comando-que-nao-existe
+   ```
+
+   Esperado: `/home/kali`, `kali`, e uma mensagem de erro — repare que o prompt muda de cor depois do comando inválido. Rode `echo $?` em seguida e confirme um valor diferente de zero. Códigos de saída são tema do Volume 9.
+
+7. **Configure o teclado brasileiro.**
+
+   ```bash
+   setxkbmap -model abnt2 -layout br
+   ```
+
+   Esperado: efeito imediato. Teste digitando `~/ç?ãé` — se todos saírem certos, está resolvido para esta sessão. Torne permanente por *Configurações → Teclado → Layout*, ou com `sudo dpkg-reconfigure keyboard-configuration` seguido de reinício da sessão.
+
+8. **Acerte o fuso horário e confirme.**
+
+   ```bash
+   sudo timedatectl set-timezone America/Sao_Paulo
+   timedatectl
+   date
+   ```
+
+   Esperado: `Time zone: America/Sao_Paulo` e a hora local correta. Verifique também que `NTP service: active` — sincronização automática é o que mantém os logs comparáveis com os de outras máquinas.
+
+9. **Crie a estrutura de trabalho e conheça os arquivos ocultos.**
+
+   ```bash
+   mkdir -p ~/lab/{alvos,capturas,notas} ~/clientes
+   ls ~
+   ls -a ~
+   ls -a ~/.config/xfce4
+   ```
+
+   Esperado: o segundo `ls` revela vários itens que o primeiro escondeu, todos começando com ponto. Dentro de `~/.config/xfce4` está a configuração do seu ambiente — o diretório que você levaria para outra máquina para reproduzir a aparência atual.
+
+10. **Feche com um snapshot.** Depois de ajustar teclado, fuso e estrutura de diretórios, crie um snapshot chamado `kali-configurado`. Esperado: um segundo ponto de retorno, agora com o ambiente utilizável, para não ter que repetir esses ajustes toda vez que um laboratório sujar o sistema.
+
+## Resumo
+
+- **Do boot ao prompt existe uma cadeia clara**: firmware, GRUB, kernel, systemd, `graphical.target`, LightDM, PAM e sessão Xfce. O ambiente gráfico é a última camada e a única dispensável — `multi-user.target` entrega um sistema completo sem ela.
+- **Consoles virtuais (`Ctrl+Alt+F1` a `F6`) são a saída de emergência**, um terminal ligado direto ao kernel que continua funcionando quando a sessão gráfica trava.
+- **Sessão é um objeto real do sistema**, rastreado pelo `loginctl`, com variáveis (`DISPLAY`, `XDG_SESSION_TYPE`, `XDG_*`) das quais dependem os programas gráficos e a localização das suas configurações.
+- **Xfce é um conjunto de processos independentes** — xfwm4, xfce4-panel, xfdesktop, xfsettingsd, Thunar —, e saber os nomes permite reiniciar só a peça quebrada em vez do sistema inteiro.
+- **O menu do Kali é uma metodologia disfarçada**: as treze categorias numeradas seguem as fases de um trabalho de auditoria, e categoria vazia significa ferramenta não instalada.
+- **O prompt do Kali carrega informação**: usuário, máquina, diretório e um símbolo final que distingue usuário comum (`$`) de root (`#`), com cor que muda quando o último comando falha.
+- **Quatro ajustes valem o primeiro dia**: teclado ABNT2, fuso horário com NTP, sistema em inglês com teclado em português, e uma estrutura de diretórios que separa laboratório de material de cliente.
