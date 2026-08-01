@@ -1,3 +1,373 @@
 # A estrutura de diretórios do Linux (FHS) {#sec-cap005}
 
-*(em elaboracao)*
+O alerta chegou às onze da noite: partição raiz com 96% de uso num servidor que não deveria crescer. Você entra na máquina e faz a pergunta óbvia — onde está o espaço? Se a resposta for `/var/log`, o problema é um serviço tagarela e a solução é rotação de logs. Se for `/var/lib/docker`, são imagens acumuladas. Se for `/var/cache/apt`, um `apt clean` resolve em dez segundos. Se for `/home`, alguém guardou coisa que não devia. Se for `/tmp` num sistema em que `/tmp` não é memória, algum processo está vazando arquivos temporários. **Cada diretório conta uma história diferente**, e saber ler essa árvore transforma um "disco cheio" genérico num diagnóstico específico.
+
+A boa notícia é que essa árvore não é arbitrária. Ela segue um padrão documentado, o **Filesystem Hierarchy Standard** [@fhs30], que a maioria esmagadora das distribuições respeita. Aprender o FHS uma vez serve para Debian, Kali, Ubuntu, Fedora, RHEL, Alpine e para o contêiner que sobe no Kubernetes. Este capítulo percorre a árvore inteira, explica a lógica por trás dela e mostra os comandos que respondem "onde é que fica isso?" sem depender de memória.
+
+## Uma árvore só, sem letras de unidade
+
+A diferença estrutural mais importante em relação ao Windows não é de nomes: é de topologia. No Windows, cada dispositivo ganha uma letra e uma árvore própria — `C:`, `D:`, `E:`. No Linux existe **uma única árvore**, com raiz em `/`, e todo dispositivo adicional é **montado** em algum diretório dessa árvore, passando a fazer parte dela.
+
+Isso significa que o caminho de um arquivo não diz em qual disco ele está. `/home/kali/notas.txt` pode estar no mesmo disco da raiz, num segundo SSD, num volume LVM criptografado ou num compartilhamento de rede — e nenhum programa precisa saber a diferença. Quem responde a pergunta é o comando `findmnt`:
+
+```bash
+findmnt --real
+df -hT
+lsblk -f
+```
+
+O `findmnt` mostra a árvore de montagens: o que está montado, onde e a partir de qual dispositivo. O `df -hT` acrescenta ocupação e tipo de sistema de arquivos. Essa indireção — caminho lógico separado de dispositivo físico — é o que permite mover `/var` para um disco novo sem que nenhum programa perceba, e é a base do modelo de armazenamento que o Volume 8 detalha.
+
+## A árvore completa
+
+@fig-fhs mostra os diretórios de primeiro nível e o que cada um guarda.
+
+::: {#fig-fhs}
+```{.tikz}
+%%| filename: arvore-fhs
+%%| alt: Arvore de diretorios de primeiro nivel do padrao FHS a partir da raiz
+\begin{tikzpicture}[
+    raiz/.style={draw=manualred,thick,rounded corners=3pt,minimum width=1.1cm,minimum height=0.6cm,align=center,font=\small\bfseries,fill=manualred!14},
+    dir/.style={draw=manualgray,rounded corners=2pt,text width=1.55cm,minimum height=0.52cm,align=center,font=\scriptsize\ttfamily,fill=manualblue!10,inner sep=2pt},
+    virt/.style={dir,fill=manualyellow!22},
+    var/.style={dir,fill=manualgreen!14},
+    desc/.style={font=\scriptsize,manualgray,anchor=west,inner sep=1pt},
+    lig/.style={manualgray,thin}
+  ]
+  \node[raiz] (r) at (0,0) {/};
+
+  \node[dir]  (bo) at (2.4,1.95)  {/boot};
+  \node[dir]  (us) at (2.4,1.25)  {/usr};
+  \node[dir]  (et) at (2.4,0.55)  {/etc};
+  \node[var]  (va) at (2.4,-0.15) {/var};
+  \node[dir]  (ho) at (2.4,-0.85) {/home};
+  \node[dir]  (ro) at (2.4,-1.55) {/root};
+  \node[var]  (tm) at (2.4,-2.25) {/tmp};
+  \node[dir]  (op) at (2.4,-2.95) {/opt};
+  \node[dir]  (sr) at (2.4,-3.65) {/srv};
+  \node[virt] (de) at (2.4,-4.35) {/dev};
+  \node[virt] (pr) at (2.4,-5.05) {/proc};
+  \node[virt] (sy) at (2.4,-5.75) {/sys};
+  \node[virt] (ru) at (2.4,-6.45) {/run};
+  \node[dir]  (mn) at (2.4,-7.15) {/mnt /media};
+
+  \foreach \nd in {bo,us,et,va,ho,ro,tm,op,sr,de,pr,sy,ru,mn} { \draw[lig] (r.east) -- (\nd.west); }
+
+  \node[desc] at (3.35,1.95)  {kernel, initrd e o carregador de inicialização};
+  \node[desc] at (3.35,1.25)  {programas, bibliotecas e dados estáticos do sistema};
+  \node[desc] at (3.35,0.55)  {configuração do sistema, sempre em texto};
+  \node[desc] at (3.35,-0.15) {dados que mudam: logs, filas, bancos, cache};
+  \node[desc] at (3.35,-0.85) {diretórios pessoais dos usuários comuns};
+  \node[desc] at (3.35,-1.55) {diretório pessoal do root};
+  \node[desc] at (3.35,-2.25) {temporários, apagados na reinicialização};
+  \node[desc] at (3.35,-2.95) {software de terceiros autocontido};
+  \node[desc] at (3.35,-3.65) {dados servidos por serviços da máquina};
+  \node[desc] at (3.35,-4.35) {arquivos de dispositivo (virtual)};
+  \node[desc] at (3.35,-5.05) {processos e informações do kernel (virtual)};
+  \node[desc] at (3.35,-5.75) {dispositivos e drivers do kernel (virtual)};
+  \node[desc] at (3.35,-6.45) {estado da execução atual, em memória};
+  \node[desc] at (3.35,-7.15) {pontos de montagem para mídia removível};
+
+  \node[font=\scriptsize,manualgray] at (1.0,-8.0) {\textbf{Legenda:}};
+  \node[dir,minimum width=0.5cm,text width=0.9cm] at (2.6,-8.0) {disco};
+  \node[var,minimum width=0.5cm,text width=0.9cm] at (4.0,-8.0) {variável};
+  \node[virt,minimum width=0.5cm,text width=0.9cm] at (5.5,-8.0) {virtual};
+\end{tikzpicture}
+```
+A árvore de primeiro nível. Três dos diretórios não existem em disco: são interfaces do kernel montadas em memória.
+:::
+
+Vale percorrer um por um, porque cada um tem uma regra de uso que evita erro depois.
+
+### `/usr` — os programas e o que é estático
+
+`/usr` guarda tudo que é instalado pelo gerenciador de pacotes e não muda durante a operação normal: executáveis em `/usr/bin`, ferramentas administrativas em `/usr/sbin`, bibliotecas em `/usr/lib`, e dados que não são programas — ícones, páginas de manual, dicionários, listas de palavras — em `/usr/share`.
+
+Você vai notar que `/bin`, `/sbin` e `/lib` também existem na raiz. Em sistemas atuais eles são apenas **links simbólicos** para dentro de `/usr`:
+
+```bash
+ls -ld /bin /sbin /lib /lib64
+```
+
+A saída mostra `/bin -> usr/bin` e assim por diante. Essa unificação, apelidada de *usrmerge*, resolveu um problema histórico: originalmente `/bin` continha o essencial para o sistema iniciar e `/usr` podia estar num disco separado montado depois. Com `initramfs`, essa separação perdeu sentido e virou fonte de bugs. Hoje o Debian e derivados exigem a unificação. Consequência prática: `/bin/ls` e `/usr/bin/ls` são o mesmo arquivo, e você não precisa mais decorar em qual dos dois procurar.
+
+Dentro de `/usr` há dois subdiretórios especiais. `/usr/local` é reservado para software que o **administrador** instalou fora do gerenciador de pacotes — compilado do fonte, baixado de um projeto. A regra é limpa: o `apt` nunca escreve em `/usr/local`, então nada do que você colocou ali será sobrescrito por atualização. E `/usr/src` guarda fontes, tipicamente cabeçalhos do kernel usados para compilar módulos.
+
+### `/etc` — a configuração, sempre em texto
+
+`/etc` guarda a configuração de todo o sistema. Duas regras definem o diretório: **nada de binários executáveis** (o FHS é explícito) e, por tradição fortíssima do Unix, **tudo em texto simples**. Isso é o que permite versionar `/etc` no Git, comparar duas máquinas com `diff`, e corrigir um sistema quebrado com um editor de texto num console de emergência.
+
+```bash
+ls /etc | head -30
+wc -l /etc/passwd /etc/fstab /etc/hostname
+ls /etc/apt/ /etc/systemd/
+```
+
+Alguns arquivos que você vai encontrar muitas vezes: `/etc/passwd` e `/etc/group` (usuários e grupos, Volume 4), `/etc/fstab` (o que montar no boot, Volume 8), `/etc/apt/sources.list` (repositórios, Volume 6), `/etc/systemd/system/` (serviços, Volume 7), `/etc/hosts` e `/etc/resolv.conf` (nomes e DNS, Volume 13).
+
+Um padrão do Debian que aparece por toda parte: em vez de um arquivo monolítico, muitos programas leem um **diretório terminado em `.d`**, e cada arquivo dentro dele é um fragmento de configuração. `/etc/apt/sources.list.d/`, `/etc/sudoers.d/`, `/etc/systemd/system/*.service.d/`. A vantagem é que um pacote pode adicionar sua configuração sem editar um arquivo que pertence a outro pacote.
+
+### `/var` — tudo que cresce
+
+`/var` é onde vive o que **muda de tamanho durante a operação**. É o diretório que enche o disco, e por isso o primeiro a investigar num alerta de espaço.
+
+- `/var/log` — logs do sistema e dos serviços. `journalctl` lê o log binário do systemd em `/var/log/journal`; serviços tradicionais escrevem texto em arquivos como `/var/log/auth.log` e `/var/log/syslog`.
+- `/var/lib` — estado persistente dos programas: banco de dados do `dpkg` em `/var/lib/dpkg`, dados do PostgreSQL, imagens do Docker.
+- `/var/cache` — dados recriáveis. `/var/cache/apt/archives` guarda os `.deb` baixados e é a primeira coisa a limpar (`apt clean`) quando falta espaço.
+- `/var/spool` — filas: impressão, e-mail, `cron`, `at`.
+- `/var/tmp` — temporários que **sobrevivem à reinicialização**, ao contrário de `/tmp`.
+- `/var/www` — raiz de conteúdo web, por convenção do Debian.
+
+### `/home` e `/root`
+
+`/home/<usuário>` é o diretório pessoal de cada usuário comum, o único lugar onde ele escreve sem privilégio elevado. O atalho para o seu é o til, e a variável de ambiente correspondente é `HOME`.
+
+O root não fica em `/home`: tem `/root`, na raiz. A razão é histórica e prática — se `/home` estiver num disco separado que falhou em montar, o administrador ainda precisa de um diretório pessoal para trabalhar e consertar.
+
+Dentro do diretório pessoal, a convenção moderna concentra configurações em três lugares definidos pela especificação XDG: `~/.config` (configurações), `~/.local/share` (dados) e `~/.cache` (cache descartável). `~/.local/bin` é onde ficam programas instalados só para o seu usuário, e costuma já estar no `PATH`.
+
+### `/tmp` e `/var/tmp`
+
+`/tmp` é para arquivos temporários de vida curta. Em sistemas modernos ele frequentemente é um `tmpfs` — ou seja, **vive em memória RAM** e some por completo na reinicialização. Confira na sua máquina:
+
+```bash
+findmnt /tmp
+df -hT /tmp /var/tmp
+```
+
+Se o tipo aparecer como `tmpfs`, tudo ali consome memória, e gravar um arquivo de 8 GB em `/tmp` numa VM de 4 GB não vai terminar bem. É um detalhe que morde ao trabalhar com capturas grandes de tráfego ou imagens forenses — o destino correto é `/var/tmp` ou um diretório de trabalho seu.
+
+Ambos são graváveis por qualquer usuário, o que exigiria uma proteção extra para que um usuário não apague o arquivo de outro. Essa proteção existe, chama-se *sticky bit*, e é tema do Volume 4.
+
+### `/opt` e `/srv`
+
+`/opt` é para software de terceiros **autocontido**: o programa inteiro num único diretório, `/opt/nome-do-produto`, com seus próprios binários, bibliotecas e configuração. É onde acabam ferramentas comerciais e programas baixados prontos que não seguem o FHS. Boa parte das ferramentas que um pentester instala manualmente, clonando de um repositório, vai naturalmente para `/opt`.
+
+`/srv` é para dados **servidos** pela máquina a terceiros — o conteúdo de um site, os arquivos de um FTP. Na prática o Debian usa `/var/www` para web, e `/srv` acaba pouco utilizado.
+
+### `/boot`
+
+Guarda o que é necessário para a máquina iniciar: o kernel (`vmlinuz-*`), o `initrd` correspondente, o mapa de símbolos e a configuração do GRUB. Em máquinas UEFI há ainda `/boot/efi`, uma partição em FAT32 com os carregadores.
+
+```bash
+ls -lh /boot
+```
+
+Vale saber de um problema comum: kernels antigos não são removidos automaticamente, e uma partição `/boot` pequena enche depois de algumas atualizações. Quando isso acontece, o `apt` falha no meio de uma atualização de kernel — situação desconfortável e, felizmente, resolvida com `apt autoremove`.
+
+### Os três diretórios que não existem em disco
+
+`/proc`, `/sys` e `/dev` são **sistemas de arquivos virtuais**: não ocupam disco nenhum, são gerados pelo kernel em tempo real e desaparecem ao desligar. Eles são a materialização da filosofia "tudo é arquivo" — em vez de uma API especial, o kernel expõe seu estado como arquivos que você lê com `cat`.
+
+**`/proc`** expõe processos e informações do kernel. Cada processo em execução tem um diretório com seu PID:
+
+```bash
+cat /proc/cpuinfo | head -12
+cat /proc/meminfo | head -5
+ls /proc/self/
+cat /proc/self/status | head -8
+```
+
+`/proc/self` é um atalho mágico: dentro dele, o kernel mostra o processo que está lendo. `/proc/<pid>/cmdline` traz a linha de comando completa de um processo, `/proc/<pid>/environ` traz suas variáveis de ambiente e `/proc/<pid>/fd/` lista seus arquivos abertos. Isso é ouro para diagnóstico — e também para análise forense, motivo pelo qual `/proc` aparece bastante no Volume 14.
+
+**`/sys`** expõe dispositivos, drivers e parâmetros do kernel de forma estruturada. É por ali que se lê a temperatura de um sensor, se descobre se uma interface de rede está com o cabo conectado, ou se ajusta o comportamento de um driver.
+
+```bash
+cat /sys/class/net/*/operstate
+ls /sys/class/
+```
+
+**`/dev`** contém os arquivos de dispositivo. `/dev/sda` é um disco inteiro, `/dev/sda1` uma partição, `/dev/null` descarta tudo que recebe, `/dev/zero` fornece bytes nulos infinitos, `/dev/random` e `/dev/urandom` fornecem aleatoriedade criptográfica, `/dev/tty` é o terminal atual.
+
+```bash
+ls -l /dev/null /dev/zero /dev/sda 2>/dev/null
+echo "isto some" > /dev/null
+head -c 16 /dev/urandom | xxd
+```
+
+O primeiro caractere na listagem longa desses arquivos não é `-` nem `d`: é `c` (dispositivo de caractere) ou `b` (dispositivo de bloco). Tipos de arquivo são o assunto de abertura do Volume 3.
+
+**`/run`** completa o grupo: é um `tmpfs` com o estado da execução atual — arquivos de PID, sockets de comunicação entre processos, informação de montagens temporárias. Substituiu o antigo `/var/run`, que hoje é um link simbólico para ele.
+
+## A lógica: duas perguntas organizam tudo
+
+O FHS não é uma lista decorada; ele deriva de duas perguntas sobre cada arquivo. A primeira: **muda durante a operação normal, ou é estático?** A segunda: **pode ser compartilhado com outras máquinas, ou é específico deste computador?** @fig-matriz-fhs organiza os diretórios principais nesses dois eixos.
+
+::: {#fig-matriz-fhs}
+```{.tikz}
+%%| filename: matriz-estatico-variavel
+%%| alt: Matriz dois por dois classificando diretorios do FHS entre estatico e variavel, compartilhavel e local
+\begin{tikzpicture}[
+    cel/.style={draw=manualgray,rounded corners=3pt,minimum width=4.3cm,minimum height=2.1cm,align=center,font=\small,inner sep=4pt},
+    rot/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  \node[cel,fill=manualblue!10] (a) at (0,0)     {\textbf{/usr}\\\scriptsize programas e bibliotecas\\\scriptsize podem ser somente leitura};
+  \node[cel,fill=manualgreen!10] (b) at (4.6,0)  {\textbf{/var/mail}\ \ \textbf{/srv}\\\scriptsize dados que mudam e fazem\\\scriptsize sentido para outras máquinas};
+  \node[cel,fill=manualyellow!16] (c) at (0,-2.4) {\textbf{/etc}\ \ \textbf{/boot}\\\scriptsize configuração e kernel\\\scriptsize desta máquina específica};
+  \node[cel,fill=manualred!10] (d) at (4.6,-2.4) {\textbf{/var/log}\ \ \textbf{/run}\ \ \textbf{/tmp}\\\scriptsize estado local e volátil\\\scriptsize nunca compartilhado};
+
+  \node[rot] at (0,1.45)   {compartilhável};
+  \node[rot] at (4.6,1.45) {compartilhável};
+  \node[rot,rotate=90] at (-2.75,0)    {estático};
+  \node[rot,rotate=90] at (-2.75,-2.4) {local};
+
+  \node[font=\scriptsize,manualgray,rotate=90] at (7.35,0)    {estático};
+  \node[font=\scriptsize,manualgray,rotate=90] at (7.35,-2.4) {variável};
+  \draw[auxiliar] (-2.3,1.2) rectangle (6.9,-3.6);
+\end{tikzpicture}
+```
+Cada diretório ocupa um lugar definido nos eixos "muda ou não" e "serve a outras máquinas ou não". Daí decorre o resto.
+:::
+
+Essa classificação tem consequência operacional direta. `/usr` ser estático e compartilhável é o que permite montá-lo somente-leitura num sistema endurecido, ou servi-lo por rede a várias estações. `/etc` ser específico da máquina é o que faz dele o alvo prioritário de backup. `/var/log` ser variável e local é o que exige rotação e monitoramento de espaço. E `/tmp` ser volátil é o que garante que nada guardado ali sobreviva ao próximo reinício.
+
+## Onde colocar o que você instalou
+
+Uma dúvida recorrente com resposta clara:
+
+| Origem do software | Destino correto |
+|---|---|
+| Gerenciador de pacotes (`apt`) | `/usr/bin`, `/usr/lib`, `/usr/share` — não mexa |
+| Compilado do fonte, para todo o sistema | `/usr/local` |
+| Programa de terceiros autocontido | `/opt/<nome>` |
+| Script ou ferramenta só para você | `~/.local/bin` |
+| Dados servidos a terceiros | `/srv` ou `/var/www` |
+
+A regra que resolve 90% dos casos: **nunca escreva à mão dentro de `/usr/bin` ou `/usr/lib`**. Esses diretórios pertencem ao gerenciador de pacotes, e um arquivo estranho ali será sobrescrito ou apagado sem aviso na próxima atualização — ou pior, causará conflito silencioso. Use `/usr/local` e o problema desaparece, porque ele vem antes na busca do `PATH` (assunto de @sec-cap006).
+
+## 🐉 No Kali
+
+- **As ferramentas ficam em `/usr/bin`, como qualquer programa.** Essa é a herança mais importante da migração do BackTrack para Debian: acabou o `/pentest/`. `which nmap` responde `/usr/bin/nmap`, e `dpkg -S /usr/bin/nmap` diz qual pacote o instalou — rastreabilidade que o BackTrack não tinha.
+- **`/usr/share/wordlists` é o diretório mais visitado do Kali.** É onde ficam as listas de palavras, incluindo o link para `rockyou.txt.gz`. O arquivo vem compactado e precisa ser descompactado uma vez: `sudo gunzip /usr/share/wordlists/rockyou.txt.gz`. Ali também estão as listas do `dirb`, do `wfuzz` e do `seclists`, se instalado.
+- **`/usr/share/<ferramenta>` guarda os dados de cada programa.** Assinaturas do `nmap` em `/usr/share/nmap/`, scripts NSE em `/usr/share/nmap/scripts/`, módulos do Metasploit em `/usr/share/metasploit-framework/`. Quando a documentação de uma ferramenta cita "o diretório de dados", é ali.
+- **`/var/lib/postgresql` guarda o banco do Metasploit.** O `msfdb` depende do PostgreSQL, que no Kali não inicia sozinho — daí o erro clássico de conexão recusada ao abrir o `msfconsole` pela primeira vez.
+- **`/opt` é o destino natural das ferramentas clonadas de repositórios.** Grande parte do ferramental de segurança não está empacotado; clonar em `/opt/<ferramenta>` mantém tudo num lugar previsível e fora do alcance do `apt`.
+- **`/var/log/` num Kali é menos movimentado do que num servidor**, porque poucos serviços rodam. Ainda assim, `/var/log/auth.log` registra cada uso de `sudo`, e vale conhecer o arquivo antes de precisar dele.
+- **Cuidado com `/tmp` em memória.** Numa VM com pouca RAM, salvar uma captura de tráfego longa em `/tmp` derruba o sistema por falta de memória. Use `~/lab/capturas` ou `/var/tmp`.
+
+> **Nota sobre a família RHEL.** A árvore é a mesma — mérito do FHS. As diferenças estão no conteúdo: `/etc/yum.repos.d/` no lugar de `/etc/apt/`, `/etc/sysconfig/` para configurações de serviço que o Debian espalha em outros lugares, `/var/log/messages` e `/var/log/secure` no lugar de `/var/log/syslog` e `/var/log/auth.log`.
+
+## 🧪 Laboratório
+
+Roteiro de exploração. Todos os passos são de leitura, exceto o 8 e o 9, que criam arquivos em locais controlados.
+
+1. **Veja a árvore e a origem de cada ramo.**
+
+   ```bash
+   ls -l /
+   findmnt --real
+   df -hT
+   ```
+
+   Esperado: os diretórios de primeiro nível, e no `findmnt` bem menos linhas do que diretórios — sinal de que a maior parte da árvore vive no mesmo sistema de arquivos. Identifique quais pontos de montagem existem separados na sua instalação.
+
+2. **Confirme o usrmerge.**
+
+   ```bash
+   ls -ld /bin /sbin /lib /lib64
+   readlink -f /bin/ls
+   ```
+
+   Esperado: `/bin -> usr/bin` e `readlink` resolvendo para `/usr/bin/ls`. A conclusão: os dois caminhos apontam para o mesmo arquivo, e não há mais escolha a fazer entre eles.
+
+3. **Descubra quem ocupa o disco.**
+
+   ```bash
+   sudo du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -12
+   sudo du -xh --max-depth=1 /var 2>/dev/null | sort -rh | head -8
+   ```
+
+   Esperado: `/usr` como maior consumidor num Kali recém-instalado, e dentro de `/var` provavelmente `/var/lib` e `/var/cache`. A opção `-x` impede que a contagem atravesse para outros sistemas de arquivos — sem ela, `/proc` e `/sys` poluem o resultado. **Esse é o comando do alerta de disco cheio da abertura do capítulo.**
+
+4. **Explore `/etc` e o padrão dos diretórios `.d`.**
+
+   ```bash
+   ls /etc | wc -l
+   file /etc/passwd /etc/fstab /etc/hostname
+   ls /etc/apt/sources.list.d/ /etc/sudoers.d/ 2>/dev/null
+   ```
+
+   Esperado: algumas centenas de entradas em `/etc`, todas identificadas como texto pelo `file`. Confirme com os próprios olhos a regra: nada de binário em `/etc`.
+
+5. **Prove que `/proc` não existe em disco.**
+
+   ```bash
+   findmnt /proc
+   cat /proc/uptime
+   cat /proc/self/status | head -6
+   ls /proc/self/fd/
+   ```
+
+   Esperado: tipo `proc`, e um `/proc/uptime` que muda a cada leitura. Repare que `/proc/self` mostra o próprio processo que está lendo — rode `cat /proc/self/cmdline` duas vezes e observe que o PID no caminho resolvido é diferente a cada execução.
+
+6. **Leia o hardware pelo sistema de arquivos.**
+
+   ```bash
+   grep 'model name' /proc/cpuinfo | head -2
+   grep MemTotal /proc/meminfo
+   cat /sys/class/net/*/operstate
+   ls /sys/class/ | head -20
+   ```
+
+   Esperado: modelo da CPU, memória total, e o estado (`up` ou `down`) de cada interface de rede. Nenhuma ferramenta especial envolvida — apenas leitura de arquivos.
+
+7. **Experimente os dispositivos especiais.**
+
+   ```bash
+   ls -l /dev/null /dev/zero /dev/urandom
+   echo "isto desaparece" > /dev/null
+   head -c 12 /dev/urandom | xxd
+   head -c 8 /dev/zero | xxd
+   ```
+
+   Esperado: os três aparecem com `c` na primeira coluna (dispositivo de caractere), o `echo` não produz saída nenhuma, `/dev/urandom` devolve bytes diferentes a cada execução e `/dev/zero` devolve sempre zeros. Redirecionar para `/dev/null` é o idioma universal de "descarte esta saída".
+
+8. **Instale um script no lugar certo.**
+
+   ```bash
+   mkdir -p ~/.local/bin
+   printf '#!/bin/bash\necho "rodando do diretorio pessoal"\n' > ~/.local/bin/meu-teste
+   chmod +x ~/.local/bin/meu-teste
+   meu-teste
+   which meu-teste
+   ```
+
+   Esperado: o script executa pelo nome e o `which` responde `/home/kali/.local/bin/meu-teste`. Se o comando não for encontrado, `~/.local/bin` não está no `PATH` desta sessão — feche e reabra o terminal, ou consulte @sec-cap006.
+
+9. **Compare com o lugar de todo o sistema.**
+
+   ```bash
+   sudo cp ~/.local/bin/meu-teste /usr/local/bin/meu-teste
+   which -a meu-teste
+   dpkg -S /usr/local/bin/meu-teste 2>&1 | head -2
+   ```
+
+   Esperado: `which -a` lista os dois caminhos, na ordem em que o shell os procura. E o `dpkg -S` responde que o arquivo não pertence a pacote nenhum — exatamente o que se espera de `/usr/local`. Compare com `dpkg -S /usr/bin/nmap`, que devolve o pacote responsável.
+
+10. **Verifique se `/tmp` está em memória.**
+
+    ```bash
+    findmnt /tmp
+    df -hT /tmp /var/tmp
+    ```
+
+    Esperado: se o tipo for `tmpfs`, todo arquivo ali consome RAM e some ao reiniciar. Anote esse fato — ele explica a diferença de comportamento entre `/tmp` e `/var/tmp` e evita um travamento por falta de memória mais adiante.
+
+11. **Encontre os dados das ferramentas do Kali.**
+
+    ```bash
+    ls /usr/share/wordlists/
+    ls /usr/share/nmap/scripts/ | wc -l
+    dpkg -S /usr/bin/nmap
+    ```
+
+    Esperado: os links de listas de palavras, algumas centenas de scripts NSE e a confirmação de que o `nmap` veio do pacote `nmap`. Essa rastreabilidade — cada arquivo pertencendo a um pacote identificável — é o ganho concreto da mudança para Debian discutida em @sec-cap002.
+
+## Resumo
+
+- **Existe uma única árvore, com raiz em `/`**, e todo dispositivo é montado em algum ponto dela. O caminho de um arquivo não revela em qual disco ele está; quem responde isso é o `findmnt`.
+- **O FHS é um padrão documentado** que quase todas as distribuições respeitam, o que torna esse conhecimento transferível entre Debian, Kali, Ubuntu, RHEL e contêineres.
+- **Dois eixos organizam a árvore**: estático versus variável, compartilhável versus local. Daí decorrem `/usr` somente-leitura, `/etc` como alvo prioritário de backup e `/var/log` como candidato eterno a encher o disco.
+- **`/proc`, `/sys` e `/dev` não existem em disco**: são interfaces do kernel expostas como arquivos, e são a materialização mais direta do princípio "tudo é arquivo".
+- **Cada origem de software tem um destino correto**: `apt` escreve em `/usr`, você escreve em `/usr/local`, programas autocontidos vão para `/opt`, e o que é só seu vai para `~/.local/bin`. Escrever à mão em `/usr/bin` é receita para conflito silencioso.
+- **No Kali, as ferramentas são pacotes comuns em `/usr/bin`**, com dados em `/usr/share/<ferramenta>` e listas de palavras em `/usr/share/wordlists` — o fim do `/pentest/` do BackTrack e o começo da rastreabilidade por pacote.

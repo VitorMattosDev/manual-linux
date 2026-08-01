@@ -14,7 +14,7 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 - [x] **cap 002** - Por que Kali Linux: propósito, filosofia e quando não usá-lo - `vol01/cap002-por-que-kali-linux-proposito-filosofia-e.qmd`
 - [x] **cap 003** - Instalando o Kali: máquina virtual, bare metal, WSL e live USB - `vol01/cap003-instalando-o-kali-maquina-virtual-bare-metal.qmd`
 - [x] **cap 004** - Primeiro contato: sessão, ambiente Xfce e organização do sistema - `vol01/cap004-primeiro-contato-sessao-ambiente-xfce-e.qmd`
-- [ ] **cap 005** - A estrutura de diretórios do Linux (FHS) - `vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.qmd`
+- [x] **cap 005** - A estrutura de diretórios do Linux (FHS) - `vol01/cap005-a-estrutura-de-diretorios-do-linux-fhs.qmd`
 - [ ] **cap 006** - Anatomia de um comando: shell, argumentos, opções e sintaxe - `vol01/cap006-anatomia-de-um-comando-shell-argumentos.qmd`
 - [ ] **cap 007** - Obtendo ajuda: man, info, tldr e a documentação do Kali - `vol01/cap007-obtendo-ajuda-man-info-tldr-e-a-documentacao.qmd`
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (4 concluidos).
+**Total:** 103 capitulos em 16 volumes (5 concluidos).
 
