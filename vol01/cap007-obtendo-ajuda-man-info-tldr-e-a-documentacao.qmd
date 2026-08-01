@@ -1,3 +1,422 @@
 # Obtendo ajuda: man, info, tldr e a documentação do Kali {#sec-cap007}
 
-*(em elaboracao)*
+Três da manhã, de novo. Você está numa máquina remota, dentro de um contêiner metálico no meio de um pasto, conectado por um link de gerência que entrega 200 kbps nos bons momentos. Um script de manutenção escrito por alguém que saiu da empresa em 2021 falha com uma mensagem incompreensível, e no meio dele há uma linha com um comando que você nunca viu. Abrir o navegador não é opção: a banda mal sustenta o SSH. Pesquisar no celular também não — a área não tem sinal.
+
+E ainda assim a resposta está ali, na própria máquina. Todo sistema Linux carrega uma biblioteca de documentação instalada localmente: manuais completos de cada comando, de cada arquivo de configuração, de cada chamada de sistema, além dos arquivos que os empacotadores da distribuição escreveram sobre as decisões que tomaram. Saber navegar por essa biblioteca é a habilidade que separa quem depende de conexão de quem resolve o problema onde ele está.
+
+Este capítulo é sobre isso: as fontes de documentação que existem em disco, qual usar em cada situação, e — o detalhe que quase ninguém ensina — como **ler** uma página de manual, que tem uma gramática própria e não é escrita para ser lida do início ao fim.
+
+## O mapa das fontes
+
+Existem cinco fontes locais e duas remotas, e a escolha certa depende da pergunta que você tem. @fig-onde-ajuda organiza a decisão.
+
+::: {#fig-onde-ajuda}
+```{.tikz}
+%%| filename: onde-procurar-ajuda
+%%| alt: Fluxograma que relaciona o tipo de duvida com a fonte de documentacao adequada
+\begin{tikzpicture}[
+    pg/.style={draw=manualblue,thick,rounded corners=3pt,text width=4.0cm,align=center,font=\scriptsize,fill=manualblue!9,inner sep=4pt},
+    ft/.style={draw=manualgreen,thick,rounded corners=3pt,text width=3.9cm,align=center,font=\scriptsize,fill=manualgreen!12,inner sep=4pt},
+    rem/.style={ft,draw=manualyellow,fill=manualyellow!20},
+    fl/.style={manualgray,-{Stealth[length=4pt]}}
+  ]
+  \node[pg] (q1) at (0,0)    {\textbf{Sei o nome, quero a sintaxe rápida}};
+  \node[ft] (a1) at (5.6,0)  {\texttt{comando -{}-help}\\ou \texttt{tldr comando}};
+  \draw[fl] (q1) -- (a1);
+
+  \node[pg] (q2) at (0,-1.6) {\textbf{Sei o nome, quero a referência completa}};
+  \node[ft] (a2) at (5.6,-1.6) {\texttt{man comando}};
+  \draw[fl] (q2) -- (a2);
+
+  \node[pg] (q3) at (0,-3.2) {\textbf{Não sei o nome, sei o que quero fazer}};
+  \node[ft] (a3) at (5.6,-3.2) {\texttt{apropos palavra}\\\texttt{man -k palavra}};
+  \draw[fl] (q3) -- (a3);
+
+  \node[pg] (q4) at (0,-4.8) {\textbf{Quero o formato de um arquivo de configuração}};
+  \node[ft] (a4) at (5.6,-4.8) {\texttt{man 5 arquivo}};
+  \draw[fl] (q4) -- (a4);
+
+  \node[pg] (q5) at (0,-6.4) {\textbf{Quero saber o que a distribuição mudou}};
+  \node[ft] (a5) at (5.6,-6.4) {\texttt{/usr/share/doc/pacote/}\\README.Debian};
+  \draw[fl] (q5) -- (a5);
+
+  \node[pg] (q6) at (0,-8.0) {\textbf{É ferramenta do Kali sem página de manual}};
+  \node[rem] (a6) at (5.6,-8.0) {\texttt{comando -h}\\e o site de ferramentas};
+  \draw[fl] (q6) -- (a6);
+
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (10.2,-2.4) {\textbf{Local:} funciona sem internet, casa com a versão instalada};
+  \node[font=\scriptsize,manualgray,align=center,text width=3.4cm] at (10.2,-6.4) {\textbf{Remoto:} mais atual, mas pode descrever outra versão};
+  \draw[auxiliar] (7.75,-0.6) -- (7.75,-5.6);
+  \draw[auxiliar,dashed] (7.75,-6.0) -- (7.75,-8.6);
+\end{tikzpicture}
+```
+A fonte certa depende da pergunta. Documentação local sempre corresponde à versão instalada; a remota, nem sempre.
+:::
+
+Essa última observação é mais importante do que parece. A página de manual em disco descreve **a versão que está na sua máquina**. Um artigo publicado na internet descreve a versão que o autor tinha, que pode ser mais nova ou mais velha, e é assim que se perde uma hora tentando usar uma opção que não existe no seu sistema. Quando as duas fontes divergem, a local está certa.
+
+## `man`: a referência canônica
+
+O `man` é o sistema de manuais do Unix, e cada página é a documentação de referência de um comando, arquivo, chamada de sistema ou biblioteca.
+
+```bash
+man ls
+man nmap
+man sshd_config
+```
+
+A navegação usa o `less` como visualizador, e vale decorar seis teclas:
+
+| Tecla | Ação |
+|---|---|
+| `espaço` / `b` | avança / volta uma tela |
+| `/texto` | busca para frente |
+| `n` / `N` | próxima ocorrência / anterior |
+| `g` / `G` | início / fim da página |
+| `h` | ajuda do próprio visualizador |
+| `q` | sai |
+
+A busca com `/` é o que torna o `man` prático. Ninguém lê `man bash` inteiro — são milhares de linhas. Você abre e busca a opção específica. Um truque que economiza tempo: para achar a descrição de uma opção curta, busque pelo traço junto de um espaço à frente, como `/ -r`, evitando os acertos no meio de outras palavras.
+
+### As seções do manual
+
+Este é o conceito que confunde no começo. O manual é dividido em **seções numeradas**, e o mesmo nome pode existir em mais de uma. @fig-secoes-man mostra as que importam.
+
+::: {#fig-secoes-man}
+```{.tikz}
+%%| filename: secoes-do-manual
+%%| alt: As nove secoes do manual do Unix com o tipo de conteudo de cada uma
+\begin{tikzpicture}[
+    num/.style={draw=manualred,thick,circle,minimum size=0.62cm,font=\small\bfseries,fill=manualred!14,inner sep=0pt},
+    tit/.style={font=\scriptsize\bfseries,manualgray,anchor=west},
+    des/.style={font=\scriptsize,manualgray,anchor=west},
+    ex/.style={font=\scriptsize\ttfamily,manualblue,anchor=west}
+  ]
+  \foreach \n/\y in {1/0, 2/-0.95, 3/-1.9, 4/-2.85, 5/-3.8, 6/-4.75, 7/-5.7, 8/-6.65} {
+    \node[num] at (0,\y) {\n};
+  }
+  \node[tit] at (0.5,0.16)   {Comandos de usuário};
+  \node[des] at (0.5,-0.18)  {tudo que se digita no terminal};
+  \node[ex]  at (6.6,0)      {man 1 ls};
+
+  \node[tit] at (0.5,-0.79)  {Chamadas de sistema};
+  \node[des] at (0.5,-1.13)  {a fronteira com o kernel};
+  \node[ex]  at (6.6,-0.95)  {man 2 open};
+
+  \node[tit] at (0.5,-1.74)  {Funções de biblioteca};
+  \node[des] at (0.5,-2.08)  {funções em C, sobretudo da glibc};
+  \node[ex]  at (6.6,-1.9)   {man 3 printf};
+
+  \node[tit] at (0.5,-2.69)  {Arquivos especiais};
+  \node[des] at (0.5,-3.03)  {dispositivos em /dev};
+  \node[ex]  at (6.6,-2.85)  {man 4 random};
+
+  \node[tit] at (0.5,-3.64)  {Formatos de arquivo};
+  \node[des] at (0.5,-3.98)  {a sintaxe dos arquivos de configuração};
+  \node[ex]  at (6.6,-3.8)   {man 5 passwd};
+
+  \node[tit] at (0.5,-4.59)  {Jogos};
+  \node[des] at (0.5,-4.93)  {herança histórica};
+  \node[ex]  at (6.6,-4.75)  {man 6 sl};
+
+  \node[tit] at (0.5,-5.54)  {Diversos e convenções};
+  \node[des] at (0.5,-5.88)  {padrões, protocolos, a própria hierarquia};
+  \node[ex]  at (6.6,-5.7)   {man 7 hier};
+
+  \node[tit] at (0.5,-6.49)  {Administração do sistema};
+  \node[des] at (0.5,-6.83)  {comandos que normalmente exigem root};
+  \node[ex]  at (6.6,-6.65)  {man 8 mount};
+
+  \draw[auxiliar] (-0.45,0.5) rectangle (8.9,-7.1);
+  \node[font=\scriptsize,manualred,align=center,text width=8.6cm] at (4.2,-7.55) {\textbf{passwd} existe na seção 1 (o comando que troca a senha) \emph{e} na seção 5 (o formato de \texttt{/etc/passwd}). Sem o número, o \texttt{man} entrega a seção 1.};
+\end{tikzpicture}
+```
+As seções do manual. O número entre parênteses numa referência — `open(2)` — é a seção onde procurar.
+:::
+
+O caso clássico:
+
+```bash
+man passwd      # secao 1: o comando de trocar senha
+man 5 passwd    # secao 5: o formato do arquivo /etc/passwd
+man -a passwd   # percorre todas as secoes, uma apos a outra
+whatis passwd   # lista todas as secoes em que o nome existe
+```
+
+Quando você lê numa documentação uma referência como `open(2)` ou `crontab(5)`, o número entre parênteses é justamente a seção. É a forma padrão de dizer "não confunda o comando com o arquivo".
+
+### A gramática do SYNOPSIS
+
+A seção `SYNOPSIS`, logo no começo de cada página, é a parte mais densa e a que mais gente pula. Ela é escrita numa notação convencional que, uma vez conhecida, responde sozinha a maioria das dúvidas de sintaxe:
+
+- **Texto normal (em negrito no terminal)**: digite exatamente assim.
+- **Texto em itálico ou sublinhado**: substitua pelo seu valor.
+- **`[colchetes]`**: opcional.
+- **`reticências...`**: pode repetir.
+- **`{a|b}`**: escolha uma das alternativas, e ela é obrigatória.
+
+Aplicando ao `ls`, cujo SYNOPSIS é `ls [OPTION]... [FILE]...`: opções são opcionais e podem ser várias; arquivos também. Por isso `ls` sozinho funciona, `ls -la` funciona, e `ls -la /etc /var` também.
+
+Já `cp`, com `cp [OPTION]... SOURCE... DIRECTORY`, diz outra coisa: opções são opcionais, mas **origem e destino não são**, e a origem pode se repetir enquanto o destino é único. Isso responde, sem ler mais nada, por que `cp arquivo` sozinho dá erro.
+
+### Encontrar o comando quando você não sabe o nome
+
+Este é o uso do `man` que mais gente desconhece e mais rende. A base de dados de manuais é pesquisável por palavra-chave:
+
+```bash
+apropos "list directory"
+man -k compress
+man -k firewall
+apropos -s 5 network      # busca so na secao 5
+```
+
+`apropos` e `man -k` são o mesmo comando. Eles procuram a palavra na descrição curta de todas as páginas instaladas — ou seja, respondem "qual comando faz X?" usando apenas o que está na máquina.
+
+Se a busca falhar dizendo que nada foi encontrado, o índice pode não ter sido gerado:
+
+```bash
+sudo mandb
+```
+
+E o complemento útil: `whatis` faz o caminho inverso, devolvendo a descrição de uma linha de um comando que você já sabe o nome.
+
+```bash
+whatis ls tar ss nmap
+```
+
+## `--help`: rápido e nem sempre suficiente
+
+A maioria absoluta dos programas aceita `--help` (e muitos aceitam `-h`), imprimindo um resumo em algumas dezenas de linhas:
+
+```bash
+ls --help
+ip --help
+nmap --help | head -40
+```
+
+É mais rápido que abrir o manual e frequentemente basta. Duas ressalvas: a saída às vezes é longa demais para a tela — encadeie com `less` (`ls --help | less`) — e alguns programas antigos não reconhecem `--help`, imprimindo um erro de uso que, ironicamente, costuma trazer a sintaxe correta.
+
+Cuidado com uma armadilha real: em algumas ferramentas, `-h` significa outra coisa. No `ls`, `-h` é "tamanhos legíveis por humanos"; no `du` e no `df`, idem. Quando `-h` não trouxer ajuda, use `--help`.
+
+## `help`: os comandos que não têm arquivo
+
+Comandos embutidos no shell não são arquivos e por isso não têm página de manual própria. Como visto em @sec-cap006, `cd`, `export`, `type` e vários outros são builtins. A documentação deles vem do próprio shell:
+
+```bash
+help cd            # no Bash
+help type
+man bash           # e depois buscar com /  cd
+```
+
+No Zsh, shell padrão do Kali, o equivalente é:
+
+```bash
+man zshbuiltins
+run-help cd
+```
+
+Antes de concluir que um comando não tem documentação, confirme com `type -a` se ele não é um builtin.
+
+## `info`: a documentação estendida do GNU
+
+Os projetos GNU mantêm manuais mais extensos no formato `info`, organizados em nós ligados entre si, como um hipertexto anterior à web:
+
+```bash
+info coreutils
+info bash
+info sed
+```
+
+A navegação usa `n` (próximo nó), `p` (anterior), `u` (acima), `Enter` sobre um item de menu e `q` para sair. Vale conhecer porque, para as ferramentas do `coreutils` — `ls`, `cp`, `sort`, `cut`, `tr` — o `info` traz explicações e exemplos que a página `man` resume ou omite. Quando `man` disser "the full documentation is maintained as a Texinfo manual", é exatamente disso que se trata.
+
+## `/usr/share/doc`: o que a distribuição decidiu
+
+Esta é a fonte que quase ninguém consulta e que resolve as dúvidas mais específicas. Todo pacote instalado deposita ali seus documentos:
+
+```bash
+ls /usr/share/doc/nmap/
+zcat /usr/share/doc/nmap/changelog.Debian.gz | head -20
+ls /usr/share/doc/openssh-server/
+```
+
+Três arquivos merecem atenção. O **`README.Debian`** descreve as decisões específicas do empacotador — configurações padrão alteradas, caminhos diferentes do original, incompatibilidades conhecidas. É onde está escrito por que aquele serviço não inicia sozinho, ou por que o arquivo de configuração está num lugar inesperado. O **`changelog.Debian.gz`** registra o histórico de mudanças do pacote na distribuição. E o diretório **`examples/`**, quando existe, traz arquivos de configuração de exemplo prontos para copiar e adaptar.
+
+Para descobrir tudo que um pacote instalou, incluindo documentação e exemplos:
+
+```bash
+dpkg -L nmap | grep -E 'doc|example'
+dpkg -L openssh-server | grep /etc
+```
+
+## `tldr`: exemplos em vez de referência
+
+Páginas de manual são **referências**, não tutoriais: descrevem exaustivamente cada opção e raramente mostram como se usa o comando na vida real. O projeto `tldr` preenche essa lacuna com páginas curtas, feitas só de exemplos comentados:
+
+```bash
+sudo apt install -y tldr
+tldr --update
+tldr tar
+tldr find
+tldr ss
+```
+
+A diferença é radical. `man tar` tem centenas de linhas e não diz de forma direta como extrair um arquivo `.tar.gz`; `tldr tar` mostra a linha exata, com comentário, na primeira tela. O fluxo eficiente combina os dois: **`tldr` para lembrar a forma usual, `man` para os detalhes e casos de borda**.
+
+Vale saber que existe também o `tealdeer`, uma implementação mais rápida do mesmo cliente, e o `cheat`, que permite manter suas próprias folhas de consulta — útil para registrar os comandos específicos do seu ambiente.
+
+## Um último recurso: o `whereis` e a leitura do próprio programa
+
+Quando nada mais responde, ainda há caminhos:
+
+```bash
+whereis nmap                   # binario, fonte e manual
+dpkg -S $(which nmap)          # de qual pacote veio
+apt show nmap                  # descricao e dependencias
+file $(which tldr)             # e um script? entao da para ler
+```
+
+O último é subestimado: boa parte das ferramentas de segurança é script em Python ou shell. Se o `file` disser que é texto, você pode abrir com `less` e ler o que ele faz — a forma mais confiável de descobrir o comportamento de uma ferramenta antes de apontá-la para algo importante.
+
+## Sobre confiar na resposta
+
+Duas advertências que valem o parágrafo.
+
+**Respostas de fórum envelhecem.** Uma solução de 2016 pode se referir a `iptables` quando sua máquina usa `nftables`, ou a `ifconfig` quando o sistema tem `ip`. Confira sempre contra a documentação local antes de executar.
+
+**Comando colado sem leitura é comando não auditado.** Vale para respostas de fórum, para artigos e também para o que um assistente de IA sugere — incluindo este manual. Antes de executar algo que você não entende, leia a página de manual das partes que não reconhece. É exatamente para isso que este capítulo existe, e é o hábito que impede o desastre da linha destrutiva copiada às pressas discutida em @sec-cap006.
+
+## 🐉 No Kali
+
+- **`kali.org/tools` documenta cada ferramenta empacotada**, com descrição, exemplos de uso e a página de manual reproduzida. É a fonte oficial quando a ferramenta não tem `man` decente — e muitas não têm, porque são projetos de comunidade sem documentação formal.
+- **`kali.org/docs`** cobre o que é da distribuição: instalação, ramos de repositório, personalização de imagens, WSL, NetHunter, ARM [@kalidocs].
+- **Ferramentas de segurança frequentemente usam `-h` em vez de `--help`**, e algumas imprimem a ajuda apenas quando executadas sem argumento nenhum. Se `--help` devolver erro, tente `-h`, depois o nome sozinho.
+- **Nem toda ferramenta do Kali tem página de manual.** Confirme com `man -k <ferramenta>` ou `whereis <ferramenta>`; se não houver, o caminho é `-h`, o `/usr/share/doc/<pacote>/` e o site de ferramentas.
+- **Módulos do Metasploit têm documentação própria dentro do console**: `info <modulo>` e `show options` descrevem parâmetros que nenhum `man` cobre. É uma linguagem de comandos separada do shell.
+- **O livro *Kali Linux Revealed*** é a documentação oficial estendida da distribuição, disponível gratuitamente e escrito pelos mantenedores [@hertzog2017kali]. Boa parte dele é, na verdade, um curso de Debian.
+- **`man` pode não estar instalado em imagens enxutas.** Em contêineres e na variante `headless`, as páginas costumam ser removidas para economizar espaço. Reinstale com `sudo apt install --reinstall man-db manpages` e, se necessário, `sudo unminimize` em derivados que aplicam essa redução.
+- **A base de dados do `apropos` precisa existir.** Depois de instalar muitos pacotes de uma vez — o que acontece ao instalar um metapacote —, rode `sudo mandb` para que as ferramentas novas apareçam nas buscas por palavra-chave.
+
+> **Nota sobre a família RHEL.** Tudo neste capítulo funciona igual: `man`, `apropos`, `info` e `--help` são universais. As diferenças estão nos lugares: `/usr/share/doc/<pacote>` sem os arquivos `README.Debian`, `rpm -qd <pacote>` no lugar de `dpkg -L` para listar a documentação, e `rpm -qf` no lugar de `dpkg -S` para descobrir a origem de um arquivo.
+
+## 🧪 Laboratório
+
+Roteiro de leitura. Nenhum passo altera o sistema, exceto a instalação do `tldr` no passo 8.
+
+1. **Leia um manual do começo e identifique as seções padrão.**
+
+   ```bash
+   man ls
+   ```
+
+   Dentro do visualizador, use `/` para saltar até `SYNOPSIS`, `DESCRIPTION`, `EXAMPLES` e `SEE ALSO`. Esperado: encontrar todas essas seções. Anote o que aparece em `SEE ALSO` — é a lista de comandos relacionados, e frequentemente é ali que está o que você realmente precisa.
+
+2. **Decifre um SYNOPSIS.**
+
+   ```bash
+   man cp | head -20
+   man ls | head -12
+   ```
+
+   Esperado: `cp [OPTION]... SOURCE... DIRECTORY` e `ls [OPTION]... [FILE]...`. Explique para si mesmo, usando só a notação, por que `ls` funciona sem argumento nenhum e `cp` não. Confirme executando os dois sem argumentos e comparando as mensagens.
+
+3. **Prove que o mesmo nome existe em seções diferentes.**
+
+   ```bash
+   whatis passwd
+   man 1 passwd | head -8
+   man 5 passwd | head -12
+   ```
+
+   Esperado: `whatis` lista as duas ocorrências; a seção 1 descreve o comando que troca senha e a seção 5 descreve o formato do arquivo, com a explicação de cada campo separado por dois-pontos. Essa página da seção 5 volta a ser útil no Volume 4.
+
+4. **Encontre um comando sem saber o nome dele.**
+
+   ```bash
+   apropos "compress"
+   apropos "disk space"
+   man -k "network interface" | head
+   ```
+
+   Esperado: listas de candidatos com a descrição de uma linha de cada um. Se nada for encontrado, rode `sudo mandb` e repita. **Este é o comando da situação da abertura do capítulo**: sem internet, é assim que se descobre a ferramenta certa.
+
+5. **Busque dentro de um manual gigante.**
+
+   ```bash
+   man bash
+   ```
+
+   Dentro do visualizador, digite `/EXIT STATUS` e pressione Enter, depois `n` algumas vezes. Esperado: saltar direto para o trecho, sem rolar milhares de linhas. Repita buscando por `PATH`. Essa técnica é o que torna manuais longos utilizáveis.
+
+6. **Compare `--help` com `man`.**
+
+   ```bash
+   ls --help | wc -l
+   man ls | wc -l
+   ip --help 2>&1 | head -20
+   ```
+
+   Esperado: o `--help` com poucas dezenas de linhas contra centenas do manual. Note que `ip --help` imprime a ajuda em erro padrão, motivo do `2>&1` — detalhe que o Volume 2 explica.
+
+7. **Documente um comando embutido.**
+
+   ```bash
+   type -a cd
+   help cd 2>/dev/null || man zshbuiltins
+   man cd 2>&1 | head -3
+   ```
+
+   Esperado: `cd` identificado como builtin, a ajuda vindo do shell, e o `man cd` falhando ou trazendo uma página genérica. A conclusão prática: quando `man` não achar um comando, verifique antes se ele é builtin.
+
+8. **Instale e use o `tldr`.**
+
+   ```bash
+   sudo apt install -y tldr
+   tldr --update
+   tldr tar
+   tldr find
+   ```
+
+   Esperado: meia dúzia de exemplos comentados por comando, cabendo na tela. Compare `tldr tar` com `man tar | wc -l` e observe a diferença de propósito: um responde "como se faz", o outro responde "o que existe".
+
+9. **Descubra o que a distribuição mudou num pacote.**
+
+   ```bash
+   ls /usr/share/doc/openssh-server/
+   zcat /usr/share/doc/openssh-server/changelog.Debian.gz 2>/dev/null | head -15
+   dpkg -L openssh-server | grep -E 'doc|example|/etc'
+   ```
+
+   Esperado: os arquivos de documentação do pacote, o histórico de alterações e a lista dos arquivos de configuração instalados. Se houver um `README.Debian`, leia — é onde ficam as decisões que explicam comportamentos inesperados.
+
+10. **Rastreie a origem de um binário.**
+
+    ```bash
+    which nmap
+    whereis nmap
+    dpkg -S $(which nmap)
+    apt show nmap 2>/dev/null | head -12
+    ```
+
+    Esperado: o caminho do executável, a localização do manual, o pacote de origem e a descrição oficial. Quatro comandos que, juntos, respondem "o que é isso e de onde veio" para qualquer programa da máquina.
+
+11. **Leia uma ferramenta que é script.**
+
+    ```bash
+    file $(which tldr)
+    head -20 $(which tldr) 2>/dev/null
+    ```
+
+    Esperado: se o `file` disser "Python script" ou "shell script", as primeiras linhas são legíveis. Auditar uma ferramenta antes de usá-la em ambiente sensível começa exatamente assim.
+
+12. **Monte o seu fluxo.** Escolha um comando que você não conhece — por exemplo `ss`, `stat`, `xxd` ou `nl` — e responda três perguntas sobre ele usando, nesta ordem: `whatis`, `tldr` e `man`. Esperado: descobrir para que serve, ver um exemplo funcionando e localizar a opção específica de que precisava, tudo sem sair da máquina. Esse é o hábito que este capítulo quer instalar.
+
+## Resumo
+
+- **A documentação está instalada na máquina** e sempre corresponde à versão que você tem — vantagem decisiva sobre qualquer artigo na internet, que descreve a versão do autor.
+- **`man` é a referência canônica**, dividida em seções numeradas. O mesmo nome pode existir em várias delas (`man 1 passwd` contra `man 5 passwd`), e o número entre parênteses numa referência indica onde procurar.
+- **O SYNOPSIS tem gramática própria**: colchetes marcam o opcional, reticências marcam o repetível, chaves com barra marcam alternativas obrigatórias. Ler essas quatro convenções responde a maioria das dúvidas de sintaxe.
+- **`apropos` e `man -k` respondem "qual comando faz X?"** usando só o que está em disco, e dependem do índice mantido pelo `mandb`.
+- **`--help` é o atalho e `tldr` é o complemento**: um resume as opções, o outro mostra os usos reais. A combinação eficiente é `tldr` para a forma usual e `man` para os detalhes.
+- **Comandos embutidos não têm página de manual**; a documentação vem do próprio shell, com `help` no Bash e `man zshbuiltins` ou `run-help` no Zsh.
+- **`/usr/share/doc/<pacote>/` guarda o que a distribuição decidiu**, incluindo o `README.Debian` que explica comportamentos inesperados e os arquivos de exemplo prontos para adaptar.
+- **Comando colado sem leitura é comando não auditado.** Consultar a documentação antes de executar é a defesa mais barata contra a linha destrutiva copiada às pressas.
