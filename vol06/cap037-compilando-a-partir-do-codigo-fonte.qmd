@@ -1,3 +1,452 @@
 # Compilando a partir do código-fonte {#sec-cap037}
 
-*(em elaboracao)*
+A ferramenta que você precisa saiu ontem no GitHub do autor, corrige exatamente o problema que você tem, e não está no repositório de nenhuma distribuição. O README traz as três linhas de sempre — `./configure`, `make`, `sudo make install` — e elas funcionam. Seis meses depois, ninguém no time sabe que aquele binário em `/usr/local/bin` existe, de onde veio, qual versão é, nem como removê-lo. O `dpkg -S` não o conhece. O `apt` nunca vai atualizá-lo. E quando uma vulnerabilidade for anunciada naquele projeto, nenhuma ferramenta de inventário vai apontar aquela máquina.
+
+Compilar do fonte é uma habilidade necessária — mas o comando `sudo make install`, digitado sem cerimônia, é a forma mais eficiente de criar software invisível no seu sistema. Este capítulo é sobre fazer o processo direito: verificar a origem, entender o que cada etapa faz, e sair dele com algo que o sistema saiba que existe.
+
+## Quando compilar, e quando não
+
+Antes de qualquer coisa, esgote as alternativas. A ordem de preferência:
+
+1. **Está no repositório?** `apt search --names-only`. Muita gente compila o que já estava a um `apt install` de distância, sob outro nome.
+2. **É Python?** `pipx` instala em ambiente isolado e desinstala limpo (@sec-cap038).
+3. **Existe imagem de contêiner oficial?** Isolamento e remoção triviais.
+4. **O pacote do repositório está só desatualizado?** `apt source` + patch + `dpkg-buildpackage` (@sec-cap035) produz um `.deb` de verdade.
+5. **Nenhuma das anteriores?** Compilar — e ainda assim, de preferência gerando um pacote.
+
+Compilar se justifica quando você precisa de uma versão que não existe empacotada, de opções de compilação diferentes das padrão, de um patch próprio, ou de uma ferramenta que só existe como código.
+
+## Preparar o ambiente
+
+```bash
+sudo apt install build-essential
+```
+
+O `build-essential` é um metapacote que traz o essencial: `gcc`, `g++`, `make`, `libc6-dev` e `dpkg-dev`. A ele costuma-se acrescentar:
+
+```bash
+sudo apt install pkg-config autoconf automake libtool cmake meson ninja-build git
+```
+
+O ponto que mais trava iniciante é o pacote **`-dev`**. Numa distribuição Debian, uma biblioteca é dividida em dois pacotes: `libssl3` traz o arquivo compartilhado que os programas usam em tempo de execução, e `libssl-dev` traz os cabeçalhos e o arquivo `.pc` necessários para **compilar** contra ela. Ter a biblioteca instalada não basta para compilar.
+
+```bash
+apt search --names-only 'libssl'
+apt show libssl-dev | head -12
+pkg-config --modversion openssl        # versao vista pelo compilador
+pkg-config --cflags --libs openssl     # flags que o build usaria
+```
+
+Quando o `configure` reclama de uma biblioteca ausente que você tem certeza de ter instalado, é quase sempre o `-dev` que falta. A tradução mental é direta: erro em `foo.h` significa instalar `libfoo-dev`.
+
+Se o pacote existe no Debian, há um atalho que instala todas as dependências de compilação de uma vez:
+
+```bash
+sudo apt build-dep nmap      # exige uma linha deb-src no sources.list
+dpkg-checkbuilddeps          # dentro de um diretorio com debian/control
+```
+
+## Verificar a origem antes de compilar
+
+Baixar um tarball e compilá-lo é executar código de terceiro na sua máquina — e depois instalá-lo como root. A verificação não é opcional.
+
+```bash
+wget https://exemplo.org/ferramenta-2.4.tar.gz
+wget https://exemplo.org/ferramenta-2.4.tar.gz.asc
+wget https://exemplo.org/ferramenta-2.4.tar.gz.sha256
+
+sha256sum -c ferramenta-2.4.tar.gz.sha256      # integridade
+gpg --verify ferramenta-2.4.tar.gz.asc         # autenticidade
+```
+
+A distinção entre os dois importa. O `sha256sum` verifica que o arquivo não corrompeu no caminho; ele **não** prova nada sobre a origem, porque quem substituiu o tarball também pode ter substituído o hash publicado ao lado. A assinatura GPG é o que prova autoria — desde que você tenha obtido a chave por um canal independente e ela seja de fato do autor.
+
+```bash
+gpg --keyserver keyserver.ubuntu.com --recv-keys <ID-DA-CHAVE>
+gpg --fingerprint <ID-DA-CHAVE>     # comparar com a publicada no site oficial
+```
+
+Ao clonar de um repositório Git, o equivalente é conferir o commit ou a tag assinada:
+
+```bash
+git clone https://github.com/autor/ferramenta.git
+cd ferramenta
+git log --show-signature -1
+git tag -v v2.4
+```
+
+::: {.callout-warning}
+## `curl | sudo bash` é a pior forma de instalar qualquer coisa
+
+Vários projetos oferecem `curl -sSL https://exemplo.org/install.sh | sudo bash` como instalação de uma linha. O comando executa, com privilégio total, um script que você não leu, servido por um host que pode mudar de conteúdo entre a sua visita ao site e o momento da execução — e que pode inclusive servir conteúdo diferente para `curl` e para navegador.
+
+Se o único caminho for esse script, baixe-o primeiro, leia, e só então execute:
+
+```bash
+curl -fsSL https://exemplo.org/install.sh -o /tmp/install.sh
+less /tmp/install.sh          # ler de verdade
+bash /tmp/install.sh          # sem sudo, se possivel
+```
+:::
+
+## O fluxo clássico: configure, make, make install
+
+::: {#fig-fluxo-compilacao}
+```{.tikz}
+%%| filename: fluxo-de-compilacao-a-partir-do-fonte
+%%| alt: Etapas da compilacao a partir do fonte: configure detecta o sistema e gera o Makefile, make compila os objetos e liga o binario, make install copia para o prefixo escolhido
+\begin{tikzpicture}[
+    et/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.2cm,minimum height=1.9cm},
+    e1/.style={et,draw=manualgray,fill=manualgray!8},
+    e2/.style={et,draw=manualblue,fill=manualblue!11},
+    e3/.style={et,draw=manualgreen,fill=manualgreen!12},
+    e4/.style={et,draw=manualyellow,fill=manualyellow!14},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize\ttfamily,manualgray,align=center},
+    sub/.style={font=\scriptsize,manualgray,align=center,text width=3.2cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[e1] (a) at (0,0)    {\textbf{fonte}\\\texttt{ferramenta-2.4/}\\\texttt{configure}, \texttt{*.c}, \texttt{*.h}};
+  \node[e2] (b) at (4.3,0)  {\textbf{configurado}\\\texttt{Makefile} e \texttt{config.h} gerados para \emph{esta} máquina};
+  \node[e3] (c) at (8.6,0)  {\textbf{compilado}\\\texttt{*.o} e o binário, ainda dentro do diretório de fonte};
+  \node[e4] (d) at (12.9,0) {\textbf{instalado}\\arquivos copiados para o prefixo escolhido};
+
+  \draw[fl] (a) -- node[lb,yshift=34pt]{./configure} (b);
+  \draw[fl] (b) -- node[lb,yshift=34pt]{make} (c);
+  \draw[fl] (c) -- node[lb,yshift=34pt]{make install} (d);
+
+  \node[sub,manualblue]  at (4.3,-1.6)  {procura compilador, bibliotecas e cabeçalhos; falha aqui = \texttt{-dev} faltando};
+  \node[sub,manualgreen] at (8.6,-1.6)  {a etapa demorada; \texttt{-j\$(nproc)} usa todos os núcleos};
+  \node[sub,manualyellow] at (12.9,-1.6){a única que precisa de \texttt{sudo} --- e a única que o sistema não registra};
+
+  \node[nt,text width=14.2cm] at (6.4,-3.4) {O \texttt{configure} não compila nada: ele apenas descobre o que existe nesta máquina e escreve um \texttt{Makefile} sob medida. Por isso o diretório de fonte, depois de configurado, não é portável para outra máquina --- e por isso um erro de \texttt{configure} é sempre um problema de dependência, nunca de código.};
+\end{tikzpicture}
+```
+As três etapas da compilação clássica e o que cada uma produz.
+:::
+
+```bash
+tar xzf ferramenta-2.4.tar.gz
+cd ferramenta-2.4
+less README INSTALL              # ler antes; as opcoes estao ali
+./configure --help | less        # o que este projeto aceita
+./configure --prefix=/usr/local
+make -j"$(nproc)"
+make check                       # quando o projeto tem testes
+sudo make install
+```
+
+Cada etapa merece uma observação:
+
+O **`./configure`** é um script gerado pelo Autoconf que inspeciona a máquina: qual compilador existe, quais bibliotecas estão presentes, quais funções a `libc` oferece. O resultado é um `Makefile` e um `config.h` adaptados a este sistema. É aqui que se escolhem as opções, e `./configure --help` é leitura obrigatória — muitos projetos deixam recursos úteis desligados por padrão.
+
+O **`make`** é a etapa demorada, e `-j"$(nproc)"` a paraleliza pelo número de núcleos (@sec-cap032). Se a compilação falhar com o `-j` e funcionar sem ele, o `Makefile` do projeto tem dependências mal declaradas — é um defeito conhecido em projetos pequenos.
+
+O **`make install`** apenas copia arquivos. É a única etapa que exige `sudo`, e a única que o sistema de pacotes não registra.
+
+Duas opções que valem conhecer:
+
+```bash
+make install DESTDIR=/tmp/preview     # instala numa arvore falsa, para inspecao
+find /tmp/preview -type f             # exatamente o que iria para o sistema
+```
+
+O `DESTDIR` é a forma de ver o que um `make install` faria antes de deixá-lo fazer. É o `--dry-run` que o `make` não tem.
+
+## O prefixo: `/usr` contra `/usr/local`
+
+O `--prefix` decide onde os arquivos vão parar, e a escolha não é estética.
+
+::: {#fig-prefixo}
+```{.tikz}
+%%| filename: territorio-do-gerenciador-de-pacotes-e-do-administrador
+%%| alt: Divisao entre /usr, gerido pelo dpkg, e /usr/local, territorio do administrador, com a regra de nunca instalar software compilado sobre /usr
+\begin{tikzpicture}[
+    ter/.style={rounded corners=4pt,thick,align=left,font=\scriptsize,inner sep=7pt,text width=6.1cm,minimum height=3.4cm},
+    ger/.style={ter,draw=manualblue,fill=manualblue!10},
+    adm/.style={ter,draw=manualgreen,fill=manualgreen!12},
+    tt/.style={font=\scriptsize\bfseries\ttfamily,align=center},
+    warn/.style={rounded corners=3pt,thick,draw=manualred,fill=manualred!10,align=left,font=\scriptsize,inner sep=6pt,text width=13.0cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tt,manualblue]  at (0,2.35)   {/usr};
+  \node[tt,manualgreen] at (7.1,2.35) {/usr/local};
+
+  \node[ger] at (0,0) {\textbf{Território do \texttt{dpkg}.}\\[3pt]
+    Todo arquivo aqui pertence a algum pacote, e \texttt{dpkg -S} sabe a qual.\\[3pt]
+    O gerenciador pode sobrescrever ou remover qualquer coisa daqui numa atualização.\\[3pt]
+    \texttt{--prefix=/usr} coloca seu binário na linha de tiro.};
+
+  \node[adm] at (7.1,0) {\textbf{Território do administrador.}\\[3pt]
+    O FHS reserva esta árvore para software instalado localmente.\\[3pt]
+    Nenhum pacote Debian escreve aqui; nada será sobrescrito.\\[3pt]
+    É o padrão do \texttt{configure} justamente por isso.};
+
+  \node[warn] at (3.5,-3.0) {\textbf{Por que \texttt{--prefix=/usr} morde:} o seu binário fica no mesmo caminho de um do repositório. Se o pacote oficial for instalado depois, ele sobrescreve o seu sem aviso; se for removido, leva junto arquivos que você acha que são seus. O \texttt{PATH} típico já põe \texttt{/usr/local/bin} antes de \texttt{/usr/bin}, então o software local vence a disputa de nome sem precisar invadir \texttt{/usr}.};
+
+  \node[nt,text width=13.0cm] at (3.5,-4.7) {Uma terceira opção, útil quando não se quer nem \texttt{/usr/local}: \texttt{--prefix=\$HOME/.local}, que instala sem \texttt{sudo} algum e vale só para o seu usuário. Exige que \texttt{\$HOME/.local/bin} esteja no \texttt{PATH}.};
+\end{tikzpicture}
+```
+Por que software compilado vai para `/usr/local`, e não para `/usr`.
+:::
+
+A hierarquia é a do FHS (@sec-cap005): `/usr` é do gerenciador de pacotes, `/usr/local` é do administrador. Respeitar essa fronteira evita a classe inteira de problemas em que um `apt upgrade` sobrescreve um binário compilado à mão, ou em que um `apt remove` leva junto arquivos que não eram dele.
+
+## O problema do `make install`, e três soluções
+
+Um `make install` puro deixa arquivos espalhados que nenhuma ferramenta conhece. As opções, da pior para a melhor:
+
+**Guardar o diretório de fonte.** Muitos projetos oferecem `make uninstall`, que remove o que foi instalado — mas só funciona a partir do mesmo diretório de fonte, configurado com o mesmo prefixo. Apagou o diretório, perdeu a desinstalação. É frágil, e nem todo projeto implementa o alvo.
+
+**`checkinstall`.** Ele intercepta o `make install`, observa quais arquivos foram criados e empacota tudo num `.deb`, que é instalado normalmente. O resultado aparece no `dpkg -l`, é removível com `apt remove` e tem versão registrada.
+
+```bash
+sudo apt install checkinstall
+./configure --prefix=/usr/local
+make -j"$(nproc)"
+sudo checkinstall --pkgname=minha-ferramenta --pkgversion=2.4 --default
+dpkg -l | grep minha-ferramenta
+sudo apt remove minha-ferramenta      # desinstalacao limpa
+```
+
+O `checkinstall` é uma solução aproximada — ele adivinha os metadados e não gera um pacote conforme a política Debian — mas resolve o problema principal, que é o software invisível.
+
+**GNU Stow.** Instala cada programa em seu próprio diretório sob `/usr/local/stow/` e cria links simbólicos (@sec-cap016) para os caminhos finais. Desinstalar é remover os links.
+
+```bash
+sudo apt install stow
+./configure --prefix=/usr/local/stow/ferramenta-2.4
+make -j"$(nproc)" && sudo make install
+cd /usr/local/stow && sudo stow ferramenta-2.4      # cria os links
+sudo stow -D ferramenta-2.4                          # remove os links
+```
+
+A melhor solução continua sendo a do @sec-cap035: gerar um `.deb` de verdade com `dpkg-buildpackage`. `checkinstall` e `stow` são os atalhos aceitáveis quando isso não compensa.
+
+## CMake e Meson
+
+O Autotools domina o software antigo; projetos recentes usam outros sistemas. Os comandos mudam, o modelo mental é o mesmo — uma etapa de configuração, uma de compilação e uma de instalação.
+
+| Sistema | Configurar | Compilar | Instalar |
+|---|---|---|---|
+| Autotools | `./configure --prefix=/usr/local` | `make -j$(nproc)` | `sudo make install` |
+| CMake | `cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local` | `cmake --build build -j$(nproc)` | `sudo cmake --install build` |
+| Meson | `meson setup build --prefix=/usr/local` | `ninja -C build` | `sudo ninja -C build install` |
+
+: Os três sistemas de compilação mais comuns {#tbl-build-systems}
+
+Duas particularidades do CMake que economizam tempo: `-DCMAKE_BUILD_TYPE=Release` liga as otimizações (o padrão costuma ser sem otimização alguma), e a compilação fora da árvore de fonte — o diretório `build/` separado — é a prática recomendada, porque limpar é apagar o diretório.
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build -j"$(nproc)"
+rm -rf build          # limpeza total, sem make clean
+```
+
+## Bibliotecas compartilhadas
+
+Se o projeto instala bibliotecas além de binários, o carregador dinâmico precisa saber onde procurá-las. O sintoma de não saber é claro:
+
+```text
+error while loading shared libraries: libferramenta.so.2: cannot open shared object file
+```
+
+```bash
+ldd /usr/local/bin/ferramenta        # o que o binario precisa e o que achou
+ldconfig -p | grep ferramenta        # o que o cache do carregador conhece
+sudo ldconfig                        # reconstroi o cache
+```
+
+Quando a biblioteca está num diretório fora dos padrões:
+
+```bash
+echo '/usr/local/lib' | sudo tee /etc/ld.so.conf.d/usr-local.conf
+sudo ldconfig
+ldconfig -p | grep local | head
+```
+
+A variável `LD_LIBRARY_PATH` também funciona, mas é solução de sessão, não de sistema — e, exportada em `.bashrc`, é fonte recorrente de comportamento inexplicável meses depois. Prefira o arquivo em `ld.so.conf.d`.
+
+## Recompilar um pacote do Debian com um patch
+
+Quando o pacote existe mas precisa de uma alteração, este é o caminho de menor dano — ele preserva scripts, dependências e integração:
+
+```bash
+sudo apt install build-essential devscripts
+apt source nmap                     # exige deb-src no sources.list
+sudo apt build-dep nmap
+cd nmap-*/
+# aplicar a alteracao no fonte
+dpkg-buildpackage -us -uc -b -j"$(nproc)"
+cd .. && ls *.deb
+sudo apt install ./nmap_*.deb
+sudo apt-mark hold nmap             # senao o proximo upgrade substitui
+```
+
+O `-us -uc` pula a assinatura (você não é o mantenedor oficial) e o `-b` constrói apenas os binários. O `hold` do final é indispensável: sem ele, o próximo `full-upgrade` reinstala a versão do repositório e o seu patch desaparece.
+
+## 🐉 No Kali
+
+- **Muita ferramenta de segurança só existe no GitHub, e o hábito da comunidade é clonar em `/opt`.** É uma convenção razoável — `/opt` é a árvore do FHS para software de terceiro autocontido —, mas exige disciplina: um `README` local dizendo de onde veio e em que commit, e `git pull` periódico. Sem isso, seis meses depois ninguém sabe se aquele diretório está atualizado ou abandonado.
+- **A maior parte das ferramentas do GitHub em segurança é Python ou Go, e nenhuma das duas precisa de compilação clássica.** Para Python, `pipx` (@sec-cap038) instala em ambiente isolado, cria o executável no `PATH` e desinstala limpo — muito melhor que clonar e rodar `python3 script.py` de dentro do diretório. Para Go, `go install` produz um binário estático em `~/go/bin`. Compilar com `make` só é necessário para o que é C ou C++ de fato.
+- **Compilar exploit de prova de conceito é rotina de laboratório, e o cuidado é o mesmo de sempre.** Código de exploração publicado em repositórios públicos frequentemente contém erros, e ocasionalmente contém código malicioso deliberado dirigido a quem o compila sem ler. Leia o fonte antes de compilar, compile numa VM descartável, e trate o binário resultante como não confiável até prová-lo. Uso de qualquer um deles só dentro de escopo autorizado — acesso não autorizado é crime pela Lei 12.737/2012.
+- **`checkinstall` é o hábito que mantém uma máquina Kali auditável.** Como o Kali é rolling e recebe muita coisa compilada à mão, um sistema onde tudo aparece no `dpkg -l` é um sistema onde `dpkg -V` e `dpkg -S` (@sec-cap035) continuam funcionando como ferramenta de verificação. Cada `make install` cru é um ponto cego permanente nessa verificação.
+- **Compilação pesada numa VM apertada esbarra em memória, não em CPU.** Ligar `-j"$(nproc)"` numa VM de 4 GB compilando C++ com muitos cabeçalhos é o caminho direto para o OOM killer (@sec-cap032). Se a compilação morrer sem mensagem clara, confira `dmesg -T | grep -i oom` antes de procurar erro no código, e reduza o paralelismo para `-j2`.
+- **A superfície de risco de compilar é maior do que parece.** Um `configure` é um script shell executado com o seu usuário, e um `Makefile` pode conter qualquer comando. Compilar fonte não auditado numa máquina que também guarda credenciais de cliente é uma escolha ruim; a VM descartável existe exatamente para isso.
+
+> **Nota sobre a família RHEL.** O equivalente ao `build-essential` é o grupo `dnf group install "Development Tools"`, e o sufixo dos pacotes de cabeçalhos é `-devel` em vez de `-dev` (`openssl-devel`, não `libssl-dev`). O `dnf builddep` corresponde ao `apt build-dep`. A diferença mais relevante está no empacotamento: em vez de `checkinstall`, o caminho idiomático é escrever um arquivo `.spec` e construir com `rpmbuild`, o que é mais trabalhoso mas produz um pacote de verdade. O SELinux acrescenta um detalhe que não existe no Debian: binário instalado em `/usr/local` pode precisar de rótulo (`restorecon -v`) para que um serviço confinado consiga executá-lo.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Compilamos um programa pequeno à mão, vemos o problema do `make install` e o resolvemos com `checkinstall`.
+
+1. **Prepare o ambiente de compilação.**
+
+   ```bash
+   sudo apt install -y build-essential checkinstall pkg-config
+   gcc --version | head -1
+   make --version | head -1
+   nproc
+   ```
+
+   Esperado: as versões do compilador e do `make`, e o número de núcleos disponíveis para o `-j`.
+
+2. **Compile um programa mínimo e veja as etapas.**
+
+   ```bash
+   mkdir -p /tmp/lab-build && cd /tmp/lab-build
+   cat > ola.c <<'EOF'
+   #include <stdio.h>
+   int main(void) { puts("compilado do fonte"); return 0; }
+   EOF
+   gcc -E ola.c -o ola.i && wc -l ola.i        # pre-processamento
+   gcc -S ola.i -o ola.s && head -5 ola.s      # assembly
+   gcc -c ola.s -o ola.o && file ola.o         # objeto
+   gcc ola.o -o ola && ./ola                   # ligacao
+   ```
+
+   Esperado: o `.i` tem centenas de linhas (o cabeçalho foi expandido), o `.s` é assembly legível, o `.o` é objeto relocável e o binário final imprime a mensagem.
+
+3. **Descubra a diferença entre biblioteca e pacote `-dev`.**
+
+   ```bash
+   dpkg -l | grep -E '^ii\s+libssl' | awk '{print $2}'
+   pkg-config --modversion openssl 2>/dev/null || echo "libssl-dev nao instalado"
+   apt show libssl-dev 2>/dev/null | grep -E '^(Package|Depends)' | head -3
+   ```
+
+   Esperado: a biblioteca de execução está presente; o `pkg-config` só responde se o pacote `-dev` também estiver.
+
+4. **Crie um projeto com `Makefile`.**
+
+   ```bash
+   cd /tmp/lab-build
+   cat > Makefile <<'EOF'
+   PREFIX ?= /usr/local
+   all: ola
+   ola: ola.c
+   	gcc -O2 -o ola ola.c
+   install: ola
+   	install -d $(DESTDIR)$(PREFIX)/bin
+   	install -m 755 ola $(DESTDIR)$(PREFIX)/bin/lab-ola
+   uninstall:
+   	rm -f $(DESTDIR)$(PREFIX)/bin/lab-ola
+   clean:
+   	rm -f ola *.o *.i *.s
+   EOF
+   make clean && make
+   ```
+
+   Esperado: o binário é reconstruído. **Atenção:** as linhas de receita do `Makefile` precisam começar com TAB, não espaços — o `heredoc` acima preserva o TAB se você copiar o bloco inteiro.
+
+5. **Veja o que o `make install` faria, sem deixá-lo fazer.**
+
+   ```bash
+   make install DESTDIR=/tmp/preview
+   find /tmp/preview -type f
+   ```
+
+   Esperado: `/tmp/preview/usr/local/bin/lab-ola` — a árvore exata que iria para o sistema. Este é o `--dry-run` que o `make` não tem.
+
+6. **Instale do jeito comum e observe o problema.**
+
+   ```bash
+   sudo make install
+   which lab-ola && lab-ola
+   dpkg -S "$(which lab-ola)" 2>&1
+   ```
+
+   Esperado: o programa funciona, mas o `dpkg -S` responde `no path found matching pattern`. O arquivo existe e o sistema não sabe de onde veio — exatamente o problema deste capítulo.
+
+7. **Desinstale e comprove que sumiu.**
+
+   ```bash
+   sudo make uninstall
+   which lab-ola || echo "removido"
+   ```
+
+   Esperado: o binário sai. Note que isso só funcionou porque o diretório de fonte ainda existe e tem o alvo `uninstall`.
+
+8. **Instale de novo, agora gerando um pacote.**
+
+   ```bash
+   cd /tmp/lab-build
+   sudo checkinstall --pkgname=lab-ola --pkgversion=1.0 --pkglicense=MIT \
+        --maintainer="lab@exemplo.org" --default make install
+   ```
+
+   Esperado: o `checkinstall` observa o `make install`, empacota o resultado e instala o `.deb`. A saída termina informando o nome do pacote criado.
+
+9. **Compare com o passo 6.**
+
+   ```bash
+   dpkg -l lab-ola
+   dpkg -L lab-ola
+   dpkg -S "$(which lab-ola)"
+   lab-ola
+   ```
+
+   Esperado: agora o `dpkg` conhece o arquivo, sabe a versão e lista o conteúdo. O mesmo binário, visível ao sistema.
+
+10. **Desinstale como qualquer outro pacote.**
+
+    ```bash
+    sudo apt remove -y lab-ola
+    which lab-ola || echo "removido pelo apt"
+    dpkg -l lab-ola 2>&1 | tail -2
+    ```
+
+    Esperado: remoção limpa pelo caminho normal, sem depender do diretório de fonte.
+
+11. **Explore o carregador dinâmico.**
+
+    ```bash
+    ldd /usr/bin/nmap | head -8
+    ldconfig -p | wc -l
+    cat /etc/ld.so.conf.d/*.conf 2>/dev/null | grep -v '^#'
+    ```
+
+    Esperado: as bibliotecas de que o `nmap` depende e onde o carregador as encontrou, mais os diretórios extras configurados no sistema.
+
+12. **Limpe o laboratório.**
+
+    ```bash
+    cd /tmp && rm -rf /tmp/lab-build /tmp/preview
+    dpkg -l | grep lab-ola || echo "nada instalado do laboratorio"
+    ls /usr/local/bin/
+    ```
+
+    Esperado: nenhum resíduo, e um `/usr/local/bin` com o mesmo conteúdo de antes. Vale olhar essa listagem numa máquina de trabalho: o que estiver ali e não aparecer no `dpkg -S` é software invisível acumulado.
+
+## Resumo
+
+- **Compilar é o último recurso, não o primeiro.** A ordem é: repositório, `pipx`, contêiner, recompilar o pacote Debian com patch, e só então compilar do zero.
+- **Pacote `-dev` é o que falta quando o `configure` reclama de biblioteca que você tem.** `libfoo3` é para executar, `libfoo-dev` é para compilar; `pkg-config` mostra o que o compilador enxerga, e `apt build-dep` instala tudo de uma vez quando o pacote existe no Debian.
+- **`sha256sum` prova integridade, assinatura GPG prova origem.** Só o segundo protege contra tarball substituído, e só se a chave vier por canal independente. Em Git, o equivalente é a tag assinada.
+- **`curl | sudo bash` executa código não lido com privilégio total.** Baixe, leia, execute — e sem `sudo` quando possível.
+- **As três etapas têm papéis distintos**: `configure` adapta o build a esta máquina, `make` compila (com `-j$(nproc)`), `make install` apenas copia. `make install DESTDIR=/tmp/preview` mostra o que seria instalado antes de instalar.
+- **`/usr` é do `dpkg`, `/usr/local` é do administrador.** `--prefix=/usr` põe seu binário no caminho de sobrescrita do gerenciador de pacotes; o padrão `/usr/local` já vence a disputa de nome pela ordem do `PATH`.
+- **`make install` cru cria software invisível**: nenhum registro, nenhuma atualização, nenhum inventário. `checkinstall` gera um `.deb` a partir dele, `stow` gerencia por links simbólicos, e `dpkg-buildpackage` é a solução completa.
+- **CMake e Meson têm o mesmo modelo em três etapas**, com a vantagem da compilação fora da árvore — limpar é apagar o diretório `build/`. No CMake, `-DCMAKE_BUILD_TYPE=Release` é necessário para haver otimização.
+- **Biblioteca compartilhada em lugar não padrão exige `ld.so.conf.d` mais `ldconfig`**, não `LD_LIBRARY_PATH` exportado no `.bashrc` — que resolve na hora e confunde meses depois.
+- **Pacote recompilado com patch precisa de `apt-mark hold`**, ou o próximo `full-upgrade` o substitui pela versão do repositório sem avisar.

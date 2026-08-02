@@ -1,3 +1,455 @@
 # Alternativas: pipx, snap, flatpak e AppImage {#sec-cap038}
 
-*(em elaboracao)*
+Você lê o README de uma ferramenta de reconhecimento, chega na linha `pip install ferramenta` e digita. O Kali responde com uma parede de texto que termina assim:
+
+```text
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to install.
+```
+
+A reação comum é procurar no fórum, encontrar a sugestão de acrescentar `--break-system-packages` e seguir em frente. O nome da opção deveria bastar como aviso: ela existe para você poder quebrar o sistema quando souber exatamente por quê. Quem a usa por rotina acaba com um Python do sistema em que bibliotecas instaladas pelo `pip` sobrescreveram versões que pacotes do Debian esperavam encontrar — e com ferramentas que param de funcionar sem que nada óbvio tenha mudado.
+
+Este capítulo é sobre o que fazer em vez disso. Software que não está no repositório tem hoje vários caminhos legítimos, cada um com um modelo diferente de isolamento, e escolher o certo é a diferença entre acrescentar uma ferramenta e comprometer a máquina inteira.
+
+## Por que o `pip` global foi bloqueado
+
+O Debian usa Python para partes do próprio sistema. Ferramentas como o `apt`, o `unattended-upgrades` e boa parte do instalador dependem de módulos Python instalados como pacotes `.deb`, com versões que o mantenedor testou em conjunto.
+
+O `pip install` como root escreve nos mesmos diretórios do sistema, e sem consultar o `dpkg`. Ele atualiza uma biblioteca que outro pacote esperava numa versão específica, e o `dpkg` continua acreditando que a versão antiga está lá. O resultado é um sistema em que o banco de dados de pacotes mente, e onde a próxima atualização pode reverter, sobrescrever ou quebrar de formas difíceis de diagnosticar.
+
+A **PEP 668** padronizou a solução: distribuições marcam o Python do sistema como "gerenciado externamente", e o `pip` recusa instalar nele. O arquivo que faz isso é visível:
+
+```bash
+ls /usr/lib/python3*/EXTERNALLY-MANAGED
+cat /usr/lib/python3*/EXTERNALLY-MANAGED
+```
+
+Não é um obstáculo a contornar. É a proteção funcionando.
+
+::: {#fig-pip-venv-pipx}
+```{.tikz}
+%%| filename: pip-global-comparado-a-venv-e-pipx
+%%| alt: Comparacao entre pip global que escreve no Python do sistema, venv que cria um ambiente isolado por projeto, e pipx que cria um ambiente por aplicacao e expoe o executavel no PATH
+\begin{tikzpicture}[
+    col/.style={rounded corners=4pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=4.15cm,minimum height=4.0cm},
+    ruim/.style={col,draw=manualred,fill=manualred!10},
+    meio/.style={col,draw=manualblue,fill=manualblue!10},
+    bom/.style={col,draw=manualgreen,fill=manualgreen!12},
+    tt/.style={font=\scriptsize\bfseries\ttfamily,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tt,manualred]   at (0,2.6)   {sudo pip install};
+  \node[tt,manualblue]  at (4.65,2.6){python3 -m venv};
+  \node[tt,manualgreen] at (9.3,2.6) {pipx install};
+
+  \node[ruim] at (0,0) {Escreve em \texttt{/usr/lib/python3/}, o mesmo lugar dos pacotes \texttt{.deb}.\\[3pt]
+    O \texttt{dpkg} não fica sabendo e passa a mentir sobre as versões.\\[3pt]
+    Uma biblioteca serve a todos os programas: um conflito quebra vários.\\[3pt]
+    \textbf{Bloqueado pela PEP 668.}};
+
+  \node[meio] at (4.65,0) {Um diretório por \emph{projeto}, com seu próprio Python e suas bibliotecas.\\[3pt]
+    Isolamento completo; nada toca o sistema.\\[3pt]
+    Exige ativar o ambiente antes de usar.\\[3pt]
+    \textbf{Ideal para desenvolver.}};
+
+  \node[bom] at (9.3,0) {Um ambiente virtual por \emph{aplicação}, criado e gerido automaticamente.\\[3pt]
+    Os executáveis aparecem em \texttt{\textasciitilde/.local/bin}, no \texttt{PATH}.\\[3pt]
+    Usar não exige ativar nada.\\[3pt]
+    \textbf{Ideal para instalar ferramentas.}};
+
+  \node[nt,text width=13.6cm] at (4.65,-3.1) {A distinção entre as duas colunas da direita é a que mais confunde: o \texttt{venv} serve a quem \emph{escreve} código Python e precisa de um ambiente por projeto; o \texttt{pipx} serve a quem só quer \emph{usar} uma ferramenta escrita em Python, sem pensar em ambiente algum. Por baixo, o \texttt{pipx} cria um \texttt{venv} --- ele apenas cuida disso para você e coloca o executável no caminho.};
+\end{tikzpicture}
+```
+Três formas de instalar software Python, e o que cada uma isola.
+:::
+
+## `venv`: um ambiente por projeto
+
+```bash
+python3 -m venv ~/projetos/analise/.venv
+source ~/projetos/analise/.venv/bin/activate
+pip install requests pandas          # agora funciona: nao e o Python do sistema
+which python3 pip                    # apontam para dentro do .venv
+pip freeze > requirements.txt
+deactivate
+```
+
+Dentro de um ambiente ativado, `pip install` funciona normalmente — a proteção da PEP 668 vale só para o Python do sistema. Remover o ambiente é apagar o diretório: `rm -rf .venv`, sem resíduo algum.
+
+O `venv` é a ferramenta certa para desenvolver. Para *usar* uma ferramenta, ativar um ambiente toda vez é atrito desnecessário — e é aí que entra o `pipx`.
+
+## `pipx`: um ambiente por ferramenta, transparente
+
+```bash
+sudo apt install pipx
+pipx ensurepath          # garante ~/.local/bin no PATH; reabrir o terminal
+```
+
+```bash
+pipx install httpie             # instala num venv proprio
+pipx list                       # o que esta instalado, com versoes
+pipx upgrade httpie
+pipx upgrade-all
+pipx uninstall httpie
+pipx reinstall-all              # util depois de atualizar o Python do sistema
+```
+
+Cada ferramenta ganha seu próprio ambiente em `~/.local/share/pipx/venvs/`, e os executáveis são expostos por link em `~/.local/bin`. Duas ferramentas que exigem versões incompatíveis da mesma biblioteca convivem sem se ver.
+
+Dois recursos que resolvem casos frequentes:
+
+```bash
+pipx run ferramenta --help                      # executa sem instalar
+pipx install git+https://github.com/autor/ferramenta.git
+pipx inject ferramenta biblioteca-extra         # acrescenta ao venv dela
+```
+
+O `pipx run` baixa, executa num ambiente temporário e descarta — perfeito para ferramenta de uso único. E o `pipx install git+...` cobre o caso mais comum em segurança: instalar direto do repositório do autor, sem clonar nada.
+
+::: {.callout-warning}
+## `--break-system-packages` faz exatamente o que o nome diz
+
+A opção existe para casos em que o administrador sabe que está contornando a proteção e aceita a consequência: contêiner descartável, imagem de build, sistema que será jogado fora.
+
+Numa máquina de trabalho, ela produz um sistema em que o `dpkg` afirma uma versão e o disco tem outra. Os sintomas aparecem depois, no `apt` que falha ao importar um módulo, na ferramenta do sistema que para de rodar, no `full-upgrade` que reverte a biblioteca e quebra o que dependia dela. Se o impulso for usá-la, o comando certo quase sempre é `pipx install` no lugar.
+:::
+
+## Os formatos universais: Snap, Flatpak e AppImage
+
+Os três resolvem o mesmo problema — distribuir uma aplicação que roda em qualquer distribuição, sem depender das bibliotecas de cada uma — com arquiteturas bem diferentes.
+
+::: {#fig-formatos-universais}
+```{.tikz}
+%%| filename: comparacao-entre-snap-flatpak-e-appimage
+%%| alt: Comparacao dos tres formatos universais de empacotamento mostrando arquitetura, isolamento, atualizacao e onde cada um se encaixa
+\begin{tikzpicture}[
+    fo/.style={rounded corners=4pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=4.15cm,minimum height=5.0cm},
+    sn/.style={fo,draw=manualblue,fill=manualblue!10},
+    fp/.style={fo,draw=manualgreen,fill=manualgreen!12},
+    ai/.style={fo,draw=manualyellow,fill=manualyellow!14},
+    tt/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tt,manualblue]   at (0,3.1)   {Snap};
+  \node[tt,manualgreen]  at (4.65,3.1){Flatpak};
+  \node[tt,manualyellow] at (9.3,3.1) {AppImage};
+
+  \node[sn] at (0,0) {\textbf{Como:} imagem \texttt{squashfs} montada em \texttt{/snap}, com serviço \texttt{snapd} sempre ativo.\\[3pt]
+    \textbf{Isolamento:} confinamento por AppArmor.\\[3pt]
+    \textbf{Atualiza:} sozinho, em segundo plano.\\[3pt]
+    \textbf{Loja:} Snap Store (única, da Canonical).\\[3pt]
+    \textbf{Custo:} daemon residente e primeira execução lenta.};
+
+  \node[fp] at (4.65,0) {\textbf{Como:} aplicação mais um \emph{runtime} compartilhado entre apps.\\[3pt]
+    \textbf{Isolamento:} \emph{sandbox} por namespaces, com \emph{portals} para acesso controlado.\\[3pt]
+    \textbf{Atualiza:} sob comando.\\[3pt]
+    \textbf{Loja:} Flathub e outros remotos.\\[3pt]
+    \textbf{Custo:} o primeiro app baixa um runtime grande.};
+
+  \node[ai] at (9.3,0) {\textbf{Como:} arquivo único executável; nada é instalado.\\[3pt]
+    \textbf{Isolamento:} \textbf{nenhum} --- roda com todo o poder do seu usuário.\\[3pt]
+    \textbf{Atualiza:} manualmente, você baixa de novo.\\[3pt]
+    \textbf{Loja:} não há; vem do site do autor.\\[3pt]
+    \textbf{Custo:} nenhum registro, nenhuma atualização.};
+
+  \node[nt,text width=13.6cm] at (4.65,-3.9) {A escolha depende do que se quer: o AppImage é o mais simples e o menos seguro --- baixar, dar permissão de execução e rodar, sem confinamento algum. O Flatpak é o mais equilibrado para aplicação gráfica de desktop. O Snap traz um serviço residente e atualização automática, o que é uma vantagem em servidor gerenciado e um incômodo numa máquina de laboratório.};
+\end{tikzpicture}
+```
+Os três formatos universais comparados por arquitetura, isolamento e atualização.
+:::
+
+**Flatpak** é o que costuma valer a pena numa máquina de trabalho com interface gráfica:
+
+```bash
+sudo apt install flatpak
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak search nome
+flatpak install flathub org.exemplo.Aplicacao
+flatpak run org.exemplo.Aplicacao
+flatpak list
+flatpak update
+flatpak uninstall --delete-data org.exemplo.Aplicacao
+flatpak uninstall --unused          # remove runtimes orfaos
+```
+
+O confinamento é inspecionável e ajustável:
+
+```bash
+flatpak info --show-permissions org.exemplo.Aplicacao
+flatpak override --nofilesystem=home org.exemplo.Aplicacao
+```
+
+Vale conhecer essa parte: muitos Flatpaks pedem `--filesystem=home`, o que anula boa parte do isolamento. Verificar as permissões antes de confiar num pacote de terceiro é o equivalente a ler o `postinst` de um `.deb` (@sec-cap035).
+
+**Snap** não vem instalado no Kali e exige um serviço residente:
+
+```bash
+sudo apt install snapd
+sudo systemctl enable --now snapd snapd.apparmor
+sudo snap install nome
+snap list
+sudo snap refresh
+sudo snap remove nome
+```
+
+**AppImage** é o mais direto e o que exige mais cuidado:
+
+```bash
+chmod +x Ferramenta-2.4-x86_64.AppImage
+./Ferramenta-2.4-x86_64.AppImage
+./Ferramenta-2.4-x86_64.AppImage --appimage-extract     # abre o conteudo
+ls squashfs-root/
+```
+
+Um AppImage roda **sem confinamento algum**, com todos os privilégios do seu usuário: acesso a `~/.ssh`, ao chaveiro, aos arquivos do cliente. O `--appimage-extract` permite inspecionar o conteúdo antes de executar, e essa é a única defesa disponível. Verifique a assinatura ou o hash publicado pelo autor antes de dar `chmod +x` em qualquer coisa baixada.
+
+## Ferramentas em Go, Rust e Node
+
+Cada linguagem moderna trouxe seu instalador, e o padrão é o mesmo: compila e deposita um binário num diretório do usuário.
+
+```bash
+sudo apt install golang-go
+go install github.com/autor/ferramenta/cmd/ferramenta@latest
+ls ~/go/bin/                       # o binario fica aqui
+```
+
+```bash
+sudo apt install cargo
+cargo install ripgrep
+ls ~/.cargo/bin/
+cargo install --list
+```
+
+```bash
+npm install -g pacote              # evitar: exige root ou reconfiguracao
+npm config set prefix ~/.local     # melhor: instalar no proprio usuario
+```
+
+Os três têm o mesmo ponto de atenção: o diretório de destino precisa estar no `PATH`, e nenhum deles registra nada no `dpkg`. São software invisível pelos mesmos critérios do @sec-cap037 — com a diferença de que desinstalar é apagar um arquivo.
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+```
+
+Um detalhe que economiza tempo: binários Go são estáticos, o que os torna a forma mais indolor de distribuir ferramenta de linha de comando — copiar o arquivo para outra máquina Linux costuma simplesmente funcionar.
+
+## Contêiner como forma de distribuição
+
+Para ferramenta com muitas dependências, ou que você quer manter longe do sistema, a imagem de contêiner é frequentemente a melhor opção:
+
+```bash
+sudo apt install docker.io
+sudo docker run --rm -it exemplo/ferramenta:latest --help
+sudo docker run --rm -v "$PWD:/dados" exemplo/ferramenta -o /dados/saida.txt
+```
+
+O isolamento é o mais forte das opções deste capítulo, e a remoção é total — `docker rmi` e não sobra nada. Os custos são o tamanho da imagem, o atrito de mapear volumes para entrar e sair com arquivos, e a necessidade de entender o modelo. Os mecanismos por baixo — namespaces e cgroups — são tema do Volume 16.
+
+## Escolhendo
+
+::: {#fig-arvore-decisao}
+```{.tikz}
+%%| filename: como-escolher-o-metodo-de-instalacao
+%%| alt: Arvore de decisao para escolher entre apt, pipx, contêiner, flatpak, gerenciador da linguagem e compilacao
+\begin{tikzpicture}[
+    q/.style={rounded corners=3pt,thick,draw=manualblue,fill=manualblue!10,align=left,font=\scriptsize,inner sep=6pt,text width=6.6cm,minimum height=0.85cm},
+    a/.style={rounded corners=3pt,thick,draw=manualgreen,fill=manualgreen!12,align=left,font=\scriptsize,inner sep=6pt,text width=5.6cm,minimum height=0.85cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[q] (q1) at (0,3.6)  {Está no repositório do Kali?};
+  \node[q] (q2) at (0,2.2)  {É uma ferramenta Python?};
+  \node[q] (q3) at (0,0.8)  {É Go, Rust ou Node?};
+  \node[q] (q4) at (0,-0.6) {Tem imagem de contêiner oficial?};
+  \node[q] (q5) at (0,-2.0) {É aplicação gráfica de desktop?};
+  \node[q] (q6) at (0,-3.4) {Existe AppImage do autor?};
+  \node[q] (q7) at (0,-4.8) {Nenhuma das anteriores};
+
+  \node[a] (a1) at (8.4,3.6)  {\texttt{sudo apt install} --- sempre a primeira opção};
+  \node[a] (a2) at (8.4,2.2)  {\texttt{pipx install} (ou \texttt{pipx run} se for uso único)};
+  \node[a] (a3) at (8.4,0.8)  {\texttt{go install} / \texttt{cargo install} / \texttt{npm} com prefixo local};
+  \node[a] (a4) at (8.4,-0.6) {\texttt{docker run --rm} --- o isolamento mais forte};
+  \node[a] (a5) at (8.4,-2.0) {\texttt{flatpak install} --- conferindo as permissões};
+  \node[a] (a6) at (8.4,-3.4) {AppImage, após verificar o hash e extrair para inspeção};
+  \node[a] (a7) at (8.4,-4.8) {compilar, e empacotar com \texttt{checkinstall}};
+
+  \foreach \idx in {1,2,3,4,5,6}{ \draw[fl] (q\idx) -- node[lb,above]{sim} (a\idx); }
+  \draw[fl] (q7) -- (a7);
+  \draw[fl,manualblue] (-3.75,3.6) -- (-3.75,-4.8);
+  \node[lb,rotate=90] at (-4.1,-0.6) {se não, desça um degrau};
+
+  \node[nt,text width=13.8cm] at (2.6,-6.3) {A ordem não é arbitrária: ela vai do que o sistema conhece e atualiza sozinho para o que fica invisível e exige manutenção manual. Cada degrau descido acrescenta uma coisa que só você vai lembrar de atualizar --- e que nenhuma verificação de inventário vai encontrar.};
+\end{tikzpicture}
+```
+Ordem de preferência para instalar algo que não veio com o sistema.
+:::
+
+| Método | Isolamento | Atualização | Registrado no sistema |
+|---|---|---|---|
+| `apt` | nenhum (integrado) | automática pelo repositório | sim, no `dpkg` |
+| `pipx` | por ferramenta | `pipx upgrade-all` | não |
+| Flatpak | *sandbox* + portals | `flatpak update` | no próprio Flatpak |
+| Snap | AppArmor | automática | no próprio snapd |
+| AppImage | nenhum | manual | não |
+| contêiner | o mais forte | reconstruir a imagem | no Docker |
+| compilado | nenhum | manual | só com `checkinstall` |
+
+: Comparação dos métodos de instalação {#tbl-metodos}
+
+## 🐉 No Kali
+
+- **`pipx` é o caminho oficial para ferramenta Python no Kali, e boa parte do que você procura já está empacotada.** Antes de qualquer `pipx install`, rode `apt search --names-only` — o Kali empacota centenas de ferramentas Python como `.deb`, com o nome às vezes diferente do projeto no GitHub. Quando não estiver, `pipx install git+https://...` resolve sem clonar nada e desinstala limpo.
+- **`--break-system-packages` num Kali de trabalho é dívida garantida.** Ele é aceitável em contêiner descartável ou em imagem de build; numa máquina que você usa há meses, produz um Python do sistema misturado, e os sintomas aparecem semanas depois em ferramentas sem relação com o que foi instalado.
+- **Snap roda mal no Kali e não é a escolha natural.** Não vem instalado, exige o `snapd` residente, e o confinamento por AppArmor conflita com o que várias ferramentas de segurança precisam fazer — capturar pacotes, acessar interfaces em modo monitor, abrir sockets brutos. Flatpak se dá melhor para aplicação gráfica; para ferramenta de linha de comando, `pipx` ou contêiner são preferíveis.
+- **AppImage é comum em ferramentas de segurança e não tem confinamento algum.** Um AppImage baixado roda com todo o poder do seu usuário: pode ler `~/.ssh`, o chaveiro, os arquivos do cliente. Sempre `--appimage-extract` e uma olhada no conteúdo antes da primeira execução, e sempre a verificação do hash publicado pelo autor. Vale mais ainda quando a ferramenta é ofensiva e distribuída fora de qualquer repositório.
+- **Contêiner é excelente para ferramenta de análise e ruim para ferramenta de rede.** Analisar um artefato, rodar um scanner de código ou processar dados dentro de um contêiner é ideal: isolamento forte, remoção total. Já ferramentas que precisam de acesso bruto à rede — captura, modo monitor, spoofing — exigem `--net=host` e capacidades extras, o que devolve boa parte do que o contêiner isolava. Nesse caso, instalar direto costuma ser mais honesto.
+- **O que você instala fora do `apt` não aparece em nenhum inventário.** Numa máquina usada em teste autorizado, isso importa nos dois sentidos: você precisa saber o que tem instalado para responder por ele no relatório, e o cliente precisa saber que a ferramenta que rodou no ambiente dele veio de uma origem verificada. Manter uma lista — `pipx list`, `flatpak list`, o conteúdo de `~/go/bin` — é parte da higiene da máquina de trabalho, não burocracia.
+
+> **Nota sobre a família RHEL.** A PEP 668 vale igual: o Python do sistema no RHEL 9 e no Fedora também é gerenciado externamente, e a resposta é a mesma — `pipx`, disponível como `python3-pip` mais `pipx` ou via `dnf install pipx`. O Flatpak é a opção preferida da Red Hat para aplicação gráfica e vem instalado no Fedora Workstation, enquanto o Snap exige habilitar o EPEL. Duas diferenças práticas: o Fedora mantém um remoto Flatpak próprio além do Flathub, com pacotes construídos pela distribuição, e o Podman substitui o Docker como runtime padrão de contêiner — sem daemon e capaz de rodar sem root, o que o torna preferível para o mesmo uso descrito aqui.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com acesso à internet. O passo 10 é opcional e depende de você ter um AppImage à mão.
+
+1. **Veja a proteção da PEP 668 em ação.**
+
+   ```bash
+   ls /usr/lib/python3*/EXTERNALLY-MANAGED
+   pip install requests 2>&1 | head -12
+   ```
+
+   Esperado: o erro `externally-managed-environment`. Nada foi instalado, e é esse o comportamento correto.
+
+2. **Crie e use um ambiente virtual.**
+
+   ```bash
+   python3 -m venv /tmp/lab-venv
+   source /tmp/lab-venv/bin/activate
+   which python3 pip
+   pip install requests 2>&1 | tail -3
+   python3 -c "import requests; print(requests.__version__)"
+   deactivate
+   ```
+
+   Esperado: dentro do ambiente, `which` aponta para `/tmp/lab-venv/bin/` e o `pip` funciona sem reclamar.
+
+3. **Confirme que o sistema não foi afetado.**
+
+   ```bash
+   python3 -c "import requests; print(requests.__file__)" 2>&1 | tail -1
+   ls /tmp/lab-venv/lib/python3*/site-packages/ | head
+   ```
+
+   Esperado: o Python do sistema ou não encontra o módulo, ou encontra a versão empacotada pelo Debian — não a que você instalou. O isolamento funcionou.
+
+4. **Instale o `pipx` e prepare o `PATH`.**
+
+   ```bash
+   sudo apt install -y pipx
+   pipx ensurepath
+   echo "$PATH" | tr ':' '\n' | grep local/bin
+   ```
+
+   Esperado: `~/.local/bin` presente no `PATH`. Se não aparecer, abra um terminal novo.
+
+5. **Instale uma ferramenta com `pipx`.**
+
+   ```bash
+   pipx install httpie
+   pipx list
+   which http
+   http --version
+   ```
+
+   Esperado: o executável `http` disponível diretamente, sem ativar ambiente algum.
+
+6. **Veja onde o `pipx` guardou tudo.**
+
+   ```bash
+   ls ~/.local/share/pipx/venvs/
+   ls -l ~/.local/bin/ | grep -i http
+   du -sh ~/.local/share/pipx/venvs/httpie
+   ```
+
+   Esperado: um ambiente virtual completo por ferramenta, e um link no `~/.local/bin` apontando para dentro dele.
+
+7. **Execute uma ferramenta sem instalá-la.**
+
+   ```bash
+   pipx run cowsay --help 2>&1 | head -5
+   pipx list
+   ```
+
+   Esperado: a ferramenta executa e **não** aparece no `pipx list` — o ambiente foi temporário.
+
+8. **Compare com o que o `apt` já oferecia.**
+
+   ```bash
+   apt search --names-only '^httpie$'
+   apt policy httpie
+   ```
+
+   Esperado: o `httpie` também existe empacotado. É o lembrete do primeiro degrau da @fig-arvore-decisao: procurar no repositório antes.
+
+9. **Experimente o Flatpak.**
+
+   ```bash
+   sudo apt install -y flatpak
+   flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+   flatpak remotes
+   flatpak search vlc | head -5
+   ```
+
+   Esperado: o remoto configurado e a busca funcionando. **Não instale** — o primeiro aplicativo baixa um runtime de mais de 1 GB.
+
+10. **Inspecione um AppImage (opcional).**
+
+    Se você tiver um arquivo `.AppImage` à mão:
+
+    ```bash
+    chmod +x ./*.AppImage
+    ./*.AppImage --appimage-extract >/dev/null
+    ls squashfs-root/
+    cat squashfs-root/*.desktop 2>/dev/null | head
+    find squashfs-root -name '*.so*' | head -5
+    rm -rf squashfs-root
+    ```
+
+    Esperado: o conteúdo completo do AppImage, inspecionável antes de qualquer execução. Note quantas bibliotecas vêm embutidas — é isso que o torna portável e também grande.
+
+11. **Verifique os diretórios dos gerenciadores de linguagem.**
+
+    ```bash
+    ls ~/go/bin/ 2>/dev/null || echo "nada instalado via go"
+    ls ~/.cargo/bin/ 2>/dev/null || echo "nada instalado via cargo"
+    ls ~/.local/bin/
+    ```
+
+    Esperado: o inventário do software que existe na sua máquina e que o `dpkg` desconhece. Numa máquina de trabalho antiga, essa listagem costuma surpreender.
+
+12. **Limpe o laboratório.**
+
+    ```bash
+    pipx uninstall httpie
+    pipx list
+    rm -rf /tmp/lab-venv
+    ls ~/.local/bin/
+    ```
+
+    Esperado: a ferramenta e seu ambiente somem por completo, e o `~/.local/bin` volta ao que era. Esta é a vantagem principal do `pipx` sobre qualquer instalação manual.
+
+## Resumo
+
+- **O erro `externally-managed-environment` é a PEP 668 protegendo o sistema**, não um obstáculo a contornar: o `pip` como root sobrescreveria bibliotecas que pacotes `.deb` esperam, deixando o `dpkg` mentindo sobre as versões.
+- **`venv` para desenvolver, `pipx` para usar.** O `venv` isola por projeto e exige ativação; o `pipx` isola por ferramenta, cria o ambiente sozinho e expõe o executável em `~/.local/bin`. `pipx run` executa sem instalar; `pipx install git+https://...` instala direto do repositório do autor.
+- **`--break-system-packages` faz o que o nome diz.** Aceitável em contêiner descartável, dívida garantida em máquina de trabalho.
+- **Os três formatos universais têm modelos diferentes**: Snap monta imagens com um daemon residente e confinamento AppArmor; Flatpak combina aplicação e runtime compartilhado com sandbox e portals; AppImage é um arquivo único, sem instalação e **sem isolamento algum**.
+- **AppImage roda com todo o poder do seu usuário.** `--appimage-extract` mais a verificação do hash publicado é a única defesa antes da primeira execução.
+- **Permissão de Flatpak é verificável e ajustável.** `flatpak info --show-permissions` revela o pacote que pediu acesso a toda a `home` e anulou o próprio isolamento; `flatpak override` corrige.
+- **`go install`, `cargo install` e `npm` com prefixo local** depositam binários em diretórios do usuário que precisam estar no `PATH`. Nenhum registra nada no `dpkg`, mas desinstalar é apagar um arquivo.
+- **Contêiner dá o isolamento mais forte e a remoção mais completa**, ao custo de tamanho e de mapear volumes — excelente para análise, atrapalhado para ferramenta que precisa de acesso bruto à rede.
+- **A ordem de preferência vai do integrado ao invisível**: `apt`, `pipx`, gerenciador da linguagem, contêiner, Flatpak, AppImage, compilação. Cada degrau descido acrescenta algo que só você vai lembrar de atualizar.

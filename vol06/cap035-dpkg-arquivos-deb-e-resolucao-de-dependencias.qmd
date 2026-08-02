@@ -1,3 +1,496 @@
 # dpkg, arquivos .deb e resolução de dependências {#sec-cap035}
 
-*(em elaboracao)*
+O fornecedor de uma ferramenta comercial entrega um arquivo `ferramenta_3.1_amd64.deb` e a instrução é curta: "instale com `dpkg -i`". Você instala, o comando cospe uma parede de texto terminando em `dependency problems prevent configuration`, e o pacote fica num estado esquisito — aparece no `dpkg -l`, mas não funciona. Pior: o próximo `apt install` de qualquer coisa recusa-se a rodar até que aquilo seja resolvido.
+
+Esse é o encontro típico com a camada de baixo. O `dpkg` fez exatamente o que foi mandado: desempacotou o que você deu a ele. O que ele não faz — e nunca fez — é ir buscar o que falta. Entender essa fronteira, e o formato do arquivo que ele manipula, é o que separa consertar em trinta segundos de reinstalar o sistema.
+
+## O que o `dpkg` faz, e o que não faz
+
+O `dpkg` opera sobre arquivos que já estão no disco e sobre um banco de dados local. Ele:
+
+- desempacota um `.deb` e copia os arquivos para seus destinos;
+- executa os scripts do mantenedor nos momentos certos;
+- registra tudo em `/var/lib/dpkg/`;
+- **verifica** dependências e recusa configurar um pacote cujas dependências faltem.
+
+O que ele não faz: buscar pacote na rede, escolher versão, resolver o grafo. Isso é do APT (@sec-cap033). O `dpkg` verifica dependências mas não as satisfaz — distinção que explica a mensagem de erro do começo do capítulo.
+
+Os comandos de inspeção são os que mais se usa no dia a dia:
+
+```bash
+dpkg -l                        # lista tudo que o sistema conhece
+dpkg -l 'nmap*'                # filtra por padrao
+dpkg -L nmap                   # quais arquivos o pacote instalou
+dpkg -S /usr/bin/nmap          # qual pacote e dono deste arquivo
+dpkg -s nmap                   # estado e metadados do pacote instalado
+dpkg -V nmap                   # verifica se algum arquivo foi alterado
+dpkg --get-selections | head   # nome e estado, formato script
+```
+
+O `dpkg -S` é o que responde à pergunta "de onde veio este arquivo?", útil tanto em diagnóstico quanto em análise forense. E o `dpkg -V` compara os hashes registrados com o que está em disco: saída vazia significa que nada foi adulterado desde a instalação.
+
+```bash
+dpkg -V                    # verifica o sistema inteiro
+dpkg -V | grep -v '^..5??.....  c'   # ignora arquivos de configuracao
+```
+
+Arquivos de configuração alterados aparecem no `dpkg -V` e são normais — você os editou. Um **binário** alterado em `/usr/bin` não é normal, e é um dos indicadores mais diretos de comprometimento numa máquina Linux.
+
+## Anatomia de um `.deb`
+
+Um `.deb` não é um formato exótico. É um arquivo `ar` — o mesmo formato de biblioteca estática do Unix — com exatamente três membros:
+
+::: {#fig-anatomia-deb}
+```{.tikz}
+%%| filename: anatomia-de-um-arquivo-deb
+%%| alt: Estrutura interna de um arquivo deb mostrando os tres membros do arquivo ar: debian-binary com a versao do formato, control com metadados e scripts, e data com os arquivos que serao instalados
+\begin{tikzpicture}[
+    ext/.style={rounded corners=4pt,draw=manualgray,thick,fill=manualgray!5,minimum width=13.2cm,minimum height=5.4cm},
+    mb/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=3.7cm,minimum height=3.2cm},
+    m1/.style={mb,draw=manualred,fill=manualred!11,minimum height=1.0cm},
+    m2/.style={mb,draw=manualblue,fill=manualblue!11},
+    m3/.style={mb,draw=manualgreen,fill=manualgreen!12},
+    tt/.style={font=\scriptsize\bfseries\ttfamily,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    hd/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  \node[ext] (e) at (6.2,0.4) {};
+  \node[hd] at (6.2,3.4) {\texttt{nmap\_7.95+dfsg-3\_amd64.deb} --- um arquivo \texttt{ar} com três membros};
+
+  \node[tt,manualred]   at (1.9,2.55) {debian-binary};
+  \node[tt,manualblue]  at (6.2,2.55) {control.tar.xz};
+  \node[tt,manualgreen] at (10.5,2.55) {data.tar.xz};
+
+  \node[m1] at (1.9,1.65) {a linha \texttt{2.0}: a versão do formato do pacote};
+  \node[m2] at (6.2,0.2)  {\texttt{control} --- nome, versão, arquitetura, \texttt{Depends}, descrição\\[2pt]
+     \texttt{md5sums} --- hash de cada arquivo instalado\\[2pt]
+     \texttt{conffiles} --- quais arquivos são configuração\\[2pt]
+     \texttt{preinst}, \texttt{postinst},\\\texttt{prerm}, \texttt{postrm}};
+  \node[m3] at (10.5,0.2) {a árvore de arquivos como será instalada:\\[2pt]
+     \texttt{./usr/bin/nmap}\\
+     \texttt{./usr/share/nmap/...}\\
+     \texttt{./usr/share/man/...}\\[2pt]
+     nada mais que uma cópia dos caminhos de destino};
+
+  \node[nt,text width=13.2cm] at (6.2,-3.5) {Instalar é, no essencial, extrair o \texttt{data.tar} sobre a raiz do sistema e rodar os scripts do \texttt{control.tar} nos momentos certos. \texttt{dpkg-deb -c} lista o conteúdo do \texttt{data}, \texttt{dpkg-deb -e} extrai o \texttt{control}, e \texttt{ar x} abre o arquivo inteiro --- o que permite auditar qualquer \texttt{.deb} de terceiro \textbf{antes} de instalá-lo.};
+\end{tikzpicture}
+```
+Os três membros de um arquivo `.deb` e o que cada um contém.
+:::
+
+Inspecionar um `.deb` sem instalá-lo é uma operação de dois comandos:
+
+```bash
+apt download cowsay                    # baixa sem instalar
+ar t cowsay_*.deb                      # lista os membros
+dpkg-deb -I cowsay_*.deb               # metadados e scripts
+dpkg-deb -c cowsay_*.deb               # arquivos que serao instalados
+dpkg-deb -x cowsay_*.deb /tmp/extraido # extrai so o data
+dpkg-deb -e cowsay_*.deb /tmp/controle # extrai so o control
+cat /tmp/controle/postinst             # le o script que rodaria como root
+```
+
+Essa sequência é a única forma responsável de tratar um `.deb` de origem desconhecida. O `postinst` roda como root; ler o que ele faz antes de executá-lo é a diferença entre instalar software e entregar a máquina.
+
+## O arquivo `control` e os tipos de relação
+
+O coração dos metadados é o arquivo `control`:
+
+```text
+Package: nmap
+Version: 7.95+dfsg-3
+Architecture: amd64
+Maintainer: Debian Security Tools <team@security.debian.org>
+Installed-Size: 26315
+Depends: libc6 (>= 2.34), libpcap0.8t64 (>= 1.5.1), nmap-common (= 7.95+dfsg-3)
+Recommends: ndiff
+Suggests: ncat, zenmap
+Section: net
+Priority: optional
+Description: The Network Mapper
+```
+
+As relações entre pacotes vão bem além de `Depends`:
+
+| Campo | Significado |
+|---|---|
+| `Depends` | precisa estar instalado e configurado antes deste funcionar |
+| `Pre-Depends` | precisa estar **configurado antes mesmo do desempacotamento** |
+| `Recommends` | fortemente sugerido; o APT instala por padrão |
+| `Suggests` | mencionado; não é instalado |
+| `Conflicts` | os dois não podem estar instalados ao mesmo tempo |
+| `Breaks` | este pacote quebra o outro; o outro precisa ser atualizado |
+| `Replaces` | este pacote pode sobrescrever arquivos do outro |
+| `Provides` | oferece uma capacidade virtual (`mail-transport-agent`) |
+
+: Tipos de relação entre pacotes Debian {#tbl-relacoes}
+
+Três delas merecem explicação. O **`Pre-Depends`** é raro e sério: obriga uma ordem estrita, e é usado quando o pacote precisa de algo funcionando já durante o próprio desempacotamento. A dupla **`Breaks`/`Replaces`** é o mecanismo de renomear pacotes ou mover arquivos entre eles sem conflito. E o **`Provides`** cria nomes virtuais: vários pacotes fornecem `mail-transport-agent`, e quem depende dessa capacidade fica satisfeito com qualquer um deles.
+
+```bash
+apt-cache depends nmap
+apt-cache rdepends --installed libpcap0.8t64 | head
+dpkg -s nmap | grep -E '^(Depends|Conflicts|Breaks|Provides)'
+apt-cache showpkg nmap | head -20
+```
+
+## Versões: o formato e a comparação
+
+Uma versão Debian tem até três partes: `epoch:upstream-revision`. Por exemplo, `2:7.95+dfsg-3` significa época 2, versão upstream `7.95+dfsg`, revisão Debian 3.
+
+A **época** existe para consertar erros de ordenação. Se o autor original mudou o esquema de numeração — de `2024.12` para `1.0`, por exemplo — o `1.0` seria considerado *anterior* pela comparação normal, e ninguém receberia a atualização. Aumentar a época força a ordem correta, e por isso a época nunca diminui.
+
+A **revisão** é a parte que o empacotador controla: `-1`, `-2`, `-0kali1`. Um pacote `-0kali1` é um pacote empacotado pelo Kali, e o `0` na revisão o mantém abaixo de um eventual `-1` oficial do Debian, para que o Debian assuma quando o pacote chegar lá.
+
+A comparação não é alfabética nem numérica pura; o algoritmo é específico. Na dúvida, pergunte ao `dpkg`:
+
+```bash
+dpkg --compare-versions '1.10' gt '1.9' && echo "1.10 é maior"
+dpkg --compare-versions '1.0~rc1' lt '1.0' && echo "rc1 vem antes de 1.0"
+dpkg --compare-versions '2:1.0' gt '1:9.9' && echo "epoca manda"
+```
+
+O til é a exceção mais útil de conhecer: **`~` ordena antes de tudo, inclusive do vazio.** Por isso versões de pré-lançamento usam `1.0~rc1`, que é menor que `1.0`. Sem o til, `1.0rc1` seria considerado *maior* que `1.0` e a versão final nunca substituiria a candidata.
+
+## Os estados do `dpkg -l`
+
+A primeira coluna do `dpkg -l` tem dois ou três caracteres, e ler essa coluna é o que transforma um diagnóstico confuso em um problema conhecido.
+
+::: {#fig-estados-dpkg}
+```{.tikz}
+%%| filename: codigos-de-estado-do-dpkg
+%%| alt: Explicacao dos dois caracteres da coluna de estado do dpkg -l, com o primeiro indicando a acao desejada e o segundo o estado atual do pacote, e a lista das combinacoes mais comuns
+\begin{tikzpicture}[
+    cel/.style={rounded corners=2pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=5.6cm},
+    c1/.style={cel,draw=manualblue,fill=manualblue!11,minimum height=2.7cm},
+    c2/.style={cel,draw=manualgreen,fill=manualgreen!12,minimum height=2.7cm},
+    comb/.style={rounded corners=2pt,thick,align=left,font=\scriptsize,inner sep=5pt,text width=12.4cm},
+    ok/.style={comb,draw=manualgreen,fill=manualgreen!10},
+    aten/.style={comb,draw=manualyellow,fill=manualyellow!13},
+    ru/.style={comb,draw=manualred,fill=manualred!11},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    mono/.style={font=\scriptsize\ttfamily,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[mono] at (3.1,3.5) {ii\ \ nmap\ \ 7.95+dfsg-3\ \ amd64\ \ The Network Mapper};
+  \node[hd,manualblue]  at (0.0,2.7) {1º caractere: o que se \emph{quer}};
+  \node[hd,manualgreen] at (6.2,2.7) {2º caractere: o que \emph{é}};
+
+  \node[c1] at (0.0,1.0) {\texttt{i} --- instalado\\\texttt{r} --- a remover\\\texttt{p} --- a purgar\\\texttt{h} --- congelado (\emph{hold})\\\texttt{u} --- desconhecido};
+  \node[c2] at (6.2,1.0) {\texttt{i} --- instalado e configurado\\\texttt{n} --- não instalado\\\texttt{c} --- só a configuração\\\texttt{U} --- desempacotado, não configurado\\\texttt{F} --- configuração falhou};
+
+  \node[ok] at (3.1,-1.1) {\texttt{ii} --- tudo certo: instalado e configurado. É o que se espera de quase todas as linhas.};
+  \node[aten] at (3.1,-2.1) {\texttt{rc} --- removido, configuração ainda em \texttt{/etc}. Inofensivo; \texttt{apt purge} limpa.};
+  \node[ru] at (3.1,-3.3) {\texttt{iU} / \texttt{iF} --- \textbf{quebrado}: desempacotado mas não configurado. Bloqueia o APT inteiro. Conserto: \texttt{sudo dpkg --configure -a} e, se faltar dependência, \texttt{sudo apt --fix-broken install}.};
+
+  \node[nt,text width=12.4cm] at (3.1,-4.6) {Um terceiro caractere, quando presente, é a bandeira de erro --- \texttt{H} para pacote em espera, \texttt{R} para reinstalação necessária. Qualquer linha do \texttt{dpkg -l} cuja primeira coluna não seja \texttt{ii} ou \texttt{rc} merece atenção.};
+\end{tikzpicture}
+```
+Como ler a coluna de estado do `dpkg -l`.
+:::
+
+```bash
+dpkg -l | grep -v '^ii' | head -20      # tudo que nao esta normal
+dpkg -l | awk '/^i[UF]/ {print $2}'     # os quebrados
+dpkg --audit                            # o dpkg lista os problemas
+```
+
+O `dpkg --audit` é o atalho: ele relata pacotes desempacotados sem configuração, configurações interrompidas e outros estados inconsistentes.
+
+## Os scripts do mantenedor
+
+Cada `.deb` pode trazer quatro scripts executados como **root** em momentos definidos do ciclo:
+
+::: {#fig-scripts-mantenedor}
+```{.tikz}
+%%| filename: ordem-dos-scripts-do-mantenedor
+%%| alt: Sequencia dos scripts do mantenedor durante uma instalacao: preinst antes de desempacotar e postinst depois de desempacotar, e durante uma remocao: prerm antes e postrm depois
+\begin{tikzpicture}[
+    et/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=4pt,text width=2.5cm,minimum height=0.95cm},
+    sc/.style={et,draw=manualred,fill=manualred!11,font=\scriptsize\ttfamily},
+    ac/.style={et,draw=manualblue,fill=manualblue!11},
+    ar/.style={et,draw=manualgreen,fill=manualgreen!12},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    hd/.style={font=\scriptsize\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,manualblue,anchor=west] at (-1.5,1.9) {Instalação};
+  \node[sc] (i1) at (0.6,1.0)  {preinst};
+  \node[ac] (i2) at (4.0,1.0)  {desempacota o \texttt{data.tar}};
+  \node[sc] (i3) at (7.4,1.0)  {postinst};
+  \node[ac] (i4) at (10.8,1.0) {estado \texttt{ii}};
+  \draw[fl] (i1) -- (i2); \draw[fl] (i2) -- (i3); \draw[fl] (i3) -- (i4);
+
+  \node[hd,manualgreen,anchor=west] at (-1.5,-0.5) {Remoção};
+  \node[sc] (r1) at (0.6,-1.4)  {prerm};
+  \node[ar] (r2) at (4.0,-1.4)  {apaga os arquivos};
+  \node[sc] (r3) at (7.4,-1.4)  {postrm};
+  \node[ar] (r4) at (10.8,-1.4) {estado \texttt{rc} ou \texttt{pn}};
+  \draw[fl] (r1) -- (r2); \draw[fl] (r2) -- (r3); \draw[fl] (r3) -- (r4);
+
+  \node[nt,text width=13.4cm] at (4.6,-3.2) {Os quatro scripts rodam como \textbf{root}, sem confirmação e sem sandbox. É assim que um pacote cria usuário de sistema, gera chaves, registra um serviço no systemd ou migra um banco de dados --- e é também por isso que instalar um \texttt{.deb} de origem desconhecida equivale a executar um script arbitrário com privilégio total. Numa atualização a sequência é maior: \texttt{prerm} da versão antiga, desempacotamento da nova, \texttt{postrm} da antiga e \texttt{postinst} da nova.};
+\end{tikzpicture}
+```
+Quando cada script do mantenedor é executado, e com que privilégio.
+:::
+
+Ver os scripts de um pacote já instalado:
+
+```bash
+ls /var/lib/dpkg/info/ | head
+cat /var/lib/dpkg/info/openssh-server.postinst | head -40
+ls /var/lib/dpkg/info/nmap.*
+```
+
+Cada pacote instalado tem seu conjunto de arquivos em `/var/lib/dpkg/info/`: a lista de arquivos (`.list`), os hashes (`.md5sums`), a marcação de configuração (`.conffiles`) e os scripts.
+
+## Instalando um `.deb` local
+
+```bash
+sudo dpkg -i pacote.deb           # camada baixa: nao resolve dependencias
+sudo apt install ./pacote.deb     # camada alta: resolve
+sudo dpkg -r pacote               # remove (pelo NOME, nao pelo arquivo)
+sudo dpkg -P pacote               # purga
+```
+
+A recomendação é direta: **use `apt install ./pacote.deb`**. Ele faz o mesmo desempacotamento, mas antes verifica as dependências e as busca no repositório. O `dpkg -i` só se justifica quando não há repositório algum disponível.
+
+Se o `dpkg -i` já falhou, o conserto é subir uma camada:
+
+```bash
+sudo apt --fix-broken install     # busca e instala o que falta
+sudo dpkg --configure -a          # conclui o que ficou pela metade
+dpkg -l | grep -v '^ii' | head    # confirma que nada ficou estranho
+```
+
+::: {.callout-warning}
+## As opções `--force-*` do `dpkg` quebram o sistema em silêncio
+
+`dpkg -i --force-depends`, `--force-overwrite` e `--force-all` existem para situações de recuperação em que o administrador sabe exatamente o que está fazendo. Usadas para "resolver" um erro de dependência, elas não resolvem nada: instalam um pacote que não pode funcionar e deixam o banco de dados afirmando que está tudo bem.
+
+O resultado aparece depois, num contexto sem relação aparente — um programa que falha com erro de símbolo indefinido, um `apt` que se recusa a operar. Diante de erro de dependência, a resposta é `apt --fix-broken install`, nunca `--force`.
+:::
+
+## Construir um `.deb` simples
+
+Empacotar o próprio script é mais fácil do que parece, e resolve o problema de distribuir uma ferramenta interna com controle de versão e desinstalação limpa. A estrutura mínima é um diretório com o layout final mais um `DEBIAN/control`:
+
+```bash
+mkdir -p /tmp/minha-ferramenta/DEBIAN
+mkdir -p /tmp/minha-ferramenta/usr/local/bin
+
+cat > /tmp/minha-ferramenta/usr/local/bin/ola <<'EOF'
+#!/bin/bash
+echo "Olá do meu primeiro pacote Debian"
+EOF
+chmod 755 /tmp/minha-ferramenta/usr/local/bin/ola
+
+cat > /tmp/minha-ferramenta/DEBIAN/control <<'EOF'
+Package: minha-ferramenta
+Version: 1.0-1
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: Seu Nome <voce@exemplo.org>
+Depends: bash
+Description: Ferramenta de exemplo
+ Um pacote mínimo, construído à mão, para demonstrar
+ a estrutura de um arquivo .deb.
+EOF
+
+dpkg-deb --build /tmp/minha-ferramenta /tmp/minha-ferramenta_1.0-1_all.deb
+dpkg-deb -I /tmp/minha-ferramenta_1.0-1_all.deb
+```
+
+Note o detalhe do campo `Description`: a primeira linha é o resumo, e as linhas seguintes precisam começar com **um espaço**. Sem esse espaço, o `dpkg-deb` recusa o arquivo.
+
+Para pacotes de verdade — com regras de compilação, changelog e conformidade com a política Debian — a ferramenta é o `dpkg-buildpackage`, e o caminho passa por `debian/rules`. Para o caso específico de empacotar dependências fictícias ou pacotes de metadados, o `equivs` gera um `.deb` a partir de um arquivo de controle simples:
+
+```bash
+sudo apt install equivs
+equivs-control meu-pacote.cfg
+# editar o arquivo e depois:
+equivs-build meu-pacote.cfg
+```
+
+## Recompilar um pacote do repositório
+
+Quando é preciso aplicar um patch a um pacote existente, o caminho correto não é compilar do zero (@sec-cap037), e sim recompilar o pacote-fonte oficial:
+
+```bash
+# exige uma linha deb-src no sources.list
+sudo apt install build-essential devscripts
+apt source nmap                    # baixa e desempacota o fonte
+sudo apt build-dep nmap            # instala as dependencias de compilacao
+cd nmap-*/
+# aplicar as alteracoes, depois:
+dpkg-buildpackage -us -uc -b       # constroi sem assinar
+ls ../*.deb
+```
+
+O resultado é um `.deb` com a mesma estrutura, os mesmos scripts e a mesma integração do original — o que preserva tudo que o gerenciador de pacotes sabe fazer. É mais trabalhoso que `./configure && make install` e infinitamente mais limpo.
+
+Um detalhe prático: um pacote recompilado com a mesma versão será substituído no próximo `apt upgrade`. Marque um `hold` (@sec-cap034) ou incremente a revisão local para `-3.1local1`.
+
+## 🐉 No Kali
+
+- **`.deb` de ferramenta ofensiva baixado de repositório de terceiro merece auditoria antes da instalação.** A sequência é `apt download` ou download manual, depois `dpkg-deb -e` para extrair os scripts e `dpkg-deb -c` para ver os arquivos, e só então instalar. O `postinst` roda como root: se ele contém um `curl | bash` apontando para um domínio qualquer, você descobre antes e não depois.
+- **`dpkg -S` é ferramenta de investigação, não só de administração.** Diante de um binário suspeito numa máquina, `dpkg -S /caminho/do/binario` responde se ele veio de um pacote legítimo ou se apareceu de outro jeito. "Nenhum pacote é dono deste arquivo" em algo dentro de `/usr/bin` ou `/usr/sbin` é um achado relevante em qualquer verificação de integridade.
+- **`dpkg -V` detecta binário do sistema adulterado.** É a versão embutida e gratuita do que ferramentas de integridade fazem: comparar o hash de cada arquivo instalado com o registrado. Não substitui um AIDE bem configurado (tema do Volume 14), mas está disponível em qualquer Debian, sem instalação prévia, e é o primeiro comando a rodar quando há suspeita de comprometimento. A ressalva é que ele lê os hashes do próprio sistema, que um invasor com root pode ter reescrito — o resultado é indício, não prova.
+- **O sufixo `-0kaliN` identifica pacote empacotado pelo Kali.** `dpkg -l | grep kali` mostra quais pacotes vêm do repositório do Kali em vez de virem do Debian. É informação útil ao diagnosticar um comportamento que difere do documentado pelo autor original da ferramenta.
+- **Ferramenta de segurança que só distribui `.deb` fora de repositório é o pior dos mundos**: você ganha os riscos do `.deb` (scripts como root) sem ganhar as atualizações automáticas do repositório. Se for inevitável, empacote a rotina de atualização, anote a versão instalada e verifique periodicamente — ou considere um contêiner (@sec-cap038), que ao menos limita o alcance.
+- **Estado `iU` bloqueia o APT inteiro, e no meio de um teste isso custa tempo.** Se um `dpkg -i` falhou numa máquina de trabalho, resolva na hora com `sudo dpkg --configure -a` e `sudo apt --fix-broken install`, antes de precisar instalar outra coisa com urgência.
+
+> **Nota sobre a família RHEL.** O `rpm` é o equivalente direto do `dpkg`, com a mesma divisão de camadas em relação ao `dnf`. As opções de consulta mudam de nome mas não de propósito: `rpm -qa` lista tudo, `rpm -ql` lista os arquivos de um pacote, `rpm -qf` descobre o dono de um arquivo e `rpm -V` verifica integridade. Duas diferenças estruturais: um `.rpm` é um arquivo `cpio` com cabeçalho binário, não um `ar` com tarballs, e por isso não se abre com ferramentas comuns sem `rpm2cpio`; e o RPM não tem o estado residual `rc` — remover leva a configuração junto, salvo os arquivos marcados como `%config(noreplace)`, que ficam para trás renomeados com `.rpmsave`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Construímos um pacote próprio, o instalamos, o quebramos de propósito e o consertamos.
+
+1. **Inspecione um pacote instalado.**
+
+   ```bash
+   dpkg -s bash | head -15
+   dpkg -L bash | head -10
+   dpkg -L bash | wc -l
+   dpkg -S /bin/ls
+   ```
+
+   Esperado: metadados, lista de arquivos e a identificação de que `/bin/ls` pertence ao `coreutils`.
+
+2. **Verifique a integridade do sistema.**
+
+   ```bash
+   sudo dpkg -V | head -20
+   sudo dpkg -V coreutils && echo "coreutils integro"
+   ```
+
+   Esperado: pouca ou nenhuma saída. O que aparecer costuma ser arquivo de configuração que você editou, marcado com `c` na última coluna.
+
+3. **Baixe um `.deb` sem instalar e abra-o.**
+
+   ```bash
+   cd /tmp && apt download cowsay
+   ls -lh cowsay_*.deb
+   ar t cowsay_*.deb
+   ```
+
+   Esperado: os três membros da @fig-anatomia-deb — `debian-binary`, `control.tar.*` e `data.tar.*`.
+
+4. **Leia o que há dentro.**
+
+   ```bash
+   dpkg-deb -I cowsay_*.deb
+   dpkg-deb -c cowsay_*.deb | head -15
+   mkdir -p /tmp/ctrl && dpkg-deb -e cowsay_*.deb /tmp/ctrl
+   ls /tmp/ctrl/ && cat /tmp/ctrl/control
+   ```
+
+   Esperado: os metadados, a árvore de arquivos e os scripts do mantenedor. Esta é a auditoria que todo `.deb` de terceiro deveria receber.
+
+5. **Compare versões pelo algoritmo do `dpkg`.**
+
+   ```bash
+   dpkg --compare-versions '1.10' gt '1.9'  && echo "1.10 > 1.9"
+   dpkg --compare-versions '1.0~rc1' lt '1.0' && echo "1.0~rc1 < 1.0"
+   dpkg --compare-versions '1.0rc1' gt '1.0' && echo "1.0rc1 > 1.0 (sem o til!)"
+   dpkg --compare-versions '2:1.0' gt '1:9.9' && echo "epoca vence tudo"
+   ```
+
+   Esperado: as quatro afirmações são verdadeiras. A terceira mostra por que o til existe.
+
+6. **Construa seu próprio pacote.**
+
+   ```bash
+   mkdir -p /tmp/lab-pkg/DEBIAN /tmp/lab-pkg/usr/local/bin
+   printf '#!/bin/bash\necho "pacote proprio funcionando"\n' > /tmp/lab-pkg/usr/local/bin/lab-ola
+   chmod 755 /tmp/lab-pkg/usr/local/bin/lab-ola
+   cat > /tmp/lab-pkg/DEBIAN/control <<'EOF'
+   Package: lab-ola
+   Version: 1.0-1
+   Architecture: all
+   Maintainer: Laboratorio <lab@exemplo.org>
+   Depends: bash
+   Description: Pacote de laboratorio
+    Criado no capitulo 35 para demonstrar dpkg-deb.
+   EOF
+   dpkg-deb --build /tmp/lab-pkg /tmp/lab-ola_1.0-1_all.deb
+   ```
+
+   Esperado: `building package 'lab-ola' in ...`. Se falhar, confira o espaço no início da segunda linha da descrição.
+
+7. **Instale e use o pacote que você fez.**
+
+   ```bash
+   sudo dpkg -i /tmp/lab-ola_1.0-1_all.deb
+   lab-ola
+   dpkg -l lab-ola
+   dpkg -L lab-ola
+   ```
+
+   Esperado: estado `ii`, o script executa, e `dpkg -L` mostra `/usr/local/bin/lab-ola`.
+
+8. **Provoque um erro de dependência, de propósito.**
+
+   ```bash
+   sed -i 's/^Depends: bash/Depends: bash, pacote-que-nao-existe/' /tmp/lab-pkg/DEBIAN/control
+   sed -i 's/^Version: 1.0-1/Version: 1.0-2/' /tmp/lab-pkg/DEBIAN/control
+   dpkg-deb --build /tmp/lab-pkg /tmp/lab-ola_1.0-2_all.deb
+   sudo dpkg -i /tmp/lab-ola_1.0-2_all.deb
+   ```
+
+   Esperado: `dependency problems prevent configuration`. O pacote foi desempacotado mas não configurado — exatamente o cenário do início do capítulo.
+
+9. **Leia o estado quebrado.**
+
+   ```bash
+   dpkg -l lab-ola
+   dpkg --audit
+   dpkg -l | grep -v '^ii' | grep lab-ola
+   ```
+
+   Esperado: a marca `iU` — instalado desejado, desempacotado atual. É a leitura da @fig-estados-dpkg na prática.
+
+10. **Conserte.**
+
+    ```bash
+    sudo dpkg -i /tmp/lab-ola_1.0-1_all.deb
+    dpkg -l lab-ola
+    dpkg --audit && echo "nada pendente"
+    ```
+
+    Esperado: voltando à versão sem a dependência inexistente, o pacote configura e o estado retorna a `ii`. Num caso real, com dependência que existe no repositório, o comando seria `sudo apt --fix-broken install`.
+
+11. **Veja os arquivos de controle do sistema.**
+
+    ```bash
+    ls /var/lib/dpkg/info/ | wc -l
+    ls /var/lib/dpkg/info/lab-ola.*
+    cat /var/lib/dpkg/info/lab-ola.list
+    grep -c '^Package:' /var/lib/dpkg/status
+    ```
+
+    Esperado: o banco de dados do `dpkg` com milhares de entradas, e os arquivos do seu pacote entre elas.
+
+12. **Limpe tudo.**
+
+    ```bash
+    sudo dpkg -P lab-ola
+    dpkg -l lab-ola 2>&1 | tail -2
+    rm -rf /tmp/lab-pkg /tmp/lab-ola_*.deb /tmp/cowsay_*.deb /tmp/ctrl
+    dpkg --audit && echo "sistema limpo"
+    ```
+
+    Esperado: o pacote sai do banco de dados, os arquivos temporários somem e o `dpkg --audit` não relata nada.
+
+## Resumo
+
+- **O `dpkg` verifica dependências mas não as satisfaz.** Ele opera sobre arquivos locais; buscar o que falta é trabalho do APT. Erro de dependência num `dpkg -i` se resolve com `apt --fix-broken install`, nunca com `--force`.
+- **Um `.deb` é um arquivo `ar` com três membros**: `debian-binary` (versão do formato), `control.tar` (metadados, hashes e scripts) e `data.tar` (a árvore de arquivos). `dpkg-deb -I`, `-c` e `-e` abrem cada parte sem instalar nada.
+- **As relações vão além de `Depends`**: `Pre-Depends` impõe ordem estrita, `Breaks`/`Replaces` permitem renomear pacotes e mover arquivos, e `Provides` cria capacidades virtuais satisfeitas por qualquer implementação.
+- **Versões têm o formato `epoch:upstream-revision`**, comparadas por um algoritmo próprio. `~` ordena antes de tudo — é o que faz `1.0~rc1` vir antes de `1.0`. Na dúvida, `dpkg --compare-versions` decide.
+- **A coluna do `dpkg -l` tem dois caracteres**: o desejado e o atual. `ii` é normal, `rc` é configuração residual, e `iU`/`iF` é pacote quebrado que bloqueia o APT inteiro. `dpkg --audit` lista os problemas de uma vez.
+- **Os quatro scripts do mantenedor rodam como root, sem sandbox.** Instalar um `.deb` de origem desconhecida equivale a executar um script arbitrário com privilégio total; auditar o `postinst` antes é a única defesa.
+- **`dpkg -S` diz de qual pacote veio um arquivo e `dpkg -V` detecta arquivos alterados** desde a instalação — os dois são ferramentas de investigação disponíveis em qualquer Debian, sem instalar nada.
+- **Construir um `.deb` simples são dois arquivos e um comando**: a árvore de destino mais `DEBIAN/control`, empacotados com `dpkg-deb --build`. Para aplicar um patch a um pacote existente, `apt source` + `dpkg-buildpackage` preserva toda a integração do original.
+- **`apt install ./pacote.deb` é sempre melhor que `dpkg -i pacote.deb`**: mesma instalação, com resolução de dependências antes.

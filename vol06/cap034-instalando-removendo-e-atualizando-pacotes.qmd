@@ -1,3 +1,415 @@
 # Instalando, removendo e atualizando pacotes com apt {#sec-cap034}
 
-*(em elaboracao)*
+Um Kali que ficou seis semanas desligado volta à vida, e o administrador faz o de sempre: `sudo apt update && sudo apt upgrade`. O comando roda, baixa algumas centenas de megabytes, termina — e no meio da saída, numa linha que passou despercebida, estava escrito *"Os pacotes a seguir foram mantidos: kali-linux-headless metasploit-framework"*. Duas semanas depois, metade das ferramentas está numa versão e metade em outra, e alguma coisa começa a falhar de um jeito que não tem explicação óbvia.
+
+Aquela linha não era um aviso menor. Ela dizia que o APT encontrou atualizações que exigiam **remover** algum pacote e que, por segurança, preferiu não fazer nada. Num Debian stable isso é raro; num rolling é rotina. Este capítulo é sobre os comandos do dia a dia — instalar, remover, atualizar — e sobre as decisões que o APT toma em silêncio quando você os executa.
+
+## Antes de instalar: descobrir
+
+Metade do trabalho é descobrir se o que você quer já existe no repositório, e com qual nome.
+
+```bash
+apt search termo                # busca em nome e descricao
+apt search --names-only termo   # so no nome, bem mais util
+apt show nmap                   # descricao completa, dependencias, tamanho
+apt list 'nmap*'                # lista por padrao glob
+apt list --installed | wc -l    # quantos pacotes ha instalados
+apt policy nmap                 # versao instalada, candidata e origem
+```
+
+O `apt search` sem `--names-only` varre a descrição inteira de cada pacote e devolve resultados demais: procurar por `ssh` traz centenas de pacotes que apenas mencionam SSH no texto. Com `--names-only`, a lista fica utilizável.
+
+O `apt show` responde à pergunta importante antes de instalar qualquer coisa: quanto isso vai puxar junto.
+
+```text
+Package: metasploit-framework
+Version: 6.4.42-0kali1
+Installed-Size: 1.043 MB
+Depends: ruby, ruby-bcrypt, postgresql, nmap, ...
+Download-Size: 214 MB
+```
+
+`Installed-Size` é o espaço que o pacote ocupa depois de instalado; `Download-Size` é o que será baixado. Nenhum dos dois inclui as dependências, o que costuma surpreender — para saber o total, o caminho é a simulação, adiante.
+
+Para inspecionar dependências sem instalar:
+
+```bash
+apt depends nmap               # do que ele depende
+apt rdepends nmap              # quem depende dele
+apt rdepends --installed nmap  # quem depende dele, entre o que voce ja tem
+```
+
+O `rdepends --installed` é o comando que evita um estrago: antes de remover uma biblioteca, ele mostra quem vai junto.
+
+## Instalar
+
+```bash
+sudo apt install nmap
+sudo apt install nmap wireshark tcpdump      # varios de uma vez
+sudo apt install nmap=7.94+dfsg-3            # versao especifica
+sudo apt install -s nmap                     # simulacao: nao instala nada
+sudo apt install --reinstall nmap            # reinstala por cima
+sudo apt install ./pacote-local.deb          # .deb local, com dependencias
+```
+
+A opção `-s` (ou `--dry-run`) é o hábito que vale mais a pena adquirir neste capítulo. Ela imprime o plano completo — o que será instalado, atualizado, removido e quanto será baixado — sem tocar em nada:
+
+```bash
+apt install -s kali-linux-large | tail -20
+```
+
+Repare que `-s` não exige `sudo`: a simulação não escreve no sistema.
+
+O caso do `apt install ./arquivo.deb` merece nota. Passar um caminho que começa com `./` faz o APT tratar o arquivo local como se fosse um pacote do repositório: ele lê as dependências e as busca online. É a forma correta de instalar um `.deb` avulso, muito melhor que `dpkg -i` seguido de conserto (@sec-cap035).
+
+## `Recommends` e `Suggests`: por que trinta pacotes vieram junto
+
+Um pacote Debian declara relações de vários graus. Duas delas explicam a maior parte das instalações inesperadamente grandes:
+
+- **`Depends`**: obrigatório. Sem isso, o pacote não funciona.
+- **`Recommends`**: fortemente sugerido. O APT **instala por padrão**, e é daí que vem o volume.
+- **`Suggests`**: apenas mencionado. Não é instalado.
+
+```bash
+sudo apt install --no-install-recommends wireshark
+apt show wireshark | grep -E '^(Depends|Recommends|Suggests)'
+```
+
+Em máquina enxuta, servidor ou contêiner, `--no-install-recommends` corta bastante. Para tornar padrão:
+
+```text
+# /etc/apt/apt.conf.d/99-sem-recommends
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+```
+
+::: {.callout-note}
+## Desligar `Recommends` globalmente tem custo
+
+Muitos pacotes do Debian colocam em `Recommends` justamente o que os torna úteis na prática — o *firmware*, o plugin, a ferramenta auxiliar. Desligar globalmente produz um sistema mínimo que funciona, mas em que coisas faltam de maneiras difíceis de diagnosticar. Num Kali de trabalho, prefira usar `--no-install-recommends` caso a caso.
+:::
+
+## Remover: `remove`, `purge`, `autoremove`
+
+Aqui mora a confusão mais comum do APT. Remover não é uma coisa só.
+
+::: {#fig-ciclo-pacote}
+```{.tikz}
+%%| filename: ciclo-de-vida-de-um-pacote-no-apt
+%%| alt: Maquina de estados de um pacote com os estados nao instalado, instalado e configuracao residual, e as transicoes apt install, apt remove e apt purge entre eles
+\begin{tikzpicture}[
+    st/.style={rounded corners=4pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.2cm,minimum height=1.4cm},
+    ni/.style={st,draw=manualgray,fill=manualgray!10},
+    inst/.style={st,draw=manualgreen,fill=manualgreen!14},
+    resid/.style={st,draw=manualyellow,fill=manualyellow!16},
+    fl/.style={thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize\ttfamily,align=center,inner sep=2pt},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ni]    (a) at (0,0)    {\textbf{não instalado}\\nada em disco};
+  \node[inst]  (b) at (5.6,0)  {\textbf{instalado} (\texttt{ii})\\binários + configuração};
+  \node[resid] (c) at (11.2,0) {\textbf{residual} (\texttt{rc})\\só a configuração em \texttt{/etc}};
+
+  \draw[fl,manualgreen]  (a) to[bend left=20]  node[lb,sloped,above,manualgreen]{apt install} (b);
+  \draw[fl,manualyellow] (b) to[bend left=20]  node[lb,sloped,above,manualyellow]{apt remove} (c);
+  \draw[fl,manualgreen]  (c) to[bend left=20]  node[lb,sloped,below,manualgreen]{apt install} (b);
+  \draw[fl,manualred]    (b) to[bend left=20]  node[lb,sloped,below,manualred]{apt purge} (a);
+  \draw[fl,manualred]    (c) to[bend right=34] node[lb,sloped,below,manualred,pos=0.5]{apt purge} (a);
+
+  \node[nt,text width=13.8cm] at (5.6,-4.2) {O estado \texttt{rc} é o que faz \texttt{apt remove} parecer não ter funcionado: o programa some, mas \texttt{/etc} guarda a configuração e o \texttt{dpkg -l} continua listando o pacote com a marca \texttt{rc}. É proposital --- reinstalar depois recupera os ajustes. Quem quer o pacote fora de vez usa \texttt{purge}. Nenhuma dessas transições toca em \texttt{/home}: dados de usuário nunca são apagados pelo gerenciador de pacotes.};
+\end{tikzpicture}
+```
+Os três estados de um pacote e os comandos que fazem a transição entre eles.
+:::
+
+```bash
+sudo apt remove nmap        # tira os binarios, mantem /etc
+sudo apt purge nmap         # tira tudo, inclusive a configuracao
+sudo apt autoremove         # remove dependencias que ficaram orfas
+sudo apt autoremove --purge # ... e apaga a configuracao delas tambem
+```
+
+Para encontrar o que ficou em estado residual:
+
+```bash
+dpkg -l | grep '^rc'
+dpkg -l | awk '/^rc/ {print $2}' | xargs -r sudo apt purge -y
+```
+
+O `autoremove` depende de uma distinção que o APT mantém para cada pacote: **manual** (você pediu explicitamente) ou **automático** (veio como dependência). Quando nada mais depende de um pacote automático, ele fica órfão e é candidato à remoção.
+
+```bash
+apt-mark showmanual | head          # o que voce pediu
+apt-mark showauto | wc -l           # o que veio junto
+apt-mark manual nmap                # "eu quero este, nao remova"
+apt-mark auto libfoo1               # "este veio junto, pode ir"
+```
+
+::: {.callout-warning}
+## `autoremove` pode levar o que você não esperava
+
+O `autoremove` age sobre a marcação, não sobre a sua intenção. Se um pacote entrou como dependência de algo que você removeu depois, ele será levado — mesmo que você tenha passado a usá-lo diretamente. No Kali, o caso clássico é remover um metapacote e ver o `autoremove` seguinte propor a remoção de dezenas de ferramentas.
+
+**Leia sempre a lista antes de confirmar.** E, quando a lista incluir algo que você quer manter, o conserto é `sudo apt-mark manual <pacote>` antes de rodar de novo.
+:::
+
+## Atualizar: `upgrade` contra `full-upgrade`
+
+Os dois atualizam. A diferença é o que cada um está autorizado a fazer para conseguir isso.
+
+::: {#fig-upgrade-vs-full}
+```{.tikz}
+%%| filename: upgrade-comparado-a-full-upgrade
+%%| alt: Comparacao entre apt upgrade que nunca remove pacotes e por isso mantem atualizacoes pendentes, e apt full-upgrade que pode remover pacotes para concluir a atualizacao
+\begin{tikzpicture}[
+    cx/.style={rounded corners=4pt,thick,align=left,font=\scriptsize,inner sep=7pt,text width=6.0cm,minimum height=3.8cm},
+    esq/.style={cx,draw=manualblue,fill=manualblue!10},
+    dir/.style={cx,draw=manualgreen,fill=manualgreen!12},
+    tt/.style={font=\scriptsize\bfseries\ttfamily,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tt,manualblue]  at (0,2.5)   {apt upgrade};
+  \node[tt,manualgreen] at (7.0,2.5) {apt full-upgrade};
+
+  \node[esq] at (0,0) {\textbf{Pode:} instalar pacote novo, atualizar versão.\\[3pt]
+    \textbf{Não pode:} remover nada.\\[3pt]
+    \textbf{Consequência:} quando a atualização de A exige remover B, o APT desiste de A e imprime \emph{``foram mantidos''}.\\[3pt]
+    \textbf{Onde serve:} Debian stable, onde remoções são raras e a mensagem é exceção.};
+
+  \node[dir] at (7.0,0) {\textbf{Pode:} instalar, atualizar \emph{e remover} o que estiver no caminho.\\[3pt]
+    \textbf{Exige:} que você leia a lista de remoções antes de confirmar.\\[3pt]
+    \textbf{Consequência:} nada fica pendente; o sistema converge para o estado do repositório.\\[3pt]
+    \textbf{Onde serve:} Kali e qualquer rolling.};
+
+  \node[nt,text width=13.4cm] at (3.5,-3.4) {O erro que custa caro é rodar \texttt{apt upgrade} por meses num rolling. Cada execução acumula mais pacotes ``mantidos'', o sistema fica cada vez mais misturado entre versões antigas e novas, e o \texttt{full-upgrade} que finalmente for rodado terá de fazer uma migração enorme de uma vez --- exatamente a operação com maior chance de dar errado.};
+\end{tikzpicture}
+```
+O que cada comando de atualização está autorizado a fazer.
+:::
+
+```bash
+sudo apt update                 # sincroniza indices (nao atualiza nada)
+apt list --upgradable           # o que mudaria
+sudo apt full-upgrade -s        # simula a atualizacao completa
+sudo apt full-upgrade           # executa
+```
+
+No Kali, a sequência correta e completa é:
+
+```bash
+sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove -y
+```
+
+O `apt-get dist-upgrade` é o equivalente antigo do `full-upgrade`. Faz a mesma coisa; o nome mudou porque "dist-upgrade" sugeria erroneamente uma troca de versão da distribuição.
+
+Sobre `apt` e `apt-get`: o `apt` é a interface para humanos — barra de progresso, cores, colunas. O `apt-get` é a interface estável para scripts, com saída e opções que não mudam entre versões. Em script, use `apt-get`; o próprio `apt` avisa disso quando detecta que não está num terminal.
+
+```bash
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y \
+     -o Dpkg::Options::=--force-confold full-upgrade
+```
+
+Essa linha é a forma canônica de atualizar sem interação: `DEBIAN_FRONTEND=noninteractive` cala as caixas de diálogo do `debconf`, e `--force-confold` manda manter os arquivos de configuração existentes em caso de conflito. A alternativa, `--force-confnew`, aceita a versão do pacote e sobrescreve seus ajustes — escolha consciente, não padrão.
+
+## Segurar um pacote numa versão
+
+Às vezes uma versão nova quebra algo e é preciso ficar para trás até que corrijam:
+
+```bash
+sudo apt-mark hold metasploit-framework    # congela
+apt-mark showhold                          # o que esta congelado
+sudo apt-mark unhold metasploit-framework  # libera
+```
+
+Um pacote em `hold` é pulado por qualquer `upgrade`. É simples, e por isso mesmo perigoso: um `hold` esquecido produz, meses depois, um pacote muito atrasado que impede a atualização de todo o resto. `apt-mark showhold` deveria ser parte da rotina de manutenção.
+
+O mecanismo mais expressivo — fixar uma versão específica, e não apenas congelar a atual — é o *pinning*, tema do @sec-cap036.
+
+## Quando dá errado
+
+Duas situações cobrem quase tudo:
+
+```bash
+sudo apt --fix-broken install      # resolve dependencias quebradas
+sudo dpkg --configure -a           # conclui configuracoes interrompidas
+sudo apt update --fix-missing      # reindexar quando o download falhou
+```
+
+A primeira socorre o sistema depois de um `dpkg -i` malsucedido. A segunda, depois de uma instalação interrompida no meio — queda de energia, terminal fechado, Ctrl-C na hora errada.
+
+E o bloqueio mais comum de todos:
+
+```text
+E: Could not get lock /var/lib/dpkg/lock-frontend
+```
+
+Significa que outro processo está usando o APT. Normalmente é o `unattended-upgrades` ou o atualizador gráfico rodando em segundo plano. A resposta certa é esperar:
+
+```bash
+sudo lsof /var/lib/dpkg/lock-frontend
+ps aux | grep -E 'apt|dpkg' | grep -v grep
+```
+
+::: {.callout-warning}
+## Não apague o arquivo de lock por reflexo
+
+Apagar `/var/lib/dpkg/lock*` enquanto existe um `dpkg` de verdade em execução corrompe o banco de dados de pacotes, e o conserto é bem pior que a espera. Só considere isso depois de confirmar com `lsof` e `ps`, nos comandos acima, que nenhum processo está usando o APT — situação que só acontece de fato quando a máquina foi desligada no meio de uma instalação.
+:::
+
+## O registro do que aconteceu
+
+```bash
+sudo tail -50 /var/log/apt/history.log      # o que foi feito, quando
+sudo tail -50 /var/log/apt/term.log         # a saida completa do dpkg
+zgrep -h 'Commandline' /var/log/apt/history.log*.gz | tail
+grep ' install ' /var/log/dpkg.log | tail -20
+```
+
+O `history.log` responde "o que instalei semana passada". O `term.log` responde "o que aquele script de instalação imprimiu quando falhou". O `/var/log/dpkg.log` tem o registro em nível de pacote, com data e hora de cada mudança de estado.
+
+O APT **não tem** um comando para desfazer uma transação. Desfazer é manual: ler o `history.log`, pegar a lista de pacotes atualizados com suas versões anteriores e instalá-las explicitamente com `apt install pacote=versão`. Isso só funciona se as versões antigas ainda existirem no repositório — e num rolling, muitas vezes não existem. A conclusão prática é que num Kali a rede de segurança de verdade é o *snapshot* da máquina virtual, tirado antes da atualização.
+
+## 🐉 No Kali
+
+- **`apt upgrade` sozinho é o comando errado no Kali.** Num rolling, remoções fazem parte da rotina: pacotes são renomeados, bibliotecas trocam de *soname*, ferramentas são substituídas. O `upgrade`, que não pode remover, acumula pendências em silêncio. A sequência certa é `sudo apt update && sudo apt full-upgrade`, e a mensagem "foram mantidos" deve ser tratada como sinal de que algo precisa de atenção, não como ruído.
+- **Atualize com frequência, e sempre por inteiro.** Um Kali atualizado semanalmente faz saltos pequenos e previsíveis. Um Kali parado por seis meses tenta migrar centenas de pacotes de uma vez, com chance real de terminar num estado quebrado. Se o sistema já está muito atrasado, o caminho mais seguro costuma ser reinstalar a partir da imagem atual — o Kali é feito para ser descartável, e reinstalar leva menos tempo que consertar.
+- **Tire um snapshot da VM antes de todo `full-upgrade` grande.** É a única forma prática de desfazer: o APT não tem `undo`, e num rolling as versões antigas somem do repositório em dias. Um snapshot custa segundos e é a diferença entre um contratempo e um dia perdido.
+- **Metapacotes tornam o `autoremove` perigoso.** Remover `kali-linux-large` marca como automáticas todas as ferramentas que vieram por ele, e o `autoremove` seguinte propõe apagar dezenas delas — inclusive as que você passou a usar diretamente. Antes de confirmar, proteja o que interessa com `sudo apt-mark manual <pacote>`. O assunto dos metapacotes é o @sec-cap036.
+- **`apt install -s` antes de instalar metapacote grande.** O `kali-linux-everything` passa de 100 GB instalado. A simulação mostra o número de pacotes e o total a baixar antes que você descubra por conta própria, com o disco cheio no meio da operação.
+- **Instalar ferramenta de terceiro por `.deb` é um risco real, e é auditável.** Um `.deb` roda scripts de manutenção como root durante a instalação (@sec-cap035), então baixar um pacote de origem desconhecida equivale a executar um script arbitrário com privilégio total. Em teste autorizado, esse é o mesmo mecanismo que um invasor usaria para persistência — e é por isso que `/var/log/dpkg.log` faz parte de qualquer verificação forense: ele registra data, hora e nome de tudo que foi instalado.
+
+> **Nota sobre a família RHEL.** `dnf install`, `dnf remove` e `dnf upgrade` cobrem o mesmo terreno, com uma diferença conceitual importante: não existe o par `upgrade`/`full-upgrade`, porque o `dnf` já pode remover pacotes para completar uma transação. Em compensação, o `dnf` tem o que falta ao APT: `dnf history list` mostra transações numeradas e `dnf history undo <n>` reverte uma delas por completo. O equivalente ao `autoremove` é `dnf autoremove`, e o equivalente ao `hold` é o plugin `versionlock`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Instalamos e removemos pacotes pequenos e inofensivos (`cowsay`, `sl`, `figlet`); nenhum passo mexe em componente do sistema.
+
+1. **Descubra antes de instalar.**
+
+   ```bash
+   apt search --names-only '^cowsay'
+   apt show cowsay
+   apt depends cowsay
+   ```
+
+   Esperado: a descrição, o `Installed-Size` e a lista de dependências. Anote quais delas você ainda não tem.
+
+2. **Simule a instalação.**
+
+   ```bash
+   apt install -s cowsay figlet sl
+   ```
+
+   Esperado: o plano completo — `NEW`, tamanho a baixar, espaço em disco — sem que nada seja alterado. Note que não foi preciso `sudo`.
+
+3. **Instale e confira o que veio junto.**
+
+   ```bash
+   sudo apt install -y cowsay figlet sl
+   cowsay "apt funciona"
+   apt-mark showmanual | grep -E '^(cowsay|figlet|sl)$'
+   ```
+
+   Esperado: os três aparecem como **manuais**, porque você os pediu explicitamente. Dependências que vieram junto estariam em `apt-mark showauto`.
+
+4. **Compare instalação com e sem `Recommends`.**
+
+   ```bash
+   apt install -s wireshark | tail -6
+   apt install -s --no-install-recommends wireshark | tail -6
+   ```
+
+   Esperado: a segunda lista é bem menor. É a diferença que explica instalações que puxam dezenas de pacotes inesperados. Nenhum dos dois instala nada — é simulação.
+
+5. **Remova e veja o estado residual.**
+
+   ```bash
+   sudo apt remove -y figlet
+   dpkg -l figlet
+   dpkg -l | grep '^rc'
+   which figlet || echo "binario removido"
+   ```
+
+   Esperado: o binário sumiu, mas o `dpkg -l` mostra a marca `rc` — o estado residual da @fig-ciclo-pacote.
+
+6. **Purgue e confirme que sumiu de vez.**
+
+   ```bash
+   sudo apt purge -y figlet
+   dpkg -l figlet 2>&1 | tail -2
+   ```
+
+   Esperado: `dpkg-query: no packages found` — o pacote saiu do banco de dados.
+
+7. **Fabrique um órfão e use o `autoremove`.**
+
+   ```bash
+   sudo apt-mark auto sl
+   apt-mark showauto | grep -x sl
+   sudo apt autoremove -s | tail -8
+   ```
+
+   Esperado: a simulação propõe remover o `sl`, porque ele está marcado como automático e nada depende dele. Ainda não removemos nada.
+
+8. **Proteja um pacote da remoção automática.**
+
+   ```bash
+   sudo apt-mark manual sl
+   sudo apt autoremove -s | tail -4
+   ```
+
+   Esperado: o `sl` deixa de aparecer na lista. Esta é a defesa contra o `autoremove` levar o que você quer manter.
+
+9. **Congele um pacote e observe o efeito.**
+
+   ```bash
+   sudo apt-mark hold cowsay
+   apt-mark showhold
+   sudo apt install -s --only-upgrade cowsay
+   sudo apt-mark unhold cowsay
+   apt-mark showhold
+   ```
+
+   Esperado: com o `hold` ativo, o APT recusa atualizar o pacote e diz que ele foi mantido. Sempre desfaça o `hold` de teste.
+
+10. **Simule a atualização completa do sistema.**
+
+    ```bash
+    sudo apt update
+    apt list --upgradable | head -15
+    sudo apt full-upgrade -s 2>&1 | tail -15
+    ```
+
+    Esperado: o resumo com quantos serão atualizados, instalados e **removidos**. Se houver remoções, leia a lista — é exatamente esse o momento em que o `upgrade` simples teria desistido.
+
+11. **Leia os registros.**
+
+    ```bash
+    sudo tail -30 /var/log/apt/history.log
+    grep -E ' (install|remove|purge) ' /var/log/dpkg.log | tail -15
+    ```
+
+    Esperado: as operações deste laboratório, com data, hora e o comando exato que você digitou.
+
+12. **Limpe o que foi criado.**
+
+    ```bash
+    sudo apt purge -y cowsay sl
+    sudo apt autoremove --purge -y
+    dpkg -l | grep -E '^rc' || echo "nenhum residual"
+    apt-mark showhold || echo "nenhum hold"
+    ```
+
+    Esperado: nenhum pacote de teste, nenhum residual, nenhum `hold` pendente. O sistema volta ao estado inicial.
+
+## Resumo
+
+- **`apt search --names-only` e `apt show` antes de instalar**, e `apt install -s` para ver o plano completo — o que entra, o que sai e quanto pesa — sem alterar nada e sem precisar de `sudo`.
+- **`Depends` é obrigatório, `Recommends` é instalado por padrão, `Suggests` não é.** É o `Recommends` que explica a instalação que puxou trinta pacotes; `--no-install-recommends` corta, com o custo de um sistema em que coisas úteis faltam sem aviso.
+- **Remover tem três graus**: `remove` tira os binários e deixa a configuração (estado `rc`), `purge` tira tudo, `autoremove` recolhe as dependências órfãs. Nenhum deles toca em `/home`.
+- **O `autoremove` age sobre a marcação automático/manual, não sobre a sua intenção.** `apt-mark manual <pacote>` é a forma de proteger o que você passou a usar diretamente.
+- **`apt upgrade` nunca remove nada e por isso deixa atualizações pendentes**; `full-upgrade` pode remover e conclui a migração. Num rolling como o Kali, `full-upgrade` é o comando certo, e "foram mantidos" é um alerta.
+- **`apt` é para humanos, `apt-get` é para scripts.** Em automação, `DEBIAN_FRONTEND=noninteractive` com `-o Dpkg::Options::=--force-confold` é a forma canônica de atualizar sem travar numa caixa de diálogo.
+- **`apt-mark hold` congela uma versão** e é fácil de esquecer; `apt-mark showhold` na rotina de manutenção evita descobrir o *hold* velho meses depois, quando ele já bloqueia todo o resto.
+- **O erro de lock quase sempre é outro processo do APT, não um arquivo preso.** Confirme com `lsof` antes de apagar qualquer lock — remover o arquivo com um `dpkg` ativo corrompe o banco de dados.
+- **O APT não tem `undo`.** `history.log` e `dpkg.log` contam o que aconteceu, mas a rede de segurança prática num rolling é o snapshot da VM antes da atualização.

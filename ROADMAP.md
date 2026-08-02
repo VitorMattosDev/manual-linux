@@ -60,12 +60,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 6 — Gerenciamento de Pacotes
 
-- [ ] **cap 033** - APT e o modelo Debian: repositórios e o Kali rolling - `vol06/cap033-apt-e-o-modelo-debian-repositorios-e-o-kali.qmd`
-- [ ] **cap 034** - Instalando, removendo e atualizando pacotes com apt - `vol06/cap034-instalando-removendo-e-atualizando-pacotes.qmd`
-- [ ] **cap 035** - dpkg, arquivos .deb e resolução de dependências - `vol06/cap035-dpkg-arquivos-deb-e-resolucao-de-dependencias.qmd`
-- [ ] **cap 036** - Repositórios do Kali, metapacotes e kali-tweaks - `vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.qmd`
-- [ ] **cap 037** - Compilando a partir do código-fonte - `vol06/cap037-compilando-a-partir-do-codigo-fonte.qmd`
-- [ ] **cap 038** - Alternativas: pipx, snap, flatpak e AppImage - `vol06/cap038-alternativas-pipx-snap-flatpak-e-appimage.qmd`
+- [x] **cap 033** - APT e o modelo Debian: repositórios e o Kali rolling - `vol06/cap033-apt-e-o-modelo-debian-repositorios-e-o-kali.qmd`
+- [x] **cap 034** - Instalando, removendo e atualizando pacotes com apt - `vol06/cap034-instalando-removendo-e-atualizando-pacotes.qmd`
+- [x] **cap 035** - dpkg, arquivos .deb e resolução de dependências - `vol06/cap035-dpkg-arquivos-deb-e-resolucao-de-dependencias.qmd`
+- [x] **cap 036** - Repositórios do Kali, metapacotes e kali-tweaks - `vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.qmd`
+- [x] **cap 037** - Compilando a partir do código-fonte - `vol06/cap037-compilando-a-partir-do-codigo-fonte.qmd`
+- [x] **cap 038** - Alternativas: pipx, snap, flatpak e AppImage - `vol06/cap038-alternativas-pipx-snap-flatpak-e-appimage.qmd`
 
 ### Volume 7 — Boot, systemd e Serviços
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (32 concluidos).
+**Total:** 103 capitulos em 16 volumes (38 concluidos).
 

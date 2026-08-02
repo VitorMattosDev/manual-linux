@@ -1,3 +1,514 @@
 # APT e o modelo Debian: repositórios e o Kali rolling {#sec-cap033}
 
-*(em elaboracao)*
+Alguém que chega do Windows costuma fazer a mesma coisa no primeiro dia de Kali: abrir o navegador, procurar o site oficial do `nmap`, baixar um arquivo e tentar executá-lo. É um caminho que às vezes funciona, e que quase sempre é o errado. A pergunta certa não é "onde eu baixo isso", e sim "isso já está no repositório?" — porque num sistema Debian o software não vem de sites, vem de um catálogo assinado que a distribuição mantém, testa e atualiza em bloco.
+
+Esse catálogo é a diferença mais concreta entre administrar um Linux e administrar um sistema onde cada programa se atualiza sozinho, por conta própria, com seu próprio instalador e seu próprio serviço de atualização rodando em segundo plano. Este capítulo trata da infraestrutura que sustenta o catálogo: o que é um repositório, como o APT sabe onde procurar, como ele verifica que o que chegou é autêntico, e o que muda quando a distribuição é *rolling* como o Kali.
+
+## Duas camadas: dpkg embaixo, APT em cima
+
+Antes de qualquer comando, vale fixar a divisão de trabalho. O sistema de pacotes do Debian tem duas camadas, e confundi-las é a origem de metade dos problemas que aparecem depois.
+
+O **`dpkg`** é a camada baixa. Ele sabe desempacotar um arquivo `.deb`, copiar os arquivos para o lugar certo, rodar os scripts de instalação e registrar o que foi instalado. O que ele **não** sabe fazer é ir buscar nada: se o pacote depende de outro que não está presente, o `dpkg` reclama e para. Ele é o operário, não o planejador.
+
+O **APT** (*Advanced Package Tool*) é a camada alta. Ele conhece a lista de tudo que existe nos repositórios configurados, resolve o grafo de dependências, decide qual versão instalar, baixa os arquivos e chama o `dpkg` na ordem correta. É o planejador — e é com ele que o administrador conversa no dia a dia.
+
+::: {#fig-camadas-apt-dpkg}
+```{.tikz}
+%%| filename: camadas-do-sistema-de-pacotes-debian
+%%| alt: Diagrama em camadas mostrando o usuario chamando apt, o apt consultando repositorios remotos e delegando ao dpkg, e o dpkg escrevendo no sistema de arquivos e no banco de dados local
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,minimum height=1.15cm,text width=4.2cm},
+    alta/.style={bx,draw=manualblue,fill=manualblue!12},
+    baixa/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    rem/.style={bx,draw=manualyellow,fill=manualyellow!14,text width=3.6cm},
+    dsk/.style={bx,draw=manualgray,fill=manualgray!10,text width=3.6cm},
+    usr/.style={bx,draw=manualred,fill=manualred!11,text width=3.0cm,minimum height=0.85cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[usr]   (u)  at (0,2.9)    {administrador};
+  \node[alta]  (a)  at (0,1.1)    {\textbf{APT}\\resolve dependências, escolhe versão, baixa};
+  \node[baixa] (d)  at (0,-1.0)   {\textbf{dpkg}\\desempacota, roda scripts, registra};
+  \node[rem]   (r)  at (6.6,1.1)  {repositórios\\\texttt{http.kali.org}};
+  \node[dsk]   (fs) at (6.6,-1.0) {\texttt{/usr}, \texttt{/etc}, \texttt{/var}\\+ \texttt{/var/lib/dpkg}};
+
+  \draw[fl] (u) -- node[lb,right,pos=0.45]{\texttt{apt install nmap}} (a);
+  \draw[fl] (a) -- node[lb,above]{índices e \texttt{.deb}} (r);
+  \draw[fl,manualblue] (a) -- node[lb,right,pos=0.45]{arquivos baixados} (d);
+  \draw[fl] (d) -- node[lb,above]{escreve} (fs);
+
+  \node[nt,text width=13.6cm] at (2.6,-3.2) {O \texttt{dpkg} nunca sai à rede: entregue a ele um \texttt{.deb} cuja dependência falta e ele aborta. O APT nunca escreve arquivo de pacote no sistema: ele baixa e delega. Quando alguém diz ``o \texttt{dpkg -i} deu erro de dependência'', a solução é subir uma camada --- \texttt{apt install -f} --- não insistir na camada de baixo.};
+\end{tikzpicture}
+```
+As duas camadas do sistema de pacotes Debian e o que cada uma faz.
+:::
+
+Na prática, `apt` é o comando do dia a dia, `dpkg` é a ferramenta de inspeção e de emergência. O detalhe de cada um dos dois vem nos próximos capítulos; aqui interessa a infraestrutura que o APT consulta.
+
+## O que é um repositório
+
+Um repositório Debian é, no fundo, um diretório servido por HTTP com uma estrutura previsível. Ele contém:
+
+- os **pacotes** propriamente ditos, arquivos `.deb` organizados em `pool/`;
+- os **índices**, arquivos de texto que listam cada pacote disponível com nome, versão, dependências, tamanho, descrição e o hash do arquivo;
+- os **arquivos de release**, que resumem o repositório inteiro e trazem os hashes dos índices;
+- a **assinatura criptográfica** desses arquivos de release.
+
+Essa cadeia é o que torna o modelo confiável. A assinatura garante o arquivo de release; o release garante os índices pelo hash; os índices garantem cada `.deb` pelo hash. Basta o APT confiar em uma chave GPG para que todo o resto se verifique sozinho.
+
+O índice de um repositório real tem dezenas de milhares de entradas. Cada uma se parece com isto:
+
+```text
+Package: nmap
+Version: 7.95+dfsg-3
+Architecture: amd64
+Depends: libc6 (>= 2.34), libpcap0.8 (>= 1.5.1), lua-lpeg, nmap-common
+Recommends: ndiff
+Filename: pool/main/n/nmap/nmap_7.95+dfsg-3_amd64.deb
+Size: 1727684
+SHA256: 3f2c...
+Description: The Network Mapper
+```
+
+É lendo milhares de blocos como esse que o APT monta o grafo de dependências e responde, sem tocar na rede, à pergunta "o que precisa acontecer para eu ter o `nmap` instalado".
+
+## O `sources.list` e o formato deb822
+
+O APT descobre quais repositórios consultar lendo dois lugares:
+
+```bash
+cat /etc/apt/sources.list
+ls /etc/apt/sources.list.d/
+```
+
+No Kali atual, o arquivo principal costuma ter uma única linha útil:
+
+```text
+deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+```
+
+Cinco campos, cada um com um papel:
+
+::: {#fig-anatomia-sources-list}
+```{.tikz}
+%%| filename: anatomia-de-uma-linha-do-sources-list
+%%| alt: Decomposicao de uma linha do sources list em tipo, URI do mirror, suite e componentes, com a explicacao de cada campo abaixo
+\begin{tikzpicture}[
+    campo/.style={rounded corners=2pt,thick,align=center,font=\scriptsize\ttfamily,inner sep=4pt,minimum height=0.8cm},
+    t1/.style={campo,draw=manualred,fill=manualred!12},
+    t2/.style={campo,draw=manualblue,fill=manualblue!12},
+    t3/.style={campo,draw=manualgreen,fill=manualgreen!13},
+    t4/.style={campo,draw=manualyellow,fill=manualyellow!15},
+    ex/.style={font=\scriptsize,align=left,text width=4.4cm},
+    fl/.style={manualgray,thin,-{Stealth[length=3.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[t1] (a) at (0,0)     {deb};
+  \node[t2] (b) at (2.8,0)   {http://http.kali.org/kali};
+  \node[t3] (c) at (6.6,0)   {kali-rolling};
+  \node[t4] (d) at (10.6,0)  {main contrib non-free};
+
+  \node[ex,manualred,anchor=north west]    at (-1.2,-1.4) {\textbf{tipo}\\\texttt{deb} = binários prontos\\\texttt{deb-src} = código-fonte};
+  \node[ex,manualblue,anchor=north west]   at (3.6,-1.4)  {\textbf{URI}\\endereço do espelho; \texttt{http.kali.org} redireciona para o mirror próximo};
+  \node[ex,manualgreen,anchor=north west]  at (8.6,-1.4)  {\textbf{suíte}\\a linha de distribuição: \texttt{kali-rolling}, \texttt{kali-last-snapshot}};
+  \node[ex,manualyellow,anchor=north west] at (3.6,-4.2)  {\textbf{componentes}\\seções por critério de licença, consultadas na ordem em que aparecem};
+
+  \draw[fl,manualred]    (a.south) -- (0.2,-1.3);
+  \draw[fl,manualblue]   (b.south) -- (4.4,-1.3);
+  \draw[fl,manualgreen]  (c.south) -- (9.4,-1.3);
+  \draw[fl,manualyellow] (d.south) to[bend left=14] (7.6,-4.1);
+
+  \node[nt,text width=13.4cm] at (4.8,-6.3) {A URL final que o APT monta é a concatenação dos campos: \texttt{URI/dists/SUÍTE/COMPONENTE/binary-amd64/Packages.gz}. Errar um campo produz um 404 no \texttt{apt update} --- e a mensagem de erro mostra exatamente a URL montada, o que torna o diagnóstico direto.};
+\end{tikzpicture}
+```
+Os campos de uma linha do `sources.list` e como o APT os combina numa URL.
+:::
+
+Desde o Debian 12 existe um segundo formato, mais verboso e bem mais legível, chamado **deb822**. Arquivos com extensão `.sources` em `/etc/apt/sources.list.d/` usam blocos de chave-valor:
+
+```text
+# /etc/apt/sources.list.d/kali.sources
+Types: deb deb-src
+URIs: http://http.kali.org/kali
+Suites: kali-rolling
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/kali-archive-keyring.gpg
+```
+
+A vantagem prática do deb822 não é estética: é o campo `Signed-By`, que amarra aquele repositório a uma chave específica. No formato antigo, qualquer chave do chaveiro global valida qualquer repositório — o que significa que adicionar um repositório de terceiros dá àquela chave poder de assinar pacotes que substituam os do sistema. Voltaremos a isso.
+
+Os dois formatos convivem. Regra útil: **um arquivo por repositório em `sources.list.d/`**, com nome que diga de onde vem. Amontoar tudo no `sources.list` funciona até o dia em que é preciso desativar uma origem só.
+
+## Componentes: `main`, `contrib`, `non-free`
+
+Os componentes dividem o repositório por critério de licença, não por tema:
+
+| Componente | Conteúdo |
+|---|---|
+| `main` | software livre segundo a DFSG, sem depender de nada fora de `main` |
+| `contrib` | software livre que **depende** de algo não livre para funcionar |
+| `non-free` | licença restritiva: redistribuição limitada, sem fonte, ou uso comercial vedado |
+| `non-free-firmware` | *firmware* binário de dispositivos, separado do `non-free` desde o Debian 12 |
+
+: Componentes de um repositório Debian e o critério de cada um {#tbl-componentes}
+
+A separação do `non-free-firmware` foi uma mudança prática importante: antes, quem precisava do *firmware* da placa Wi-Fi era obrigado a habilitar todo o `non-free`. O Kali habilita os quatro componentes por padrão, porque boa parte do hardware de rede usado em testes depende de *firmware* proprietário.
+
+## Suítes e o modelo rolling
+
+A **suíte** é a linha de distribuição. No Debian tradicional, o software segue um fluxo de `unstable` (sid) para `testing` e daí para `stable`, congelada e lançada com nome próprio — `bookworm`, `trixie`.
+
+Um pacote entra em `unstable`, e se ficar alguns dias sem bug crítico, migra para `testing`. Periodicamente, `testing` é congelada, estabilizada e vira a nova `stable`. Quem roda `stable` recebe apenas correções de segurança durante anos: nada muda de versão, nada quebra, nada surpreende.
+
+O **Kali é rolling**, e deriva de `testing`. Não existe "versão do Kali" no sentido de um alvo fixo: o `kali-rolling` recebe pacotes continuamente, e as imagens numeradas (`2025.3`, por exemplo) são apenas *snapshots* de instalação — fotografias de um momento do repositório. Uma máquina instalada a partir da imagem `2025.1` e atualizada até hoje é idêntica a uma instalada da `2025.3` e atualizada.
+
+::: {#fig-modelos-release}
+```{.tikz}
+%%| filename: modelo-de-lancamento-estavel-versus-rolling
+%%| alt: Comparacao entre o modelo estavel do Debian com saltos de versao a cada dois anos e o modelo rolling do Kali com atualizacoes continuas
+\begin{tikzpicture}[
+    lin/.style={manualgray,thick},
+    marco/.style={circle,draw,thick,inner sep=1.6pt},
+    est/.style={marco,draw=manualblue,fill=manualblue!25},
+    rol/.style={marco,draw=manualgreen,fill=manualgreen!30,inner sep=1.0pt},
+    lb/.style={font=\scriptsize,align=center},
+    tl/.style={font=\scriptsize\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tl,manualblue,anchor=east] at (-0.4,1.6) {Debian\\stable};
+  \draw[lin,-{Stealth[length=5pt]}] (0,1.6) -- (12,1.6);
+  \foreach \xp/\tit in {1.2/bookworm, 5.2/trixie, 9.2/forky}{
+    \node[est] at (\xp,1.6) {};
+    \node[lb,manualblue,above=3pt] at (\xp,1.6) {\tit};
+  }
+  \node[lb,manualgray,below=4pt] at (3.2,1.6) {só correções de segurança};
+  \node[lb,manualgray,below=4pt] at (7.2,1.6) {só correções de segurança};
+
+  \node[tl,manualgreen,anchor=east] at (-0.4,-0.9) {Kali\\rolling};
+  \draw[lin,-{Stealth[length=5pt]}] (0,-0.9) -- (12,-0.9);
+  \foreach \xp in {0.5,1.1,1.7,2.3,2.9,3.5,4.1,4.7,5.3,5.9,6.5,7.1,7.7,8.3,8.9,9.5,10.1,10.7,11.3}{
+    \node[rol] at (\xp,-0.9) {};
+  }
+  \node[lb,manualgray,above=4pt] at (6.0,-0.9) {versões novas chegam continuamente};
+  \foreach \xp/\tit in {2.3/2025.1, 6.5/2025.2, 10.1/2025.3}{
+    \draw[manualgreen,thin,dashed] (\xp,-1.05) -- (\xp,-1.75);
+    \node[lb,manualgreen] at (\xp,-2.05) {imagem\\\tit};
+  }
+
+  \node[nt,text width=13.6cm] at (5.6,-3.6) {As imagens numeradas do Kali são \emph{snapshots} de instalação, não versões do sistema. Instalar a \texttt{2025.1} e rodar \texttt{apt full-upgrade} hoje produz o mesmo sistema que instalar a \texttt{2025.3}. A contrapartida do rolling é que atualizar é uma operação com risco real, não um não-evento: pacotes mudam de versão principal, opções de linha de comando somem, arquivos de configuração são substituídos.};
+\end{tikzpicture}
+```
+Modelo de lançamento estável comparado ao modelo rolling.
+:::
+
+Além do `kali-rolling`, o projeto publica outras suítes:
+
+- **`kali-last-snapshot`**: uma fotografia congelada do repositório no momento da última imagem. Útil para quem precisa de um ambiente reproduzível — uma turma de treinamento, um laboratório que não pode mudar no meio da semana.
+- **`kali-experimental`**: pacotes em teste, não habilitado por padrão.
+- **`kali-bleeding-edge`**: versões construídas direto do repositório do desenvolvedor, sem passar pelo ciclo normal. Quebra com frequência, e é para isso que existe.
+
+## Como o APT confia: assinaturas e chaveiros
+
+O modelo de confiança do APT é criptográfico, e é ele que impede que um espelho comprometido, ou alguém no meio do caminho, entregue um pacote adulterado.
+
+Todo repositório publica um arquivo `InRelease` — o resumo do repositório com os hashes dos índices, assinado com GPG no próprio arquivo (assinatura *inline*). O APT baixa esse arquivo, verifica a assinatura contra as chaves em que confia e, só então, aceita os hashes que ele contém como verdade.
+
+```bash
+ls /etc/apt/keyrings/ /usr/share/keyrings/
+gpg --show-keys /usr/share/keyrings/kali-archive-keyring.gpg
+```
+
+::: {#fig-cadeia-confianca}
+```{.tikz}
+%%| filename: cadeia-de-confianca-do-apt
+%%| alt: Cadeia de confianca do apt indo da chave GPG local ao arquivo InRelease assinado, deste aos indices Packages por hash, e destes a cada arquivo deb por hash
+\begin{tikzpicture}[
+    nd/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=2.9cm,minimum height=1.45cm},
+    kk/.style={nd,draw=manualred,fill=manualred!12},
+    rr/.style={nd,draw=manualblue,fill=manualblue!12},
+    ii/.style={nd,draw=manualgreen,fill=manualgreen!13},
+    pp/.style={nd,draw=manualyellow,fill=manualyellow!15},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[kk] (k) at (0,0)    {\textbf{chave GPG}\\\texttt{kali-archive-}\\\texttt{keyring}};
+  \node[rr] (r) at (4.6,0)  {\textbf{InRelease}\\assinado; traz os hashes dos índices};
+  \node[ii] (i) at (9.2,0)  {\textbf{Packages.gz}\\índice; traz o hash de cada \texttt{.deb}};
+  \node[pp] (p) at (13.8,0) {\textbf{pacote.deb}\\o arquivo que será instalado};
+
+  \draw[fl,manualred]   (k) -- node[lb,yshift=26pt]{valida a assinatura} (r);
+  \draw[fl,manualblue]  (r) -- node[lb,yshift=26pt]{valida por hash} (i);
+  \draw[fl,manualgreen] (i) -- node[lb,yshift=26pt]{valida por hash} (p);
+
+  \node[nt,text width=14.0cm] at (6.9,-2.6) {Um único elo confiável --- a chave instalada localmente --- estende confiança a milhares de arquivos, sem que o APT precise verificar assinatura pacote a pacote. É também por isso que o aviso \texttt{NO\_PUBKEY} nunca deve ser contornado com \texttt{[trusted=yes]}: essa opção não conserta a cadeia, ela desliga a verificação inteira e aceita qualquer coisa que o servidor entregar.};
+\end{tikzpicture}
+```
+A cadeia de confiança que vai de uma chave GPG local até o arquivo instalado.
+:::
+
+O comando `apt-key` está **obsoleto** e foi removido. Ele adicionava chaves a um chaveiro global, e chave no chaveiro global vale para todos os repositórios — o problema mencionado antes. A forma correta hoje é depositar a chave em `/usr/share/keyrings/` (quando vem de um pacote) ou `/etc/apt/keyrings/` (quando é o administrador quem adiciona) e apontá-la com `signed-by`:
+
+```text
+deb [signed-by=/etc/apt/keyrings/exemplo.gpg] https://repo.exemplo.org/deb stable main
+```
+
+Três erros comuns nessa área, e o que cada um significa:
+
+| Mensagem | Causa |
+|---|---|
+| `NO_PUBKEY <ID>` | a chave que assinou o repositório não está instalada |
+| `KEYEXPIRED` / `EXPKEYSIG` | a chave existe mas venceu — atualizar o pacote de chaveiro |
+| `Release file ... is not valid yet` | relógio do sistema atrasado; a assinatura ainda não é válida |
+
+: Erros de verificação no `apt update` e sua causa {#tbl-erros-gpg}
+
+O terceiro é traiçoeiro em máquina virtual que ficou suspensa por semanas, ou em live USB sem relógio confiável: o `apt update` falha, a mensagem fala em assinatura, e o problema é a hora do sistema. `timedatectl` resolve.
+
+## O que `apt update` realmente faz
+
+O comando mais rodado do sistema é também o mais mal compreendido. `apt update` **não instala nem atualiza nada**. Ele apenas sincroniza os índices locais com os do repositório:
+
+1. baixa o `InRelease` de cada suíte configurada;
+2. verifica a assinatura contra os chaveiros;
+3. compara os hashes dos índices com o que já existe localmente;
+4. baixa apenas o que mudou, usando *diffs* quando disponíveis — o que explica as linhas `Get:` de poucos KB;
+5. grava tudo em `/var/lib/apt/lists/`.
+
+Ao fim, ele imprime quantos pacotes podem ser atualizados. Essa contagem é o resultado de comparar os índices recém-baixados com o banco de dados do `dpkg`; nenhuma alteração foi feita no sistema.
+
+```bash
+sudo apt update
+apt list --upgradable
+```
+
+Sem `apt update`, o APT trabalha com um catálogo velho: pede uma versão que já não está no espelho e recebe 404. É essa a causa do clássico erro `404 Not Found` ao instalar um pacote num Kali que passou um mês desligado — não é o pacote que sumiu, é o índice local que envelheceu. Num rolling, o índice tem validade curta, medida em dias.
+
+## Onde o APT guarda as coisas
+
+| Caminho | Conteúdo |
+|---|---|
+| `/etc/apt/sources.list` e `sources.list.d/` | origens configuradas |
+| `/etc/apt/preferences.d/` | regras de prioridade (*pinning*) |
+| `/etc/apt/apt.conf.d/` | opções de configuração, em fragmentos numerados |
+| `/etc/apt/keyrings/` | chaves adicionadas pelo administrador |
+| `/usr/share/keyrings/` | chaves fornecidas por pacotes |
+| `/var/lib/apt/lists/` | índices baixados — pode ocupar centenas de MB |
+| `/var/cache/apt/archives/` | arquivos `.deb` já baixados |
+| `/var/lib/dpkg/status` | banco de dados do que está instalado |
+| `/var/log/apt/history.log` | histórico de operações, com data e comando |
+
+: Onde o APT guarda configuração, cache e estado {#tbl-caminhos-apt}
+
+O `/var/cache/apt/archives/` cresce sem limite e é o primeiro lugar a olhar num disco cheio de máquina Kali com meses de uso:
+
+```bash
+du -sh /var/cache/apt/archives /var/lib/apt/lists
+sudo apt clean          # apaga todos os .deb baixados
+sudo apt autoclean      # apaga so os que nao estao mais nos indices
+```
+
+Os dois são seguros: o `.deb` já foi instalado, o arquivo em cache é apenas uma cópia. A única perda é ter de baixar de novo em caso de reinstalação.
+
+A configuração do APT vive em fragmentos:
+
+```bash
+apt-config dump | head -30                    # configuracao efetiva
+cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null
+```
+
+Um fragmento útil, que evita a surpresa do cache gigante:
+
+```text
+# /etc/apt/apt.conf.d/99-limpeza
+APT::Periodic::MaxAge "14";
+Binary::apt::APT::Keep-Downloaded-Packages "false";
+```
+
+## Prioridades: como o APT escolhe uma versão
+
+Quando o mesmo pacote existe em mais de uma origem, o APT decide por **prioridade**. O comando que revela a decisão é o `apt policy`:
+
+```bash
+apt policy                # prioridade de cada origem
+apt policy nmap           # versoes disponiveis do pacote e de onde vem
+```
+
+```text
+nmap:
+  Instalado: 7.94+dfsg-3
+  Candidato: 7.95+dfsg-3
+  Tabela de versão:
+     7.95+dfsg-3 500
+        500 http://http.kali.org/kali kali-rolling/main amd64 Packages
+ *** 7.94+dfsg-3 100
+        100 /var/lib/dpkg/status
+```
+
+Os números são as prioridades. Os padrões que importam:
+
+- **100** — versão já instalada;
+- **500** — versão disponível numa origem normal;
+- **990** — origem correspondente ao *release* alvo configurado;
+- **abaixo de 0** — nunca instalar.
+
+O candidato é a versão de maior prioridade. Como 500 supera 100, o comportamento normal é atualizar. Alterar essas prioridades — *pinning* — é o mecanismo para fixar um pacote numa versão ou preferir uma origem sobre outra, e é assunto do @sec-cap036, onde ele resolve um problema concreto do Kali.
+
+::: {.callout-warning}
+## Misturar repositórios de distribuições diferentes quebra o sistema
+
+O erro mais destrutivo desta área inteira é adicionar ao Kali um repositório do Ubuntu, um PPA, ou o `sources.list` do Debian stable, para instalar um pacote que "não tem no Kali". Parece funcionar por alguns minutos e destrói o sistema depois.
+
+A razão é a `libc6`. Todo binário do sistema depende dela, e cada distribuição compila seu conjunto de pacotes contra uma versão específica. Ao puxar um pacote de outra origem, o APT arrasta a `libc6` daquela origem junto — e no meio da substituição, dezenas de programas ficam ligados a uma biblioteca incompatível. O sintoma clássico é o sistema que ainda está de pé mas onde nada novo executa, incluindo o próprio `apt`, o que torna o desfazer impossível pelos meios normais.
+
+O Kali é Debian testing. **A única origem que ele aceita é a do Kali.** Software que não está no repositório se instala por outro caminho: compilação (@sec-cap037), `pipx`, contêiner ou AppImage (@sec-cap038).
+:::
+
+## 🐉 No Kali
+
+- **`kali-rolling` é a única suíte que deve estar no `sources.list`.** A linha correta é `deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware`. Se o arquivo tiver linhas de Debian, Ubuntu, PPAs ou repositórios de terceiros herdados de algum tutorial, o sistema está numa condição instável mesmo que ainda pareça funcionar. A documentação oficial do Kali é explícita a respeito, e a maior parte dos pedidos de socorro no fórum começa com um `sources.list` contaminado.
+- **`http.kali.org` é um redirecionador, não um servidor.** Ele encaminha para o espelho geograficamente mais próximo, e por isso a velocidade varia. Quando um `apt update` fica lento ou entrega hashes inconsistentes, quase sempre é um espelho dessincronizado no meio de uma sincronização; trocar temporariamente por `http://kali.download/kali` costuma resolver, porque esse aponta para o CDN em vez de um espelho comunitário.
+- **A chave `kali-archive-keyring` expira, e isso já parou instalações inteiras.** O Kali rotaciona a chave do repositório de tempos em tempos, e uma máquina que passou muitos meses sem atualizar acorda com `EXPKEYSIG` em todo `apt update`. A correção é baixar o pacote de chaveiro atual pelo HTTPS oficial e instalá-lo com `dpkg -i` — nunca contornar com `[trusted=yes]`, que desliga a verificação de tudo, permanentemente e em silêncio.
+- **`kali-last-snapshot` existe para laboratórios que precisam ser reproduzíveis.** Numa turma de treinamento ou num ambiente de certificação, o rolling é um problema: dois alunos que atualizam em dias diferentes têm ferramentas em versões diferentes. Trocar a suíte para `kali-last-snapshot` congela o ambiente na foto da última imagem, e a volta para `kali-rolling` é a edição de uma linha.
+- **Nunca conte com `apt` numa sessão live sem persistência.** No live USB, `/var/lib/apt/lists/` e `/var/cache/apt/archives/` ficam em `tmpfs` — consomem RAM de verdade (@sec-cap032) e desaparecem no desligamento. Um `apt update && apt full-upgrade` numa sessão live baixa centenas de MB para a memória e pode acionar o OOM killer antes de terminar. Live é para usar o que já está na imagem.
+- **O que o APT faz é auditável, e isso importa em teste autorizado.** `/var/log/apt/history.log` registra data, comando e lista completa de pacotes de cada operação. Num relatório de teste de intrusão, é a prova documental do que foi instalado na máquina de trabalho e quando — e, do lado defensivo, é onde se descobre que alguém instalou um pacote fora da janela de manutenção.
+
+> **Nota sobre a família RHEL.** O modelo é o mesmo, os nomes mudam. `dnf` ocupa o lugar do `apt`, `rpm` o do `dpkg`, e os repositórios são declarados em arquivos `.repo` dentro de `/etc/yum.repos.d/`, num formato de blocos parecido com o deb822. A assinatura também é GPG, com as chaves em `/etc/pki/rpm-gpg/`. Duas diferenças conceituais valem nota: no RPM a distinção entre dependência obrigatória e recomendada não tem o mesmo peso que no Debian, e o `dnf` mantém um histórico transacional completo — `dnf history undo` desfaz uma operação inteira, algo que o APT não oferece nativamente.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Nenhum passo altera o sistema de forma irreversível; o passo 9 acrescenta uma origem quebrada de propósito e a remove em seguida.
+
+1. **Inspecione as origens configuradas.**
+
+   ```bash
+   cat /etc/apt/sources.list
+   ls -la /etc/apt/sources.list.d/
+   grep -rh '^deb' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+   ```
+
+   Esperado: uma linha apontando para `kali-rolling` com os quatro componentes. Se houver qualquer origem que não seja do Kali, anote — é exatamente o cenário do aviso deste capítulo.
+
+2. **Faça uma cópia de segurança antes de tocar em qualquer coisa.**
+
+   ```bash
+   sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+   ls -l /etc/apt/sources.list*
+   ```
+
+   Esperado: dois arquivos. Essa cópia é a rede de segurança dos passos seguintes.
+
+3. **Sincronize os índices e observe o que acontece.**
+
+   ```bash
+   sudo apt update
+   ```
+
+   Esperado: linhas `Get:` ou `Hit:` para o `InRelease` e para os índices de cada componente, seguidas de um total baixado e da contagem de pacotes atualizáveis. Note que nada foi instalado.
+
+4. **Veja os índices que ficaram em disco.**
+
+   ```bash
+   ls -lh /var/lib/apt/lists/ | head
+   du -sh /var/lib/apt/lists/
+   ls /var/lib/apt/lists/ | grep -i inrelease
+   ```
+
+   Esperado: arquivos com nomes que codificam o espelho, a suíte e o componente, somando dezenas ou centenas de MB.
+
+5. **Leia uma entrada de índice crua.**
+
+   ```bash
+   grep -A 12 '^Package: nmap$' /var/lib/apt/lists/*kali-rolling*Packages | head -20
+   ```
+
+   Esperado: o bloco com `Version`, `Depends`, `Filename`, `Size` e `SHA256` — exatamente os dados que o APT usa para planejar. É o catálogo, em texto puro.
+
+6. **Confira a cadeia de confiança.**
+
+   ```bash
+   ls -l /usr/share/keyrings/kali-archive-keyring.gpg
+   gpg --show-keys /usr/share/keyrings/kali-archive-keyring.gpg
+   dpkg -l kali-archive-keyring
+   ```
+
+   Esperado: a chave do arquivo do Kali, com data de validade. Compare essa data com `date` — se estiver próxima, o `apt update` vai começar a reclamar em breve.
+
+7. **Examine as prioridades das origens.**
+
+   ```bash
+   apt policy
+   apt policy nmap
+   apt policy bash coreutils
+   ```
+
+   Esperado: `500` para o `kali-rolling` e `100` para o que já está instalado. Em `apt policy nmap`, os três asteriscos marcam a versão instalada.
+
+8. **Meça o cache e limpe-o.**
+
+   ```bash
+   du -sh /var/cache/apt/archives/
+   ls /var/cache/apt/archives/*.deb 2>/dev/null | wc -l
+   sudo apt clean
+   du -sh /var/cache/apt/archives/
+   ```
+
+   Esperado: o diretório encolhe para poucos KB. Nenhum pacote instalado é afetado — só as cópias baixadas.
+
+9. **Provoque um erro de origem, de propósito, e leia a mensagem.**
+
+   ```bash
+   echo 'deb http://http.kali.org/kali kali-inexistente main' | \
+       sudo tee /etc/apt/sources.list.d/teste-erro.list
+   sudo apt update 2>&1 | tail -12
+   ```
+
+   Esperado: um erro `404 Not Found` mostrando a URL completa que o APT tentou buscar — a concatenação de URI, suíte e componente descrita na @fig-anatomia-sources-list. É assim que se diagnostica uma origem errada: lendo a URL da mensagem.
+
+   ```bash
+   sudo rm /etc/apt/sources.list.d/teste-erro.list
+   sudo apt update 2>&1 | tail -3
+   ```
+
+   Esperado: o erro desaparece. Sempre remova a origem quebrada; deixá-la faz todo `apt update` futuro falhar parcialmente.
+
+10. **Descubra em qual formato sua instalação declara o repositório.**
+
+    ```bash
+    grep -rl 'kali-rolling' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+    ls /etc/apt/sources.list.d/*.sources 2>/dev/null || echo "formato classico"
+    ```
+
+    Esperado: imagens recentes já usam `.sources` no formato deb822; imagens antigas atualizadas mantêm o `sources.list` clássico. Os dois funcionam, e o APT lê os dois ao mesmo tempo.
+
+11. **Leia o histórico de operações.**
+
+    ```bash
+    sudo tail -40 /var/log/apt/history.log
+    zgrep -h 'Commandline' /var/log/apt/history.log* 2>/dev/null | tail -10
+    ```
+
+    Esperado: cada bloco com `Start-Date`, `Commandline`, a lista de pacotes e `End-Date`. Este é o registro auditável do que foi feito no sistema.
+
+12. **Confirme que o sistema está íntegro.**
+
+    ```bash
+    sudo apt update
+    apt list --upgradable | head
+    diff /etc/apt/sources.list /etc/apt/sources.list.bak && echo "sources.list intacto"
+    ```
+
+    Esperado: `apt update` limpo, sem erros de GPG nem 404, e o `sources.list` idêntico ao backup. Se estiver tudo certo, `sudo rm /etc/apt/sources.list.bak`.
+
+## Resumo
+
+- **O sistema de pacotes tem duas camadas**: o `dpkg` desempacota e registra, mas nunca vai à rede; o APT resolve dependências, baixa e delega. Erro de dependência num `dpkg -i` se resolve subindo uma camada, não insistindo na de baixo.
+- **Um repositório é um diretório HTTP com estrutura previsível**: pacotes em `pool/`, índices que os descrevem, e arquivos de release assinados que garantem os índices por hash.
+- **Uma linha do `sources.list` tem cinco campos** — tipo, URI, suíte e componentes — que o APT concatena numa URL. O formato deb822 (`.sources`) diz o mesmo de forma mais legível e permite amarrar cada origem a uma chave via `Signed-By`.
+- **Os componentes dividem por licença, não por tema**: `main` é livre, `contrib` é livre mas depende de não livre, `non-free` é restritivo, e `non-free-firmware` foi separado para que ninguém precise habilitar tudo só para a placa Wi-Fi funcionar.
+- **O Kali é rolling e deriva do Debian testing.** As imagens numeradas são *snapshots* de instalação, não versões do sistema; `kali-last-snapshot` existe para quem precisa de um ambiente congelado e reproduzível.
+- **A confiança do APT é uma cadeia**: uma chave GPG local valida o `InRelease`, que valida os índices por hash, que validam cada `.deb` por hash. `[trusted=yes]` não conserta um elo quebrado — desliga a cadeia inteira.
+- **`apt update` não instala nada**: sincroniza índices e verifica assinaturas. O `404` ao instalar num sistema parado há semanas é índice velho, não pacote removido.
+- **Misturar repositórios de distribuições diferentes destrói o sistema** pela substituição da `libc6`. No Kali, a única origem legítima é a do Kali; o resto se resolve por compilação, `pipx`, contêiner ou AppImage.
+- **`apt policy` mostra a decisão do APT**: as prioridades numéricas (100 para instalado, 500 para origem normal) explicam por que uma versão foi escolhida em vez de outra.

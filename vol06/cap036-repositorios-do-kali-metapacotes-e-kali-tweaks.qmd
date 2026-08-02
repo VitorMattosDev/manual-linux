@@ -1,3 +1,466 @@
 # Repositórios do Kali, metapacotes e kali-tweaks {#sec-cap036}
 
-*(em elaboracao)*
+Instalar o Kali numa VM com 40 GB de disco parece confortável até a hora em que alguém digita `sudo apt install kali-linux-everything` porque "quero todas as ferramentas". O download passa de 60 GB, o disco enche na metade, o `dpkg` para no meio de uma configuração e o sistema fica num estado em que nem o `apt` roda. Do outro lado do espectro está quem instalou a imagem *netinstall*, descobriu que o Kali veio sem quase nenhuma ferramenta e começou a instalar uma a uma, sem perceber que existe um pacote que faz exatamente aquilo.
+
+Os dois problemas têm a mesma origem: não conhecer os **metapacotes**, que são o mecanismo pelo qual o Kali organiza mais de seiscentas ferramentas em conjuntos com propósito definido. Este capítulo trata deles, das suítes do repositório do Kali, do `kali-tweaks` como interface para o que antes era edição manual de arquivo, e do *pinning*, que é como se instala um pacote de uma suíte sem contaminar o sistema inteiro.
+
+## O repositório do Kali, na prática
+
+A configuração correta é uma linha, e vale repetir porque metade dos problemas do Kali começa aqui:
+
+```bash
+cat /etc/apt/sources.list
+```
+
+```text
+deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+```
+
+Três endereços atendem ao mesmo repositório, com comportamentos diferentes:
+
+| Endereço | Comportamento |
+|---|---|
+| `http.kali.org` | redirecionador; escolhe um espelho comunitário próximo |
+| `kali.download` | CDN oficial; mais consistente, às vezes mais lento |
+| espelho direto | um servidor específico da lista oficial de espelhos |
+
+: Formas de apontar para o repositório do Kali {#tbl-mirrors-kali}
+
+Quando um `apt update` falha com hash inconsistente ou fica muito lento, a causa mais provável é um espelho no meio de uma sincronização. Trocar para `kali.download` temporariamente resolve — e vale voltar depois, porque o redirecionador costuma ser mais rápido.
+
+A verificação do estado da configuração cabe em três comandos:
+
+```bash
+grep -rh '^deb' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+apt policy | head -12
+dpkg -l kali-archive-keyring
+```
+
+Qualquer origem que não seja do Kali nesse resultado é um problema pendente, pelas razões do @sec-cap033.
+
+## As suítes do Kali
+
+O repositório publica várias linhas ao mesmo tempo, e um pacote percorre um caminho entre elas.
+
+::: {#fig-suites-kali}
+```{.tikz}
+%%| filename: suites-do-repositorio-do-kali
+%%| alt: Fluxo de um pacote no repositorio do Kali passando por bleeding-edge e experimental ate kali-rolling, e a suite kali-last-snapshot como copia congelada
+\begin{tikzpicture}[
+    su/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.3cm,minimum height=1.5cm},
+    be/.style={su,draw=manualred,fill=manualred!11},
+    ex/.style={su,draw=manualyellow,fill=manualyellow!14},
+    ro/.style={su,draw=manualgreen,fill=manualgreen!13},
+    sn/.style={su,draw=manualblue,fill=manualblue!11},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[be] (b) at (0,0)     {\texttt{kali-bleeding-edge}\\direto do repositório do desenvolvedor};
+  \node[ex] (e) at (4.6,0)   {\texttt{kali-experimental}\\em teste pela equipe};
+  \node[ro] (r) at (9.2,0)   {\texttt{kali-rolling}\\a suíte padrão\\(a única habilitada)};
+  \node[sn] (s) at (9.2,-2.9){\texttt{kali-last-snapshot}\\foto congelada da última imagem};
+
+  \draw[fl] (b) -- node[lb,yshift=28pt]{estabiliza} (e);
+  \draw[fl] (e) -- node[lb,yshift=28pt]{aprovado} (r);
+  \draw[fl,manualblue] (r) -- node[lb,right,pos=0.5]{cópia periódica} (s);
+
+  \node[nt,text width=13.6cm] at (4.8,-4.6) {Só o \texttt{kali-rolling} vem habilitado, e para a maioria absoluta dos casos deve continuar assim. As outras duas suítes de cima existem para quem precisa de uma versão que ainda não chegou --- e habilitá-las por inteiro no \texttt{sources.list} é o erro: o APT passaria a preferir aquelas versões para \emph{tudo}. A forma correta é habilitar a suíte com prioridade negativa e puxar um pacote específico, o que o \emph{pinning} resolve.};
+\end{tikzpicture}
+```
+As suítes do repositório do Kali e o caminho de um pacote entre elas.
+:::
+
+O `kali-last-snapshot` é a suíte subestimada. Ela congela o ambiente na foto da última imagem lançada, e resolve um problema real: num treinamento, num laboratório de certificação ou numa avaliação que dura semanas, o rolling faz cada máquina divergir das outras conforme o dia em que foi atualizada. Trocar a suíte é a edição de uma palavra:
+
+```bash
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+sudo sed -i 's/kali-rolling/kali-last-snapshot/' /etc/apt/sources.list
+sudo apt update
+```
+
+Voltar é a operação inversa, com um `full-upgrade` em seguida para reconvergir.
+
+## Metapacotes: pacotes que não contêm nada
+
+Um **metapacote** é um pacote sem arquivos. Todo o seu conteúdo está no campo `Depends`: instalá-lo instala a lista inteira.
+
+```bash
+apt show kali-linux-default | head -20
+dpkg -L kali-linux-default | head
+apt depends kali-linux-default | head -20
+```
+
+O `dpkg -L` de um metapacote mostra apenas o diretório de documentação — não há binários, não há bibliotecas. É uma lista de compras empacotada.
+
+O Kali organiza os seus em duas famílias. A primeira é a dos **conjuntos por tamanho**, cumulativos:
+
+::: {#fig-metapacotes-kali}
+```{.tikz}
+%%| filename: hierarquia-dos-metapacotes-do-kali
+%%| alt: Hierarquia cumulativa dos metapacotes do Kali do core ao everything, com o tamanho aproximado e o publico de cada nivel
+\begin{tikzpicture}[
+    nv/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=11.6cm,minimum height=1.05cm},
+    n1/.style={nv,draw=manualgray,fill=manualgray!8},
+    n2/.style={nv,draw=manualblue,fill=manualblue!10},
+    n3/.style={nv,draw=manualgreen,fill=manualgreen!12},
+    n4/.style={nv,draw=manualyellow,fill=manualyellow!14},
+    n5/.style={nv,draw=manualred,fill=manualred!11},
+    tam/.style={font=\scriptsize\ttfamily,manualgray,align=right,text width=1.5cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[n1] (a) at (0,3.4)  {\texttt{kali-linux-core} --- o mínimo absoluto: sistema base do Kali, sem ferramentas};
+  \node[n2] (b) at (0,2.1)  {\texttt{kali-linux-headless} --- ferramentas de linha de comando, sem interface gráfica};
+  \node[n3] (c) at (0,0.8)  {\texttt{kali-linux-default} --- o conjunto da imagem padrão; o que a maioria quer};
+  \node[n4] (d) at (0,-0.5) {\texttt{kali-linux-large} --- default mais ferramentas menos comuns};
+  \node[n5] (e) at (0,-1.8) {\texttt{kali-linux-everything} --- literalmente tudo que existe no repositório};
+
+  \node[tam] at (6.9,3.4)  {$\sim$1 GB};
+  \node[tam] at (6.9,2.1)  {$\sim$3 GB};
+  \node[tam] at (6.9,0.8)  {$\sim$12 GB};
+  \node[tam] at (6.9,-0.5) {$\sim$25 GB};
+  \node[tam] at (6.9,-1.8) {$>$100 GB};
+
+  \draw[fl] (-6.35,3.4) -- (-6.35,-1.8);
+  \node[nt,rotate=90] at (-6.7,0.8) {cada nível contém o anterior};
+
+  \node[nt,text width=12.4cm] at (0.1,-3.4) {Cada nível \textbf{contém} o anterior. Os tamanhos são ordens de grandeza, não valores exatos: variam a cada semana num rolling. O \texttt{everything} não é uma opção razoável em máquina de trabalho --- inclui ferramentas conflitantes, versões alternativas da mesma coisa e pacotes que ninguém instalaria de propósito. Para uma VM comum, \texttt{default} é o ponto certo; para servidor ou contêiner, \texttt{headless}.};
+\end{tikzpicture}
+```
+Os metapacotes cumulativos do Kali e a ordem de grandeza de cada um.
+:::
+
+A segunda família é a das **categorias de ferramenta**, que seguem o menu do sistema:
+
+```bash
+apt search --names-only '^kali-tools-'
+apt show kali-tools-web | grep -E '^(Package|Description|Depends)' | head
+```
+
+| Metapacote | Categoria |
+|---|---|
+| `kali-tools-information-gathering` | reconhecimento e coleta |
+| `kali-tools-vulnerability` | análise de vulnerabilidades |
+| `kali-tools-web` | aplicações web |
+| `kali-tools-passwords` | ataques a senhas |
+| `kali-tools-wireless` | redes sem fio |
+| `kali-tools-exploitation` | exploração |
+| `kali-tools-sniffing-spoofing` | captura e falsificação de tráfego |
+| `kali-tools-post-exploitation` | pós-exploração |
+| `kali-tools-forensics` | perícia |
+| `kali-tools-reporting` | documentação e relatório |
+| `kali-tools-top10` | as dez mais usadas |
+
+: Metapacotes por categoria de ferramenta {#tbl-kali-tools}
+
+A combinação prática mais comum é instalar o `kali-linux-headless` e acrescentar só as categorias que interessam ao seu trabalho — quem faz teste de aplicação web não precisa das ferramentas de rádio, e quem faz perícia não precisa das de exploração.
+
+```bash
+apt install -s kali-tools-web | tail -6         # simule sempre antes
+sudo apt install kali-tools-web
+```
+
+::: {.callout-warning}
+## Remover metapacote sem cuidado leva ferramentas junto
+
+Um metapacote é instalado como **manual**, e tudo que ele puxa entra como **automático**. Removê-lo transforma centenas de ferramentas em órfãs, e o `autoremove` seguinte propõe apagar todas — inclusive as que você passou a usar diretamente.
+
+Antes de remover um metapacote, marque como manual o que você quer manter:
+
+```bash
+sudo apt-mark manual nmap wireshark burpsuite sqlmap
+sudo apt remove kali-linux-large
+sudo apt autoremove -s | head -40      # LEIA a lista antes de confirmar
+```
+:::
+
+## `kali-tweaks`
+
+O `kali-tweaks` é um menu de terminal que aplica ajustes que antes exigiam edição manual de arquivos. Não faz nada de mágico — escreve nos mesmos arquivos que você escreveria — mas evita erro de digitação em configuração que é chata de acertar.
+
+```bash
+sudo kali-tweaks
+```
+
+As seções e o que cada uma faz:
+
+- **Metapackages** — instala ou remove os metapacotes descritos acima, mostrando o tamanho antes.
+- **Network Repositories** — habilita `kali-experimental` e `kali-bleeding-edge`, já com a configuração de prioridade correta. É a forma segura de habilitar essas suítes.
+- **Shell & Prompt** — alterna entre bash e zsh, ajusta o prompt e liga ou desliga o modo com duas linhas.
+- **Virtualization** — instala os pacotes de convidado do VMware, VirtualBox, QEMU ou Hyper-V, resolvendo o problema clássico da resolução de tela travada e da área de transferência que não funciona.
+- **Hardening** — restaura o suporte a algoritmos SSH legados, necessário para conectar em equipamentos antigos que o OpenSSH moderno recusa por padrão.
+
+A seção de *Hardening* merece explicação porque o nome é contraintuitivo: ela **reduz** a segurança do cliente SSH de propósito, reabilitando algoritmos obsoletos. Isso existe porque, num teste autorizado, o alvo pode ser um equipamento de dez anos atrás que só fala protocolos que o OpenSSH atual removeu. É a escolha certa naquele contexto e errada em qualquer outro.
+
+O que o `kali-tweaks` faz é reversível pelo próprio menu, e o que ele escreve fica visível:
+
+```bash
+ls -l /etc/apt/preferences.d/ /etc/apt/sources.list.d/
+cat /etc/ssh/ssh_config.d/*.conf 2>/dev/null
+```
+
+## Pinning: instalar de outra suíte sem contaminar o sistema
+
+O *pinning* é o mecanismo de prioridades do @sec-cap033 usado de propósito. O problema que ele resolve: você precisa de uma versão que só existe no `kali-experimental`, mas não quer que o APT passe a preferir aquela suíte para todo o resto.
+
+A solução é habilitar a suíte com prioridade **negativa** — nunca instalada automaticamente — e pedir explicitamente o que se quer.
+
+```bash
+# 1. habilitar a suite
+echo 'deb http://http.kali.org/kali kali-experimental main contrib non-free' | \
+    sudo tee /etc/apt/sources.list.d/kali-experimental.list
+```
+
+```text
+# 2. /etc/apt/preferences.d/kali-experimental
+Package: *
+Pin: release a=kali-experimental
+Pin-Priority: -1
+```
+
+```bash
+# 3. sincronizar e conferir
+sudo apt update
+apt policy                                  # experimental deve mostrar -1
+apt policy alguma-ferramenta                # as duas versoes, lado a lado
+
+# 4. instalar explicitamente daquela suite
+sudo apt install -t kali-experimental alguma-ferramenta
+```
+
+::: {#fig-pinning}
+```{.tikz}
+%%| filename: efeito-do-pinning-nas-prioridades
+%%| alt: Comparacao entre habilitar uma suite sem pinning, quando o apt passa a preferir suas versoes para tudo, e com pinning negativo, quando so o pacote pedido explicitamente vem dela
+\begin{tikzpicture}[
+    bx/.style={rounded corners=4pt,thick,align=left,font=\scriptsize,inner sep=7pt,text width=6.1cm,minimum height=3.3cm},
+    ruim/.style={bx,draw=manualred,fill=manualred!10},
+    bom/.style={bx,draw=manualgreen,fill=manualgreen!12},
+    tt/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[tt,manualred]   at (0,2.25)   {sem \emph{pinning}};
+  \node[tt,manualgreen] at (7.1,2.25) {com \emph{pinning} negativo};
+
+  \node[ruim] at (0,0) {A suíte extra entra com prioridade \textbf{500}, igual à do \texttt{kali-rolling}.\\[3pt]
+    O APT passa a considerar as versões dela para \emph{todos} os pacotes, e o próximo \texttt{full-upgrade} migra boa parte do sistema para versões experimentais.\\[3pt]
+    Resultado: um sistema instável sem que ninguém tenha pedido isso.};
+
+  \node[bom] at (7.1,0) {A suíte entra com prioridade \textbf{-1}: nunca escolhida automaticamente.\\[3pt]
+    Ela existe no catálogo, mas só é usada quando você digita \texttt{-t kali-experimental} para um pacote específico.\\[3pt]
+    Resultado: acesso à versão nova, sem risco para o resto do sistema.};
+
+  \node[nt,text width=13.4cm] at (3.5,-2.9) {O \texttt{kali-tweaks} aplica exatamente esta configuração ao habilitar as suítes extras pelo menu --- razão para preferi-lo à edição manual. Depois de instalar um pacote de suíte experimental, lembre que ele fica atrás: as atualizações dele continuarão vindo daquela suíte apenas se você repetir o \texttt{-t}, e \texttt{apt policy <pacote>} mostra a situação a qualquer momento.};
+\end{tikzpicture}
+```
+Habilitar uma suíte extra com e sem *pinning*.
+:::
+
+A sintaxe do `Pin:` aceita mais formas. As duas mais úteis:
+
+```text
+Package: nmap
+Pin: version 7.94*
+Pin-Priority: 1001
+```
+
+```text
+Package: *
+Pin: origin "repo.exemplo.org"
+Pin-Priority: 100
+```
+
+Prioridade **acima de 1000** é a única que permite ao APT *rebaixar* um pacote para uma versão anterior. É o mecanismo de fixar uma versão que funciona quando a nova quebrou, e é mais forte que o `apt-mark hold` (@sec-cap034), que apenas congela sem especificar a versão.
+
+## Adicionar um repositório de terceiro com segurança
+
+A recomendação do @sec-cap033 continua valendo: no Kali, evite. Mas quando é inevitável — um fornecedor que publica um repositório próprio, por exemplo — existe a forma correta e a forma que quebra o sistema.
+
+```bash
+# 1. baixar a chave por HTTPS e converter para o formato binario
+curl -fsSL https://repo.exemplo.org/chave.asc | \
+    sudo gpg --dearmor -o /etc/apt/keyrings/exemplo.gpg
+sudo chmod 644 /etc/apt/keyrings/exemplo.gpg
+
+# 2. declarar a origem AMARRADA aquela chave
+echo "deb [signed-by=/etc/apt/keyrings/exemplo.gpg] https://repo.exemplo.org/deb stable main" | \
+    sudo tee /etc/apt/sources.list.d/exemplo.list
+```
+
+```text
+# 3. /etc/apt/preferences.d/exemplo — limitar o alcance
+Package: *
+Pin: origin "repo.exemplo.org"
+Pin-Priority: 100
+```
+
+Os três passos, juntos, contêm o dano: a chave vale só para aquele repositório, e a prioridade 100 impede que ele substitua pacotes do sistema — ele só pode fornecer o que não existe em outro lugar.
+
+O que **não** fazer, em nenhuma circunstância: `apt-key add` (obsoleto, chaveiro global), `[trusted=yes]` (desliga a verificação), e adicionar um repositório de outra distribuição.
+
+## Ferramentas de manutenção que valem configurar
+
+```bash
+sudo apt install apt-listchanges needrestart
+```
+
+O **`apt-listchanges`** mostra, antes de aplicar uma atualização, as entradas de changelog que descrevem mudanças relevantes — inclusive avisos de incompatibilidade. Num rolling, é a diferença entre ser avisado de uma quebra e descobri-la sozinho.
+
+O **`needrestart`** verifica, depois da atualização, quais serviços em execução ainda usam bibliotecas antigas e precisam ser reiniciados:
+
+```bash
+sudo needrestart               # modo interativo
+sudo needrestart -b            # saida para script
+```
+
+É a resposta para o caso em que a atualização de segurança do `openssl` foi aplicada mas o serviço continua com a versão vulnerável carregada em memória, porque ninguém o reiniciou.
+
+## 🐉 No Kali
+
+- **`kali-linux-default` é o ponto certo para quase todo mundo.** É o conjunto da imagem oficial, cabe numa VM de 40 GB com folga e cobre o trabalho comum. Subir para `large` faz sentido quando faltar algo específico; `everything` não faz sentido em máquina de trabalho, porque inclui ferramentas conflitantes e versões alternativas da mesma coisa.
+- **Em VM apertada ou contêiner, `kali-linux-headless` mais as categorias que interessam.** Um Kali de teste de aplicação web precisa de `kali-tools-web` e pouco mais; carregar o resto só consome disco e aumenta a superfície de ataque da própria máquina de trabalho.
+- **Use o `kali-tweaks` para habilitar `experimental` e `bleeding-edge`.** Ele aplica o *pinning* correto automaticamente. Habilitar essas suítes à mão, sem prioridade negativa, faz o APT migrar o sistema inteiro para versões experimentais no próximo `full-upgrade` — e é um dos jeitos mais rápidos de quebrar um Kali que estava funcionando.
+- **A seção *Hardening* do `kali-tweaks` reduz a segurança de propósito, e isso é correto no contexto certo.** Ela reabilita algoritmos SSH legados para que você consiga conectar em equipamentos antigos durante um teste autorizado. Numa máquina que também é usada para outras coisas, ligue quando precisar e desligue depois — os mesmos algoritmos que permitem acessar o alvo enfraquecem as suas próprias conexões.
+- **Ferramenta que não está no repositório do Kali tem quatro caminhos legítimos**, nessa ordem de preferência: verificar se existe sob outro nome (`apt search --names-only`), usar `pipx` se for Python (@sec-cap038), rodar em contêiner, ou compilar a partir do fonte (@sec-cap037). Adicionar um repositório de outra distribuição não está na lista.
+- **O `needrestart` importa mais em teste de intrusão do que parece.** Do lado defensivo, é ele que garante que a correção aplicada realmente entrou em vigor; do lado ofensivo, um serviço rodando com biblioteca vulnerável já corrigida em disco é um achado comum em avaliação de servidores, e a recomendação do relatório é justamente essa — reiniciar os serviços após atualizar.
+
+> **Nota sobre a família RHEL.** O conceito de metapacote existe como **grupo**: `dnf group list`, `dnf group install "Development Tools"`. A diferença é que grupos são definidos nos metadados do repositório, não como pacotes reais, o que significa que remover um grupo não deixa órfãos do jeito que remover um metapacote deixa. O equivalente ao *pinning* são as configurações `priority=` e `includepkgs=`/`excludepkgs=` no arquivo `.repo` da origem, e os repositórios extras (EPEL, RPM Fusion) são instalados por pacotes de configuração que já trazem chave e prioridade corretas — o mesmo padrão do `signed-by` recomendado aqui.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Os passos 7 a 9 alteram a configuração do APT e a desfazem em seguida.
+
+1. **Confirme a sanidade das origens.**
+
+   ```bash
+   grep -rh '^deb' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+   apt policy | head -10
+   ls /etc/apt/preferences.d/
+   ```
+
+   Esperado: apenas o `kali-rolling`, com prioridade 500, e nenhuma regra de prioridade pré-existente (ou apenas as do `kali-tweaks`, se você já o usou).
+
+2. **Descubra quais metapacotes estão instalados.**
+
+   ```bash
+   dpkg -l | grep -E 'kali-linux|kali-tools' | awk '{print $2, $3}'
+   apt-mark showmanual | grep kali
+   ```
+
+   Esperado: o metapacote da sua imagem — tipicamente `kali-linux-default` mais alguns `kali-tools-*`.
+
+3. **Veja que um metapacote não contém arquivos.**
+
+   ```bash
+   dpkg -L kali-linux-default | head
+   dpkg -L kali-linux-default | wc -l
+   apt depends kali-linux-default | head -20
+   apt depends kali-linux-default | wc -l
+   ```
+
+   Esperado: pouquíssimos arquivos (só documentação) e uma lista longa de dependências. É uma lista de compras, não um programa.
+
+4. **Meça o custo antes de instalar.**
+
+   ```bash
+   apt install -s kali-tools-top10 2>&1 | tail -6
+   apt install -s kali-linux-large 2>&1 | tail -6
+   df -h / | tail -1
+   ```
+
+   Esperado: o número de pacotes e o espaço necessário de cada opção, comparados ao espaço livre. **Não instale** — este passo é sobre medir antes de decidir.
+
+5. **Explore as categorias de ferramenta.**
+
+   ```bash
+   apt search --names-only '^kali-tools-' | grep '^kali-tools' | head -25
+   apt show kali-tools-web 2>/dev/null | grep -E '^(Package|Installed-Size)'
+   apt depends kali-tools-web | head -15
+   ```
+
+   Esperado: a lista de categorias da @tbl-kali-tools e o conteúdo de uma delas.
+
+6. **Verifique a marcação automático/manual do seu sistema.**
+
+   ```bash
+   apt-mark showmanual | wc -l
+   apt-mark showauto | wc -l
+   sudo apt autoremove -s | tail -5
+   ```
+
+   Esperado: muito mais automáticos que manuais, e nenhuma ou poucas propostas de remoção. Se o `autoremove` propuser remover dezenas de ferramentas, algum metapacote foi removido no passado.
+
+7. **Habilite uma suíte extra com *pinning* negativo.**
+
+   ```bash
+   echo 'deb http://http.kali.org/kali kali-experimental main contrib non-free' | \
+       sudo tee /etc/apt/sources.list.d/lab-experimental.list
+   printf 'Package: *\nPin: release a=kali-experimental\nPin-Priority: -1\n' | \
+       sudo tee /etc/apt/preferences.d/lab-experimental
+   sudo apt update
+   ```
+
+   Esperado: o `apt update` baixa os índices da nova suíte sem erro.
+
+8. **Confirme que o *pinning* está em vigor.**
+
+   ```bash
+   apt policy | grep -A2 experimental
+   sudo apt full-upgrade -s 2>&1 | tail -8
+   ```
+
+   Esperado: prioridade `-1` para a suíte experimental, e a simulação de `full-upgrade` **não** propondo migrar pacotes para ela. É essa a proteção da @fig-pinning.
+
+9. **Desfaça a alteração.**
+
+   ```bash
+   sudo rm /etc/apt/sources.list.d/lab-experimental.list
+   sudo rm /etc/apt/preferences.d/lab-experimental
+   sudo apt update
+   apt policy | head -8
+   ```
+
+   Esperado: só o `kali-rolling` de volta. Deixar uma suíte extra habilitada sem necessidade é dívida técnica.
+
+10. **Inspecione o `kali-tweaks` sem aplicar nada.**
+
+    ```bash
+    dpkg -l kali-tweaks
+    dpkg -L kali-tweaks | grep -E 'bin|share/kali-tweaks' | head
+    ```
+
+    Esperado: o pacote e seus arquivos. Se quiser abrir o menu com `sudo kali-tweaks`, navegue e **saia sem aplicar** — cada seção altera o sistema de verdade.
+
+11. **Configure as ferramentas de manutenção.**
+
+    ```bash
+    sudo apt install -y needrestart
+    sudo needrestart -b
+    ```
+
+    Esperado: o relatório dizendo quantos serviços usam bibliotecas já substituídas em disco. Em sistema recém-atualizado e não reiniciado, costuma haver vários.
+
+12. **Feche com a rotina de manutenção completa.**
+
+    ```bash
+    sudo apt update
+    sudo apt full-upgrade -s 2>&1 | tail -6
+    apt-mark showhold || echo "nenhum hold pendente"
+    dpkg -l | grep -v '^ii' | head -5 || echo "nenhum pacote em estado estranho"
+    sudo apt autoclean
+    ```
+
+    Esperado: nada pendente, nenhum `hold` esquecido, nenhum pacote quebrado. Esta sequência de cinco comandos é uma boa rotina semanal para um Kali de trabalho.
+
+## Resumo
+
+- **A única origem do Kali é a do Kali.** `http.kali.org` redireciona para um espelho próximo; `kali.download` é o CDN oficial e resolve os casos de espelho dessincronizado.
+- **Quatro suítes, uma habilitada.** `kali-rolling` é o padrão; `experimental` e `bleeding-edge` só com *pinning*; `kali-last-snapshot` congela o ambiente e é a resposta certa para treinamento e laboratório reproduzível.
+- **Metapacote é um pacote sem arquivos**, cujo conteúdo é a lista de `Depends`. Os cumulativos vão de `kali-linux-core` a `kali-linux-everything`, e `kali-linux-default` é o ponto certo para a maioria.
+- **Os `kali-tools-*` dividem as ferramentas por categoria.** `headless` mais as categorias que interessam produz uma máquina enxuta e adequada, melhor que instalar tudo.
+- **Remover metapacote transforma centenas de ferramentas em órfãs.** Marque como manual o que quer manter antes de remover, e leia a lista do `autoremove` antes de confirmar.
+- **`kali-tweaks` escreve nos mesmos arquivos que você escreveria**, sem erro de digitação — e é a forma recomendada de habilitar suítes extras, porque aplica o *pinning* correto. A seção *Hardening* reduz a segurança do cliente SSH de propósito, para alcançar equipamento legado em teste autorizado.
+- ***Pinning* com prioridade negativa é o que permite usar uma suíte extra sem contaminar o sistema**: ela existe no catálogo, mas só entra quando você pede com `-t`. Prioridade acima de 1000 é a única que permite rebaixar um pacote para versão anterior.
+- **Repositório de terceiro, quando inevitável, se adiciona com três medidas juntas**: chave em `/etc/apt/keyrings/` amarrada por `signed-by`, e prioridade 100 para que ele não substitua pacotes do sistema. Nunca `apt-key add` nem `[trusted=yes]`.
+- **`apt-listchanges` avisa antes, `needrestart` verifica depois.** O segundo resolve o caso da biblioteca corrigida em disco mas ainda carregada em memória por um serviço que ninguém reiniciou.
