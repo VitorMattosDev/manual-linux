@@ -26,6 +26,41 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
 </style>
 
 
@@ -928,8 +963,22 @@ ul.task-list li input[type="checkbox"] {
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Índice</h2>
+   
+  <ul>
+  <li><a href="#useradd-versus-adduser-baixo-nível-e-alto-nível" id="toc-useradd-versus-adduser-baixo-nível-e-alto-nível" class="nav-link active" data-scroll-target="#useradd-versus-adduser-baixo-nível-e-alto-nível"><span class="header-section-number">25.1</span> <code>useradd</code> versus <code>adduser</code>: baixo nível e alto nível</a></li>
+  <li><a href="#usermod-alterar-uma-conta-existente" id="toc-usermod-alterar-uma-conta-existente" class="nav-link" data-scroll-target="#usermod-alterar-uma-conta-existente"><span class="header-section-number">25.2</span> <code>usermod</code>: alterar uma conta existente</a></li>
+  <li><a href="#senhas-e-envelhecimento-com-passwd-e-chage" id="toc-senhas-e-envelhecimento-com-passwd-e-chage" class="nav-link" data-scroll-target="#senhas-e-envelhecimento-com-passwd-e-chage"><span class="header-section-number">25.3</span> Senhas e envelhecimento com <code>passwd</code> e <code>chage</code></a></li>
+  <li><a href="#remover-contas-userdel-e-deluser" id="toc-remover-contas-userdel-e-deluser" class="nav-link" data-scroll-target="#remover-contas-userdel-e-deluser"><span class="header-section-number">25.4</span> Remover contas: <code>userdel</code> e <code>deluser</code></a></li>
+  <li><a href="#o-pam-onde-a-autenticação-realmente-acontece" id="toc-o-pam-onde-a-autenticação-realmente-acontece" class="nav-link" data-scroll-target="#o-pam-onde-a-autenticação-realmente-acontece"><span class="header-section-number">25.5</span> O PAM: onde a autenticação realmente acontece</a></li>
+  <li><a href="#regras-práticas-de-pam-que-você-vai-encontrar" id="toc-regras-práticas-de-pam-que-você-vai-encontrar" class="nav-link" data-scroll-target="#regras-práticas-de-pam-que-você-vai-encontrar"><span class="header-section-number">25.6</span> Regras práticas de PAM que você vai encontrar</a></li>
+  <li><a href="#no-kali" id="toc-no-kali" class="nav-link" data-scroll-target="#no-kali"><span class="header-section-number">25.7</span> 🐉 No Kali</a></li>
+  <li><a href="#laboratório" id="toc-laboratório" class="nav-link" data-scroll-target="#laboratório"><span class="header-section-number">25.8</span> 🧪 Laboratório</a></li>
+  <li><a href="#resumo" id="toc-resumo" class="nav-link" data-scroll-target="#resumo"><span class="header-section-number">25.9</span> Resumo</a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -953,9 +1002,846 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
-<p><em>(em elaboracao)</em></p>
+<p>Você cria uma conta nova num servidor, define uma senha forte, testa o login por SSH — e funciona. Uma semana depois, o dono da conta reclama que não consegue mais entrar. Você confere o <code>/etc/passwd</code>: a conta está lá, com shell válido. O <code>/etc/shadow</code>: o hash continua correto. Você não mudou nada. E mesmo assim o login é recusado com uma mensagem lacônica: <code>Your account has expired</code>.</p>
+<p>O que aconteceu não está em nenhum dos dois arquivos que você olhou. A conta tinha uma data de expiração definida no ato da criação — talvez por uma política padrão da empresa —, e essa data chegou. A decisão de barrar o login não foi tomada pelo <code>sshd</code> nem pelo kernel: foi tomada por um módulo do <strong>PAM</strong>, a camada que fica entre “provar quem você é” e “poder usar o sistema”.</p>
+<p>Este capítulo junta duas coisas que andam sempre juntas: as ferramentas que criam, modificam e removem contas (<code>useradd</code>, <code>usermod</code>, <code>userdel</code> e a dupla amigável <code>adduser</code>/<code>deluser</code>), e o <strong>PAM</strong> — o <em>Pluggable Authentication Modules</em> —, que é onde as regras de senha, de bloqueio e de expiração realmente vivem. Sem entender o PAM, metade dos problemas de autenticação parece mágica.</p>
+<section id="useradd-versus-adduser-baixo-nível-e-alto-nível" class="level2" data-number="25.1">
+<h2 data-number="25.1" class="anchored" data-anchor-id="useradd-versus-adduser-baixo-nível-e-alto-nível"><span class="header-section-number">25.1</span> <code>useradd</code> versus <code>adduser</code>: baixo nível e alto nível</h2>
+<p>O Debian, e portanto o Kali, oferece duas camadas de ferramentas para criar contas, e confundi-las gera resultados frustrantes.</p>
+<ul>
+<li><strong><code>useradd</code></strong> é o utilitário de baixo nível, do pacote <code>shadow-utils</code>, padrão em todo Linux. Sozinho, ele faz o mínimo: cria a linha em <code>/etc/passwd</code>, e só. Não cria o diretório pessoal, não copia arquivos-modelo, não pede senha.</li>
+<li><strong><code>adduser</code></strong> é um script Perl do Debian, de alto nível, que orquestra o <code>useradd</code> com defaults sensatos: cria e povoa o diretório pessoal, pede a senha interativamente, configura o grupo primário conforme a política.</li>
+</ul>
+<p>A confusão clássica: <code>sudo useradd joao</code> cria uma conta que não tem diretório pessoal e cujo login falha por falta de senha. Quem esperava o comportamento do <code>adduser</code> acha que “não funcionou”. Os dois funcionam — em níveis diferentes.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># baixo nivel, explicito, ideal para scripts:</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash <span class="at">-c</span> <span class="st">"Joao Silva"</span> <span class="at">-G</span> sudo joao</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="co"># alto nivel, interativo, ideal para uso manual:</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> adduser joao</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>As opções mais usadas do <code>useradd</code>:</p>
+<div id="tbl-opcoes-useradd" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-tbl figure">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="tbl-opcoes-useradd-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Tabela&nbsp;25.1: Opções essenciais do <code>useradd</code>
+</figcaption>
+<div aria-describedby="tbl-opcoes-useradd-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th style="text-align: center;">Opção</th>
+<th>Efeito</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;"><code>-m</code></td>
+<td>cria o diretório pessoal e copia <code>/etc/skel</code></td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>-s</code></td>
+<td>define o shell de login</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;"><code>-c</code></td>
+<td>preenche o campo GECOS (nome real)</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>-G</code></td>
+<td>grupos suplementares, separados por vírgula</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;"><code>-g</code></td>
+<td>grupo primário (nome ou GID)</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>-u</code></td>
+<td>UID específico</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;"><code>-r</code></td>
+<td>conta de sistema (UID na faixa baixa, sem <code>/home</code>)</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>-e</code></td>
+<td>data de expiração da conta (<code>AAAA-MM-DD</code>)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;"><code>-D</code></td>
+<td>mostra ou altera os defaults de <code>/etc/default/useradd</code></td>
+</tr>
+</tbody>
+</table>
+</div>
+</figure>
+</div>
+<p>O <code>/etc/skel</code> merece nota: é o modelo. Tudo que estiver nele — <code>.bashrc</code>, <code>.profile</code>, uma pasta <code>Documentos</code> — é copiado para o diretório pessoal de cada conta nova criada com <code>-m</code>. Personalizar o <code>/etc/skel</code> é como padronizar o ambiente inicial de todos os futuros usuários de uma máquina.</p>
+</section>
+<section id="usermod-alterar-uma-conta-existente" class="level2" data-number="25.2">
+<h2 data-number="25.2" class="anchored" data-anchor-id="usermod-alterar-uma-conta-existente"><span class="header-section-number">25.2</span> <code>usermod</code>: alterar uma conta existente</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-aG</span> docker joao       <span class="co"># ACRESCENTA joao ao grupo docker</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-s</span> /usr/bin/zsh joao  <span class="co"># troca o shell</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-L</span> joao               <span class="co"># bloqueia a senha (login por senha off)</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-U</span> joao               <span class="co"># desbloqueia</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-e</span> 2026-12-31 joao    <span class="co"># define expiracao da conta</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-l</span> novonome antigo    <span class="co"># renomeia a conta</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-d</span> /home/novo <span class="at">-m</span> joao <span class="co"># move o diretorio pessoal</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Aviso</span>O <code>-a</code> de <code>-aG</code> não é opcional
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Já visto em <a href="cap021-usuarios-grupos-e-o-arquivo-etc-passwd.html" class="quarto-xref"><span>Capítulo 21</span></a>, mas é o erro que mais destrói acesso, então vale repetir: <code>usermod -G grupos usuario</code> <strong>substitui</strong> toda a lista de grupos suplementares. Sem o <code>-a</code>, <code>sudo usermod -G docker joao</code> remove o <code>joao</code> de <code>sudo</code>, <code>adm</code> e todos os outros grupos, deixando só <code>docker</code>. A forma segura de <strong>acrescentar</strong> é sempre <code>-aG</code>. Para remover de um grupo, use <code>sudo gpasswd -d joao docker</code> ou <code>sudo deluser joao docker</code>.</p>
+</div>
+</div>
+</section>
+<section id="senhas-e-envelhecimento-com-passwd-e-chage" class="level2" data-number="25.3">
+<h2 data-number="25.3" class="anchored" data-anchor-id="senhas-e-envelhecimento-com-passwd-e-chage"><span class="header-section-number">25.3</span> Senhas e envelhecimento com <code>passwd</code> e <code>chage</code></h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">passwd</span>                       <span class="co"># troca a SUA senha</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd joao             <span class="co"># define a senha de joao</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-l</span> joao          <span class="co"># bloqueia (poe ! no hash)</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-u</span> joao          <span class="co"># desbloqueia</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-e</span> joao          <span class="co"># expira JA: forca troca no proximo login</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> joao          <span class="co"># status resumido</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O <code>passwd -S</code> dá uma leitura rápida do estado da conta:</p>
+<pre class="text"><code>joao P 08/01/2026 0 99999 7 -1</code></pre>
+<p>Os campos são: nome, status (<code>P</code> senha válida, <code>L</code> bloqueada, <code>NP</code> sem senha), data da última troca e os parâmetros de envelhecimento. Para gerir esse envelhecimento com clareza, a ferramenta dedicada é o <code>chage</code> (<em>change age</em>):</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-l</span> joao                 <span class="co"># lista a politica de envelhecimento</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-M</span> 90 joao              <span class="co"># senha expira a cada 90 dias</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-m</span> 7 joao               <span class="co"># minimo 7 dias entre trocas</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-W</span> 14 joao              <span class="co"># avisa 14 dias antes de expirar</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-E</span> 2026-12-31 joao      <span class="co"># a CONTA expira nesta data</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-d</span> 0 joao               <span class="co"># forca troca no proximo login</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A distinção que resolve o mistério da abertura deste capítulo: <strong>expirar a senha</strong> (<code>chage -M</code>, <code>passwd -e</code>) força uma troca de senha mas mantém a conta utilizável; <strong>expirar a conta</strong> (<code>chage -E</code>, <code>usermod -e</code>) desativa o acesso por completo numa data, independentemente da senha. A conta da abertura tinha um <code>-E</code> no passado. Nem o <code>passwd</code> nem o <code>shadow</code> mostravam isso de forma óbvia; <code>chage -l</code> mostraria na hora.</p>
+</section>
+<section id="remover-contas-userdel-e-deluser" class="level2" data-number="25.4">
+<h2 data-number="25.4" class="anchored" data-anchor-id="remover-contas-userdel-e-deluser"><span class="header-section-number">25.4</span> Remover contas: <code>userdel</code> e <code>deluser</code></h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel joao          <span class="co"># remove a conta, PRESERVA o /home</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel <span class="at">-r</span> joao       <span class="co"># remove a conta E o /home e o spool de e-mail</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> deluser joao          <span class="co"># equivalente Debian, mais verboso</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> deluser <span class="at">--remove-home</span> joao</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> deluser <span class="at">--backup</span> <span class="at">--remove-home</span> joao   <span class="co"># faz um .tar.gz antes de apagar</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A decisão entre preservar e apagar o <code>/home</code> é de política, não técnica. Preservar mantém os dados de quem saiu — útil para transferir a um sucessor, obrigatório em alguns contextos de conformidade. Apagar libera espaço e evita dados órfãos. O <code>deluser --backup</code> é o meio-termo prudente: arquiva antes de remover.</p>
+<p>Um cuidado: remover a conta deixa <strong>arquivos órfãos</strong> espalhados pelo sistema — tudo que aquele UID possuía fora do <code>/home</code>. É o cenário do <code>999</code> de <a href="cap021-usuarios-grupos-e-o-arquivo-etc-passwd.html" class="quarto-xref"><span>Capítulo 21</span></a>. Para encontrá-los antes que virem mistério:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> find / <span class="at">-xdev</span> <span class="at">-nouser</span> <span class="at">-o</span> <span class="at">-nogroup</span> <span class="dv">2</span><span class="op">&gt;</span>/dev/null</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="o-pam-onde-a-autenticação-realmente-acontece" class="level2" data-number="25.5">
+<h2 data-number="25.5" class="anchored" data-anchor-id="o-pam-onde-a-autenticação-realmente-acontece"><span class="header-section-number">25.5</span> O PAM: onde a autenticação realmente acontece</h2>
+<p>Aqui está a peça que amarra tudo. Quando você faz login — por console, por SSH, por <code>su</code>, por <code>sudo</code> —, o programa que recebe sua senha <strong>não</strong> decide sozinho se você entra. Ele delega ao <strong>PAM</strong>, uma biblioteca modular que consulta um empilhamento de regras configurável. Isso permite trocar a lógica de autenticação (adicionar duplo fator, exigir senha forte, bloquear após tentativas) <strong>sem recompilar</strong> o <code>sshd</code>, o <code>login</code> ou o <code>sudo</code>.</p>
+<p>A configuração vive em <code>/etc/pam.d/</code>, um arquivo por serviço:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /etc/pam.d/</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /etc/pam.d/sshd</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Cada linha tem a forma <code>tipo   controle   módulo   argumentos</code>, e o PAM processa quatro <strong>tipos</strong> de tarefa, empilhados. <a href="#fig-pam-stack" class="quarto-xref">Figura&nbsp;<span>25.1</span></a> mostra os quatro grupos.</p>
+<div id="fig-pam-stack" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-pam-stack-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xlink="http://www.w3.org/1999/xlink" width="391.978022pt" height="67.865893pt" viewbox="-68.014948 -68.014946 391.978022 67.865893">
+<defs>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-97" d="M3.005729-1.966625C3.005729-2.545455 2.552428-3.061519 1.597011-3.061519C1.26924-3.061519 .550934-3.061519 .550934-2.524533C.550934-2.336239 .683437-2.182814 .892653-2.182814C1.025156-2.182814 1.21345-2.266501 1.227397-2.517559C1.227397-2.57335 1.234371-2.580324 1.325031-2.594271C1.401743-2.601245 1.520299-2.601245 1.603985-2.601245C2.175841-2.601245 2.475716-2.343213 2.475716-1.959651C1.729514-1.959651 .369614-1.785305 .369614-.927522C.369614-.411457 .850809 .034869 1.555168 .034869C2.113076 .034869 2.461768-.174346 2.552428-.237111C2.698879-.020922 2.991781 0 3.326526 0C3.514819 0 3.696139 0 3.696139-.230137S3.500872-.460274 3.403238-.460274C3.138232-.460274 3.075467-.481196 3.005729-.509091V-1.966625ZM2.475716-.99726C2.475716-.850809 2.475716-.690411 2.203736-.557908C1.959651-.432379 1.687671-.425405 1.597011-.425405C1.185554-.425405 .899626-.669489 .899626-.927522C.899626-1.297136 1.66675-1.506351 2.475716-1.513325V-.99726Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-99" d="M3.277709-.753176C3.277709-.9066 3.159153-.969365 3.012702-.969365C2.915068-.969365 2.817435-.969365 2.75467-.808966C2.629141-.502117 2.350187-.425405 2.099128-.425405C1.520299-.425405 1.03213-.899626 1.03213-1.506351C1.03213-1.862017 1.255293-2.601245 2.140971-2.601245C2.343213-2.601245 2.461768-2.587298 2.496638-2.580324C2.517559-2.57335 2.524533-2.566376 2.524533-2.503611C2.538481-2.30137 2.684932-2.182814 2.859278-2.182814C3.068493-2.182814 3.200996-2.336239 3.200996-2.524533C3.200996-3.061519 2.475716-3.061519 2.154919-3.061519C.913574-3.061519 .502117-2.099128 .502117-1.506351C.502117-.669489 1.171606 .034869 2.064259 .034869C3.054545 .034869 3.277709-.63462 3.277709-.753176Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-104" d="M3.033624-2.02939C3.033624-2.726775 2.684932-3.040598 2.113076-3.040598C1.597011-3.040598 1.262267-2.761644 1.192528-2.691905V-3.961146C1.192528-4.198257 1.12279-4.261021 .892653-4.261021H.376588C.265006-4.261021 .076712-4.261021 .076712-4.030884S.265006-3.800747 .376588-3.800747H.662516V-.460274H.376588C.265006-.460274 .076712-.460274 .076712-.230137S.265006 0 .376588 0H1.478456C1.590037 0 1.778331 0 1.778331-.230137S1.590037-.460274 1.478456-.460274H1.192528V-1.659776C1.192528-2.329265 1.729514-2.580324 2.078207-2.580324C2.399004-2.580324 2.503611-2.426899 2.503611-2.015442V-.460274H2.273474C2.168867-.460274 1.973599-.460274 1.973599-.230137S2.168867 0 2.273474 0H3.319552C3.431133 0 3.619427 0 3.619427-.230137S3.431133-.460274 3.319552-.460274H3.033624V-2.02939Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-105" d="M2.203736-3.891407C2.203736-4.100623 2.036364-4.267995 1.827148-4.267995S1.45056-4.100623 1.45056-3.891407S1.617933-3.514819 1.827148-3.514819S2.203736-3.682192 2.203736-3.891407ZM.913574-3.005729C.808966-3.005729 .606725-3.005729 .606725-2.775592S.81594-2.545455 .913574-2.545455H1.673724V-.460274H.857783C.753176-.460274 .550934-.460274 .550934-.230137S.760149 0 .857783 0H2.908095C3.005729 0 3.214944 0 3.214944-.230137S3.005729-.460274 2.908095-.460274H2.203736V-2.705853C2.203736-2.942964 2.133998-3.005729 1.903861-3.005729H.913574Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-109" d="M3.242839-2.099128C3.242839-2.259527 3.242839-3.040598 2.615193-3.040598C2.385056-3.040598 2.099128-2.93599 1.917808-2.698879C1.785305-2.949938 1.590037-3.040598 1.387796-3.040598C1.241345-3.040598 1.011208-2.998755 .795019-2.810461C.753176-3.005729 .592777-3.005729 .488169-3.005729H.265006C.160399-3.005729-.034869-3.005729-.034869-2.775592S.132503-2.545455 .355666-2.545455V-.460274C.132503-.460274-.034869-.460274-.034869-.230137S.160399 0 .265006 0H.878705C.983313 0 1.17858 0 1.17858-.230137S1.011208-.460274 .788045-.460274V-1.680697C.788045-2.259527 1.08792-2.580324 1.366874-2.580324C1.513325-2.580324 1.583064-2.419925 1.583064-2.064259V-.460274C1.513325-.460274 1.311083-.460274 1.311083-.230137S1.506351 0 1.610959 0H2.106102C2.21071 0 2.405978 0 2.405978-.230137S2.238605-.460274 2.015442-.460274V-1.680697C2.015442-2.259527 2.315318-2.580324 2.594271-2.580324C2.740722-2.580324 2.810461-2.419925 2.810461-2.064259V-.460274C2.740722-.460274 2.538481-.460274 2.538481-.230137S2.733748 0 2.838356 0H3.333499C3.438107 0 3.633375 0 3.633375-.230137S3.466002-.460274 3.242839-.460274V-2.099128Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-110" d="M3.033624-2.02939C3.033624-2.726775 2.684932-3.040598 2.113076-3.040598C1.597011-3.040598 1.262267-2.761644 1.192528-2.691905C1.192528-2.901121 1.171606-3.005729 .892653-3.005729H.376588C.265006-3.005729 .076712-3.005729 .076712-2.775592S.265006-2.545455 .376588-2.545455H.662516V-.460274H.376588C.265006-.460274 .076712-.460274 .076712-.230137S.265006 0 .376588 0H1.478456C1.590037 0 1.778331 0 1.778331-.230137S1.590037-.460274 1.478456-.460274H1.192528V-1.659776C1.192528-2.329265 1.729514-2.580324 2.078207-2.580324C2.399004-2.580324 2.503611-2.426899 2.503611-2.015442V-.460274H2.273474C2.168867-.460274 1.973599-.460274 1.973599-.230137S2.168867 0 2.273474 0H3.319552C3.431133 0 3.619427 0 3.619427-.230137S3.431133-.460274 3.319552-.460274H3.033624V-2.02939Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-111" d="M3.312578-1.506351C3.312578-2.357161 2.657036-3.061519 1.84807-3.061519S.383562-2.357161 .383562-1.506351C.383562-.63462 1.053051 .034869 1.84807 .034869S3.312578-.63462 3.312578-1.506351ZM1.84807-.425405C1.345953-.425405 .913574-.920548 .913574-1.555168C.913574-2.161893 1.352927-2.601245 1.84807-2.601245S2.782565-2.161893 2.782565-1.555168C2.782565-.920548 2.350187-.425405 1.84807-.425405Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-112" d="M1.478456 1.548194C1.590037 1.548194 1.778331 1.548194 1.778331 1.318057S1.590037 1.08792 1.478456 1.08792H1.192528V-.292902C1.408717-.083686 1.680697 .034869 1.987547 .034869C2.761644 .034869 3.459029-.620672 3.459029-1.506351C3.459029-2.350187 2.838356-3.040598 2.057285-3.040598C1.729514-3.040598 1.443587-2.922042 1.192528-2.726775C1.192528-3.005729 1.039103-3.005729 .892653-3.005729H.376588C.265006-3.005729 .076712-3.005729 .076712-2.775592S.265006-2.545455 .376588-2.545455H.662516V1.08792H.376588C.265006 1.08792 .076712 1.08792 .076712 1.318057S.265006 1.548194 .376588 1.548194H1.478456ZM1.192528-1.834122C1.192528-2.238605 1.603985-2.580324 2.02939-2.580324C2.517559-2.580324 2.929016-2.106102 2.929016-1.506351C2.929016-.871731 2.454795-.425405 1.966625-.425405C1.45056-.425405 1.192528-1.004234 1.192528-1.352927V-1.834122Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-116" d="M1.590037-2.545455H2.705853C2.810461-2.545455 3.005729-2.545455 3.005729-2.775592S2.810461-3.005729 2.705853-3.005729H1.590037V-3.563636C1.590037-3.696139 1.590037-3.863512 1.325031-3.863512S1.060025-3.689166 1.060025-3.563636V-3.005729H.481196C.376588-3.005729 .174346-3.005729 .174346-2.775592S.369614-2.545455 .474222-2.545455H1.060025V-.955417C1.060025-.202242 1.590037 .034869 2.078207 .034869C2.705853 .034869 3.166127-.404483 3.166127-.9066C3.166127-1.143711 2.963885-1.143711 2.901121-1.143711C2.719801-1.143711 2.643088-1.073973 2.636115-.899626C2.622167-.613699 2.371108-.425405 2.106102-.425405C1.590037-.425405 1.590037-.808966 1.590037-.969365V-2.545455Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-117" d="M3.033624-2.705853C3.033624-2.942964 2.963885-3.005729 2.733748-3.005729H2.217684C2.106102-3.005729 1.917808-3.005729 1.917808-2.775592S2.106102-2.545455 2.217684-2.545455H2.503611V-1.080946C2.503611-.530012 1.994521-.425405 1.729514-.425405C1.192528-.425405 1.192528-.627646 1.192528-.829888V-2.705853C1.192528-2.942964 1.12279-3.005729 .892653-3.005729H.376588C.265006-3.005729 .076712-3.005729 .076712-2.775592S.265006-2.545455 .376588-2.545455H.662516V-.808966C.662516-.167372 1.101868 .034869 1.687671 .034869C2.057285 .034869 2.322291-.069738 2.496638-.202242C2.531507 0 2.698879 0 2.803487 0H3.319552C3.431133 0 3.619427 0 3.619427-.230137S3.431133-.460274 3.319552-.460274H3.033624V-2.705853Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g0-120" d="M2.043337-1.548194L2.817435-2.545455H3.075467C3.173101-2.545455 3.382316-2.545455 3.382316-2.775592S3.173101-3.005729 3.075467-3.005729H2.266501C2.161893-3.005729 1.966625-3.005729 1.966625-2.775592S2.154919-2.545455 2.294396-2.545455L1.827148-1.917808L1.352927-2.545455C1.471482-2.545455 1.66675-2.545455 1.66675-2.775592S1.471482-3.005729 1.366874-3.005729H.557908C.460274-3.005729 .251059-3.005729 .251059-2.775592S.460274-2.545455 .557908-2.545455H.822914L1.617933-1.548194L.774097-.460274H.516065C.411457-.460274 .209215-.460274 .209215-.230137S.418431 0 .516065 0H1.318057C1.422665 0 1.624907 0 1.624907-.230137S1.429639-.460274 1.276214-.460274L1.827148-1.255293L2.399004-.460274C2.252553-.460274 2.064259-.460274 2.064259-.230137S2.259527 0 2.364134 0H3.173101C3.270735 0 3.47995 0 3.47995-.230137S3.270735-.460274 3.173101-.460274H2.908095L2.043337-1.548194Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-97" d="M3.682192-2.057285C3.682192-2.629141 3.221918-3.159153 1.966625-3.159153C1.562142-3.159153 .585803-3.159153 .585803-2.468742C.585803-2.161893 .808966-1.980573 1.066999-1.980573C1.373848-1.980573 1.555168-2.196762 1.555168-2.461768C1.555168-2.615193 1.492403-2.719801 1.471482-2.740722C1.457534-2.761644 1.45056-2.775592 1.45056-2.789539C1.45056-2.824408 1.896887-2.838356 1.945704-2.838356C2.433873-2.838356 2.796513-2.643088 2.796513-2.050311V-1.862017C2.454795-1.862017 .285928-1.834122 .285928-.801993C.285928-.153425 1.053051 .041843 1.750436 .041843C2.489664 .041843 2.817435-.292902 2.93599-.474222C2.93599-.174346 3.124284 0 3.696139 0H4.107597C4.2401 0 4.351681 0 4.351681-.195268S4.247073-.390535 4.100623-.390535C3.682192-.390535 3.682192-.446326 3.682192-.606725V-2.057285ZM2.796513-.955417C2.796513-.808966 2.796513-.606725 2.524533-.439352C2.259527-.278954 1.931756-.278954 1.889913-.278954C1.499377-.278954 1.164633-.495143 1.164633-.808966C1.164633-1.380822 2.099128-1.569116 2.796513-1.590037V-.955417Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-99" d="M3.731009-.795019C3.731009-.920548 3.612453-.920548 3.507846-.920548C3.347447-.920548 3.333499-.913574 3.284682-.808966C3.180075-.578829 2.956912-.313823 2.419925-.313823C1.297136-.313823 1.297136-1.290162 1.297136-1.57609C1.297136-2.099128 1.380822-2.803487 2.315318-2.803487C2.357161-2.803487 2.75467-2.796513 2.75467-2.768618C2.75467-2.75467 2.747696-2.747696 2.740722-2.740722C2.726775-2.719801 2.66401-2.615193 2.66401-2.461768C2.66401-2.175841 2.873225-1.980573 3.145205-1.980573C3.431133-1.980573 3.633375-2.175841 3.633375-2.468742C3.633375-3.138232 2.698879-3.159153 2.294396-3.159153C.739228-3.159153 .327771-2.196762 .327771-1.548194C.327771-.732254 .934496 .041843 2.252553 .041843C2.594271 .041843 2.949938-.013948 3.228892-.174346C3.626401-.411457 3.731009-.753176 3.731009-.795019Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-100" d="M2.84533-4.78406V-4.393524C3.256787-4.393524 3.312578-4.393524 3.312578-4.121544V-2.84533C2.880199-3.110336 2.489664-3.138232 2.259527-3.138232C1.011208-3.138232 .327771-2.426899 .327771-1.54122C.327771-.676463 .976339 .041843 2.168867 .041843C2.615193 .041843 2.984807-.097634 3.263761-.292902V.041843L4.616687 0V-.390535C4.20523-.390535 4.14944-.390535 4.14944-.662516V-4.839851L2.84533-4.78406ZM3.263761-.808966C3.103362-.578829 2.761644-.278954 2.252553-.278954C1.297136-.278954 1.297136-1.115816 1.297136-1.527273C1.297136-1.959651 1.297136-2.817435 2.343213-2.817435C2.929016-2.817435 3.242839-2.426899 3.263761-2.399004V-.808966Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-101" d="M3.598506-1.45056C3.744956-1.45056 3.84259-1.45056 3.84259-1.659776C3.84259-1.862017 3.793773-2.385056 3.459029-2.726775C3.082441-3.103362 2.566376-3.159153 2.182814-3.159153C.892653-3.159153 .278954-2.39203 .278954-1.569116C.278954-.739228 .920548 .041843 2.30137 .041843C2.552428 .041843 2.956912 .013948 3.305604-.174346C3.717061-.390535 3.84259-.72528 3.84259-.795019C3.84259-.948443 3.689166-.948443 3.619427-.948443C3.493898-.948443 3.459029-.941469 3.403238-.829888C3.152179-.313823 2.517559-.313823 2.399004-.313823C1.297136-.313823 1.262267-1.129763 1.248319-1.45056H3.598506ZM1.248319-1.743462C1.255293-2.015442 1.290162-2.838356 2.189788-2.838356S3.138232-2.043337 3.152179-1.743462H1.248319Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-104" d="M4.267995-2.099128C4.267995-2.956912 3.717061-3.138232 3.075467-3.138232C2.30137-3.138232 1.910834-2.719801 1.750436-2.48269V-4.839851L.446326-4.78406V-4.393524C.857783-4.393524 .913574-4.393524 .913574-4.121544V-.390535H.446326V0C.4533 0 1.018182-.027895 1.352927-.027895C1.694645-.027895 2.259527 0 2.266501 0V-.390535H1.799253V-1.736488C1.799253-2.545455 2.524533-2.817435 2.942964-2.817435C3.249813-2.817435 3.382316-2.657036 3.382316-2.154919V-.390535H2.915068V0C2.922042 0 3.486924-.027895 3.821669-.027895C4.163387-.027895 4.728269 0 4.735243 0V-.390535H4.267995V-2.099128Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-105" d="M1.827148-4.274969C1.827148-4.609714 1.555168-4.846824 1.262267-4.846824C.927522-4.846824 .690411-4.574844 .690411-4.281943C.690411-3.947198 .962391-3.710087 1.255293-3.710087C1.590037-3.710087 1.827148-3.982067 1.827148-4.274969ZM.488169-3.082441V-2.691905C.885679-2.691905 .934496-2.691905 .934496-2.419925V-.390535H.467248V0C.481196 0 1.03213-.027895 1.345953-.027895C1.63188-.027895 1.910834-.020922 2.196762 0V-.390535H1.771357V-3.138232L.488169-3.082441Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-110" d="M4.267995-2.099128C4.267995-2.956912 3.717061-3.138232 3.075467-3.138232C2.231631-3.138232 1.841096-2.636115 1.708593-2.412951V-3.138232L.446326-3.082441V-2.691905C.857783-2.691905 .913574-2.691905 .913574-2.419925V-.390535H.446326V0C.4533 0 1.018182-.027895 1.352927-.027895C1.694645-.027895 2.259527 0 2.266501 0V-.390535H1.799253V-1.736488C1.799253-2.545455 2.524533-2.817435 2.942964-2.817435C3.249813-2.817435 3.382316-2.657036 3.382316-2.154919V-.390535H2.915068V0C2.922042 0 3.486924-.027895 3.821669-.027895C4.163387-.027895 4.728269 0 4.735243 0V-.390535H4.267995V-2.099128Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-111" d="M4.226152-1.520299C4.226152-2.350187 3.619427-3.159153 2.252553-3.159153C.871731-3.159153 .278954-2.343213 .278954-1.520299C.278954-.704359 .899626 .041843 2.252553 .041843C3.612453 .041843 4.226152-.711333 4.226152-1.520299ZM2.252553-.313823C1.248319-.313823 1.248319-1.004234 1.248319-1.603985C1.248319-2.161893 1.248319-2.838356 2.252553-2.838356S3.256787-2.161893 3.256787-1.603985C3.256787-1.004234 3.256787-.313823 2.252553-.313823Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-112" d="M2.203736 .962391H1.736488V-.258032C1.910834-.139477 2.252553 .041843 2.740722 .041843C3.940224 .041843 4.672478-.63462 4.672478-1.555168C4.672478-2.399004 4.065753-3.138232 2.880199-3.138232C2.517559-3.138232 2.092154-3.068493 1.687671-2.817435V-3.138232L.383562-3.082441V-2.691905C.502117-2.691905 .641594-2.691905 .732254-2.677958C.850809-2.657036 .850809-2.580324 .850809-2.447821V.962391H.383562V1.352927C.390535 1.352927 .955417 1.325031 1.290162 1.325031C1.63188 1.325031 2.196762 1.352927 2.203736 1.352927V.962391ZM1.736488-2.231631C1.736488-2.364134 1.743462-2.371108 1.841096-2.461768C2.175841-2.75467 2.587298-2.782565 2.733748-2.782565C3.326526-2.782565 3.703113-2.308344 3.703113-1.555168C3.703113-.648568 3.180075-.278954 2.650062-.278954S1.820174-.655542 1.736488-.774097V-2.231631Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-114" d="M1.687671-1.464508C1.687671-2.092154 1.973599-2.782565 2.601245-2.817435C2.594271-2.810461 2.503611-2.691905 2.503611-2.517559C2.503611-2.245579 2.698879-2.043337 2.977833-2.043337S3.452055-2.245579 3.452055-2.517559C3.452055-2.901121 3.061519-3.138232 2.629141-3.138232C2.127024-3.138232 1.792279-2.803487 1.603985-2.371108H1.597011V-3.138232L.383562-3.082441V-2.691905C.795019-2.691905 .850809-2.691905 .850809-2.419925V-.390535H.383562V0C.411457 0 .948443-.027895 1.276214-.027895C1.548194-.027895 2.224658 0 2.273474 0V-.390535H1.687671V-1.464508Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-115" d="M3.012702-2.93599C3.012702-3.075467 3.012702-3.159153 2.84533-3.159153C2.796513-3.159153 2.775592-3.159153 2.66401-3.103362C2.650062-3.096389 2.559402-3.054545 2.531507-3.054545C2.524533-3.054545 2.510585-3.054545 2.48269-3.068493C2.196762-3.159153 1.903861-3.159153 1.75741-3.159153C1.555168-3.159153 1.129763-3.159153 .781071-2.970859C.383562-2.747696 .327771-2.385056 .327771-2.224658C.327771-1.471482 1.248319-1.332005 1.736488-1.255293C2.161893-1.192528 2.670984-1.115816 2.670984-.753176C2.670984-.278954 1.980573-.278954 1.8132-.278954C1.150685-.278954 .9066-.578829 .774097-.955417C.732254-1.073973 .72528-1.08792 .550934-1.08792C.348692-1.08792 .327771-1.066999 .327771-.864757V-.18132C.327771-.041843 .327771 .041843 .488169 .041843C.550934 .041843 .564882 .041843 .711333-.048817C.753176-.069738 .864757-.132503 .9066-.160399C1.26924 .041843 1.645828 .041843 1.806227 .041843C2.036364 .041843 3.235866 .041843 3.235866-.990286C3.235866-1.311083 3.068493-1.534247 2.908095-1.66675C2.580324-1.93873 2.280448-1.987547 1.701619-2.078207C1.30411-2.140971 .892653-2.203736 .892653-2.48269C.892653-2.873225 1.590037-2.873225 1.736488-2.873225C2.524533-2.873225 2.552428-2.552428 2.57335-2.385056C2.587298-2.245579 2.629141-2.231631 2.789539-2.231631C2.991781-2.231631 3.012702-2.252553 3.012702-2.454795V-2.93599Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-116" d="M1.708593-2.705853H2.84533V-3.096389H1.708593V-4.428394H1.26924C1.262267-3.779826 .934496-3.047572 .195268-3.02665V-2.705853H.822914V-.843836C.822914-.153425 1.387796 .041843 1.994521 .041843C2.545455 .041843 2.991781-.278954 2.991781-.843836V-1.206476H2.552428V-.871731C2.552428-.390535 2.259527-.313823 2.12005-.313823C1.715567-.313823 1.708593-.655542 1.708593-.843836V-2.705853Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-117" d="M2.915068-3.082441V-2.691905C3.326526-2.691905 3.382316-2.691905 3.382316-2.419925V-1.129763C3.382316-.550934 2.93599-.278954 2.405978-.278954C1.806227-.278954 1.799253-.432379 1.799253-.767123V-3.138232L.446326-3.082441V-2.691905C.857783-2.691905 .913574-2.691905 .913574-2.419925V-.843836C.913574-.034869 1.687671 .041843 2.287422 .041843C2.517559 .041843 3.033624 .041843 3.431133-.4533V.041843L4.735243 0V-.390535C4.323786-.390535 4.267995-.390535 4.267995-.662516V-3.138232L2.915068-3.082441Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g1-119" d="M5.78132-2.57335C5.830137-2.670984 5.837111-2.677958 5.955666-2.691905C6.060274-2.705853 6.116065-2.705853 6.255542-2.705853V-3.096389C6.067248-3.082441 5.87198-3.068493 5.683686-3.068493C5.439601-3.068493 5.202491-3.075467 4.958406-3.096389V-2.705853C5.167621-2.705853 5.223412-2.691905 5.334994-2.66401L4.519054-.774097L3.682192-2.705853H4.030884V-3.096389C4.009963-3.096389 3.500872-3.068493 3.20797-3.068493C2.998755-3.068493 2.712827-3.075467 2.503611-3.096389V-2.705853H2.922042C2.998755-2.545455 2.998755-2.531507 2.998755-2.510585S2.977833-2.440847 2.970859-2.426899L2.329265-.948443L1.562142-2.705853H1.917808V-3.096389C1.617933-3.082441 1.311083-3.068493 1.011208-3.068493C.746202-3.068493 .27198-3.096389 .230137-3.096389V-2.705853H.648568L1.75741-.146451C1.841096 .041843 1.945704 .041843 2.106102 .041843C2.259527 .041843 2.378082 .041843 2.461768-.146451L3.242839-1.959651L4.02391-.153425C4.107597 .041843 4.212204 .041843 4.379577 .041843C4.539975 .041843 4.644583 .041843 4.728269-.146451L5.78132-2.57335Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-12" d="M2.719801-3.02665C2.643088-3.019676 2.608219-3.019676 2.594271-3.012702S2.566376-3.005729 2.468742-3.005729H1.3599V-3.765878C1.3599-4.456289 2.078207-4.714321 2.559402-4.714321C2.796513-4.714321 3.033624-4.665504 3.214944-4.519054C2.963885-4.463263 2.942964-4.267995 2.942964-4.184309C2.942964-3.96812 3.11731-3.84259 3.284682-3.84259C3.410212-3.84259 3.626401-3.926276 3.626401-4.198257C3.626401-4.581818 3.235866-4.909589 2.587298-4.909589C1.862017-4.909589 .864757-4.581818 .864757-3.772852V-3.005729H.265006V-2.75467H.864757V-.550934C.864757-.251059 .795019-.251059 .341719-.251059V0C.355666 0 .843836-.027895 1.12279-.027895C1.387796-.027895 1.645828-.020922 1.910834 0V-.251059C1.457534-.251059 1.387796-.251059 1.387796-.550934V-2.75467H2.775592C3.061519-2.75467 3.11731-2.684932 3.11731-2.378082V-.550934C3.11731-.251059 3.047572-.251059 2.594271-.251059V0C2.608219 0 3.096389-.027895 3.375342-.027895C3.640349-.027895 3.898381-.020922 4.163387 0V-.251059C3.710087-.251059 3.640349-.251059 3.640349-.550934V-3.089415L2.719801-3.02665Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-19" d="M1.799253-3.528767C2.343213-3.926276 2.768618-4.219178 2.901121-4.323786C3.012702-4.400498 3.075467-4.449315 3.075467-4.581818S2.956912-4.867746 2.789539-4.867746C2.677958-4.867746 2.622167-4.804981 2.552428-4.728269L1.638854-3.710087L1.799253-3.528767Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-24" d="M2.259527 .139477H1.708593V.481196C2.175841 .488169 2.350187 .662516 2.350187 .850809C2.350187 1.12279 1.987547 1.227397 1.311083 1.227397H1.060025V1.422665H1.401743C1.408717 1.422665 1.966625 1.422665 2.322291 1.345953C2.608219 1.283188 2.901121 1.164633 2.901121 .850809C2.901121 .571856 2.691905 .390535 2.259527 .320797V.139477Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-40" d="M2.475716-5.230386C1.150685-4.29589 .801993-2.817435 .801993-1.750436C.801993-.767123 1.094894 .760149 2.475716 1.736488C2.531507 1.736488 2.615193 1.736488 2.615193 1.652802C2.615193 1.610959 2.594271 1.597011 2.545455 1.548194C1.617933 .711333 1.276214-.474222 1.276214-1.743462C1.276214-3.626401 1.994521-4.546949 2.566376-5.063014C2.594271-5.090909 2.615193-5.111831 2.615193-5.1467C2.615193-5.230386 2.531507-5.230386 2.475716-5.230386Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-41" d="M.627646-5.230386C.578829-5.230386 .495143-5.230386 .495143-5.1467C.495143-5.111831 .516065-5.090909 .557908-5.042092C1.157659-4.491158 1.827148-3.549689 1.827148-1.750436C1.827148-.292902 1.373848 .808966 .620672 1.492403C.502117 1.610959 .495143 1.617933 .495143 1.652802S.516065 1.736488 .585803 1.736488C.669489 1.736488 1.332005 1.276214 1.792279 .404483C2.099128-.174346 2.30137-.927522 2.30137-1.743462C2.30137-2.726775 2.008468-4.254047 .627646-5.230386Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-44" d="M1.415691-.111582C1.415691 .083686 1.415691 .669489 .871731 1.164633C.843836 1.192528 .822914 1.21345 .822914 1.248319C.822914 1.290162 .871731 1.352927 .920548 1.352927C1.011208 1.352927 1.610959 .801993 1.610959-.041843C1.610959-.460274 1.45056-.801993 1.12279-.801993C.878705-.801993 .72528-.613699 .72528-.397509C.72528-.230137 .836862 0 1.129763 0C1.30411 0 1.408717-.104608 1.415691-.111582Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-46" d="M1.527273-.397509C1.527273-.641594 1.332005-.801993 1.129763-.801993C.885679-.801993 .72528-.606725 .72528-.404483C.72528-.160399 .920548 0 1.12279 0C1.366874 0 1.527273-.195268 1.527273-.397509Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-58" d="M1.527273-2.601245C1.527273-2.84533 1.332005-3.005729 1.129763-3.005729C.885679-3.005729 .72528-2.810461 .72528-2.608219C.72528-2.364134 .920548-2.203736 1.12279-2.203736C1.366874-2.203736 1.527273-2.399004 1.527273-2.601245ZM1.527273-.397509C1.527273-.641594 1.332005-.801993 1.129763-.801993C.885679-.801993 .72528-.606725 .72528-.404483C.72528-.160399 .920548 0 1.12279 0C1.366874 0 1.527273-.195268 1.527273-.397509Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-63" d="M1.889913-1.785305C1.889913-2.399004 2.30137-2.915068 2.824408-3.242839C2.956912-3.326526 3.263761-3.542715 3.263761-3.96812C3.263761-4.337733 2.991781-4.909589 1.806227-4.909589C.948443-4.909589 .488169-4.456289 .488169-3.982067C.488169-3.696139 .718306-3.633375 .822914-3.633375C.955417-3.633375 1.150685-3.731009 1.150685-3.96812C1.150685-4.009963 1.150685-4.267995 .822914-4.29589C.948443-4.491158 1.26924-4.714321 1.785305-4.714321C2.580324-4.714321 2.629141-4.316812 2.629141-3.996015C2.629141-3.626401 2.489664-3.486924 2.378082-3.38929C1.910834-2.970859 1.652802-2.357161 1.652802-1.820174V-1.527273C1.652802-1.387796 1.652802-1.352927 1.771357-1.352927S1.889913-1.401743 1.889913-1.548194V-1.785305ZM2.168867-.397509C2.168867-.641594 1.973599-.801993 1.771357-.801993C1.527273-.801993 1.366874-.606725 1.366874-.404483C1.366874-.160399 1.562142 0 1.764384 0C2.008468 0 2.168867-.195268 2.168867-.397509Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-65" d="M3.131258-4.811955C3.089415-4.923537 3.068493-4.972354 2.93599-4.972354S2.782565-4.923537 2.740722-4.811955L1.129763-.732254C1.060025-.557908 .941469-.251059 .313823-.251059V0C.550934-.020922 .795019-.027895 1.03213-.027895C1.311083-.027895 1.827148 0 1.868991 0V-.251059C1.562142-.251059 1.366874-.390535 1.366874-.585803C1.366874-.641594 1.373848-.655542 1.401743-.72528L1.736488-1.583064H3.717061L4.121544-.564882C4.135492-.530012 4.156413-.481196 4.156413-.446326C4.156413-.251059 3.779826-.251059 3.591532-.251059V0C3.940224-.013948 4.38655-.027895 4.630635-.027895C4.958406-.027895 5.481445-.006974 5.558157 0V-.251059H5.41868C4.951432-.251059 4.902615-.320797 4.825903-.516065L3.131258-4.811955ZM2.726775-4.100623L3.619427-1.834122H1.834122L2.726775-4.100623Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-79" d="M5.620922-2.357161C5.620922-3.75193 4.47721-4.902615 3.054545-4.902615C1.624907-4.902615 .488169-3.75193 .488169-2.357161C.488169-.990286 1.624907 .139477 3.054545 .139477S5.620922-.990286 5.620922-2.357161ZM3.054545-.09066C2.238605-.09066 1.234371-.753176 1.234371-2.468742C1.234371-4.086675 2.259527-4.679452 3.054545-4.679452S4.87472-4.086675 4.87472-2.468742C4.87472-.753176 3.870486-.09066 3.054545-.09066Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-97" d="M3.110336-1.868991C3.110336-2.238605 3.110336-2.503611 2.789539-2.761644C2.503611-2.998755 2.168867-3.110336 1.75741-3.110336C1.094894-3.110336 .627646-2.859278 .627646-2.433873C.627646-2.21071 .781071-2.092154 .962391-2.092154C1.150685-2.092154 1.290162-2.231631 1.290162-2.419925C1.290162-2.538481 1.234371-2.684932 1.046077-2.740722C1.297136-2.915068 1.701619-2.915068 1.743462-2.915068C2.133998-2.915068 2.559402-2.657036 2.559402-2.071233V-1.855044C2.175841-1.841096 1.715567-1.820174 1.206476-1.63188C.578829-1.401743 .383562-1.018182 .383562-.704359C.383562-.104608 1.108842 .069738 1.603985 .069738C2.161893 .069738 2.489664-.244085 2.636115-.516065C2.66401-.230137 2.852304 .034869 3.173101 .034869C3.187049 .034869 3.863512 .034869 3.863512-.627646V-1.011208H3.626401V-.63462C3.626401-.564882 3.626401-.230137 3.368369-.230137S3.110336-.557908 3.110336-.648568V-1.868991ZM2.559402-.983313C2.559402-.313823 1.973599-.125529 1.659776-.125529C1.30411-.125529 .969365-.36264 .969365-.704359C.969365-1.08792 1.30411-1.624907 2.559402-1.673724V-.983313Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-98" d="M1.387796-4.839851L.341719-4.763138V-4.51208C.81594-4.51208 .864757-4.456289 .864757-4.107597V0H1.101868L1.345953-.425405C1.610959-.076712 1.994521 .069738 2.364134 .069738C3.284682 .069738 4.072727-.620672 4.072727-1.506351C4.072727-2.357161 3.354421-3.075467 2.440847-3.075467C2.022416-3.075467 1.638854-2.908095 1.387796-2.657036V-4.839851ZM1.415691-2.336239C1.610959-2.657036 1.987547-2.880199 2.405978-2.880199C2.796513-2.880199 3.075467-2.657036 3.214944-2.447821C3.354421-2.245579 3.438107-1.973599 3.438107-1.513325C3.438107-1.352927 3.438107-.829888 3.152179-.502117C2.873225-.188294 2.531507-.125529 2.329265-.125529C1.771357-.125529 1.492403-.564882 1.415691-.711333V-2.336239Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-99" d="M2.712827-2.782565C2.587298-2.726775 2.517559-2.615193 2.517559-2.475716C2.517559-2.287422 2.650062-2.147945 2.84533-2.147945C3.033624-2.147945 3.180075-2.266501 3.180075-2.489664C3.180075-3.110336 2.21071-3.110336 2.015442-3.110336C.969365-3.110336 .320797-2.308344 .320797-1.506351C.320797-.627646 1.066999 .069738 1.980573 .069738C3.019676 .069738 3.263761-.753176 3.263761-.836862S3.173101-.920548 3.145205-.920548C3.054545-.920548 3.047572-.899626 3.012702-.801993C2.859278-.369614 2.489664-.153425 2.064259-.153425C1.583064-.153425 .955417-.509091 .955417-1.513325C.955417-2.399004 1.387796-2.887173 2.036364-2.887173C2.127024-2.887173 2.461768-2.887173 2.712827-2.782565Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-100" d="M2.48269-4.763138V-4.51208C2.949938-4.51208 3.005729-4.463263 3.005729-4.121544V-2.677958C2.747696-2.929016 2.412951-3.075467 2.02939-3.075467C1.101868-3.075467 .320797-2.378082 .320797-1.499377C.320797-.627646 1.060025 .069738 1.945704 .069738C2.517559 .069738 2.859278-.237111 2.977833-.36264V.069738L4.051806 0V-.251059C3.584558-.251059 3.528767-.299875 3.528767-.641594V-4.839851L2.48269-4.763138ZM2.977833-.732254C2.796513-.404483 2.440847-.125529 1.987547-.125529C1.597011-.125529 1.318057-.355666 1.17858-.557908C1.039103-.767123 .955417-1.046077 .955417-1.492403C.955417-1.652802 .955417-2.175841 1.241345-2.503611C1.520299-2.817435 1.862017-2.880199 2.064259-2.880199C2.399004-2.880199 2.698879-2.726775 2.894147-2.475716C2.977833-2.364134 2.977833-2.357161 2.977833-2.224658V-.732254Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-101" d="M3.068493-1.590037C3.214944-1.590037 3.263761-1.590037 3.263761-1.743462C3.263761-2.357161 2.922042-3.110336 1.882939-3.110336C.969365-3.110336 .27198-2.385056 .27198-1.527273C.27198-.641594 1.046077 .069738 1.973599 .069738C2.915068 .069738 3.263761-.683437 3.263761-.836862C3.263761-.864757 3.249813-.934496 3.145205-.934496C3.054545-.934496 3.040598-.892653 3.019676-.822914C2.803487-.258032 2.273474-.153425 2.022416-.153425C1.694645-.153425 1.380822-.299875 1.171606-.564882C.913574-.892653 .9066-1.318057 .9066-1.590037H3.068493ZM.913574-1.771357C.990286-2.75467 1.617933-2.915068 1.882939-2.915068C2.740722-2.915068 2.768618-1.945704 2.775592-1.771357H.913574Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-102" d="M1.436613-2.75467H2.308344V-3.005729H1.408717V-3.7868C1.408717-4.42142 1.785305-4.714321 2.085181-4.714321C2.147945-4.714321 2.217684-4.700374 2.287422-4.679452C2.189788-4.623661 2.133998-4.51208 2.133998-4.400498C2.133998-4.212204 2.266501-4.079701 2.454795-4.079701S2.775592-4.212204 2.775592-4.400498C2.775592-4.700374 2.475716-4.909589 2.092154-4.909589C1.54122-4.909589 .913574-4.519054 .913574-3.7868V-3.005729H.313823V-2.75467H.913574V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.425405 0 .899626-.027895 1.185554-.027895C1.48543-.027895 1.792279-.013948 2.092154 0V-.251059H1.952677C1.436613-.251059 1.436613-.327771 1.436613-.564882V-2.75467Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-103" d="M1.004234-1.241345C1.108842-1.17858 1.3599-1.025156 1.764384-1.025156C2.48269-1.025156 3.005729-1.506351 3.005729-2.050311C3.005729-2.322291 2.880199-2.538481 2.712827-2.719801C3.02665-2.942964 3.29863-2.949938 3.417186-2.949938C3.38929-2.922042 3.354421-2.894147 3.354421-2.782565C3.354421-2.643088 3.459029-2.559402 3.577584-2.559402C3.675218-2.559402 3.800747-2.629141 3.800747-2.789539S3.668244-3.145205 3.38929-3.145205C3.284682-3.145205 2.908095-3.124284 2.580324-2.824408C2.371108-2.977833 2.078207-3.075467 1.771357-3.075467C1.053051-3.075467 .530012-2.594271 .530012-2.050311C.530012-1.778331 .669489-1.527273 .864757-1.345953C.808966-1.283188 .655542-1.053051 .655542-.781071C.655542-.690411 .676463-.36264 .948443-.160399C.63462-.055791 .27198 .174346 .27198 .536986C.27198 1.046077 1.039103 1.429639 1.980573 1.429639C2.866252 1.429639 3.689166 1.080946 3.689166 .523039C3.689166 .313823 3.605479-.062765 3.221918-.27198C2.810461-.488169 2.399004-.488169 1.72254-.488169C1.569116-.488169 1.318057-.488169 1.262267-.495143C1.039103-.54396 .913574-.753176 .913574-.955417C.913574-1.129763 .962391-1.185554 1.004234-1.241345ZM1.771357-1.234371C1.08792-1.234371 1.08792-1.903861 1.08792-2.050311C1.08792-2.161893 1.08792-2.440847 1.227397-2.622167C1.325031-2.740722 1.513325-2.866252 1.764384-2.866252C2.447821-2.866252 2.447821-2.196762 2.447821-2.050311C2.447821-1.93873 2.447821-1.659776 2.308344-1.478456C2.21071-1.3599 2.022416-1.234371 1.771357-1.234371ZM1.771357-.020922C2.39203-.020922 3.263761-.020922 3.263761 .530012C3.263761 .899626 2.712827 1.220423 1.980573 1.220423S.697385 .892653 .697385 .530012C.697385 .285928 .920548-.013948 1.366874-.020922H1.771357Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-104" d="M3.591532-2.113076C3.591532-2.719801 3.291656-3.075467 2.545455-3.075467C1.924782-3.075467 1.583064-2.705853 1.429639-2.440847H1.422665V-4.839851L.376588-4.763138V-4.51208C.843836-4.51208 .899626-4.463263 .899626-4.121544V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-2.113076Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-105" d="M1.471482-4.302864C1.471482-4.505106 1.30411-4.700374 1.066999-4.700374C.857783-4.700374 .669489-4.533001 .669489-4.302864C.669489-4.051806 .871731-3.898381 1.066999-3.898381C1.290162-3.898381 1.471482-4.072727 1.471482-4.302864ZM.411457-2.998755V-2.747696C.850809-2.747696 .913574-2.705853 .913574-2.364134V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.404483 0 .892653-.027895 1.171606-.027895C1.415691-.027895 1.66675-.020922 1.910834 0V-.251059C1.506351-.251059 1.436613-.251059 1.436613-.54396V-3.075467L.411457-2.998755Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-108" d="M1.436613-4.839851L.390535-4.763138V-4.51208C.857783-4.51208 .913574-4.463263 .913574-4.121544V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.404483 0 .892653-.027895 1.171606-.027895C1.436613-.027895 1.694645-.020922 1.959651 0V-.251059C1.506351-.251059 1.436613-.251059 1.436613-.550934V-4.839851Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-109" d="M5.732503-2.113076C5.732503-2.719801 5.432628-3.075467 4.686426-3.075467C4.135492-3.075467 3.758904-2.775592 3.57061-2.426899C3.431133-2.922042 3.054545-3.075467 2.545455-3.075467C1.973599-3.075467 1.603985-2.761644 1.408717-2.399004H1.401743V-3.075467L.376588-2.998755V-2.747696C.843836-2.747696 .899626-2.698879 .899626-2.357161V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-1.806227C3.591532-2.538481 4.170361-2.880199 4.630635-2.880199C5.118804-2.880199 5.181569-2.496638 5.181569-2.140971V-.550934C5.181569-.251059 5.111831-.251059 4.658531-.251059V0C4.672478 0 5.160648-.027895 5.453549-.027895C5.711582-.027895 6.192777-.006974 6.255542 0V-.251059C5.802242-.251059 5.732503-.251059 5.732503-.550934V-2.113076Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-110" d="M3.591532-2.113076C3.591532-2.719801 3.291656-3.075467 2.545455-3.075467C1.973599-3.075467 1.603985-2.761644 1.408717-2.399004H1.401743V-3.075467L.376588-2.998755V-2.747696C.843836-2.747696 .899626-2.698879 .899626-2.357161V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-2.113076Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-111" d="M3.689166-1.48543C3.689166-2.357161 2.942964-3.110336 1.980573-3.110336S.27198-2.357161 .27198-1.48543C.27198-.620672 1.039103 .069738 1.980573 .069738S3.689166-.620672 3.689166-1.48543ZM1.980573-.153425C1.72254-.153425 1.345953-.237111 1.115816-.578829C.927522-.864757 .9066-1.227397 .9066-1.548194C.9066-1.84807 .913574-2.259527 1.157659-2.559402C1.332005-2.761644 1.624907-2.915068 1.980573-2.915068C2.39203-2.915068 2.684932-2.719801 2.838356-2.503611C3.033624-2.231631 3.054545-1.882939 3.054545-1.548194S3.033624-.843836 2.831382-.557908C2.643088-.292902 2.322291-.153425 1.980573-.153425Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-112" d="M1.93873 1.101868C1.48543 1.101868 1.415691 1.101868 1.415691 .801993V-.334745C1.45056-.299875 1.778331 .069738 2.364134 .069738C3.284682 .069738 4.072727-.620672 4.072727-1.506351C4.072727-2.364134 3.361395-3.075467 2.475716-3.075467C2.078207-3.075467 1.673724-2.929016 1.387796-2.650062V-3.075467L.341719-2.998755V-2.747696C.829888-2.747696 .864757-2.712827 .864757-2.419925V.801993C.864757 1.101868 .795019 1.101868 .341719 1.101868V1.352927C.355666 1.352927 .843836 1.325031 1.136737 1.325031C1.39477 1.325031 1.875965 1.345953 1.93873 1.352927V1.101868ZM1.415691-2.322291C1.624907-2.670984 2.02939-2.852304 2.399004-2.852304C2.984807-2.852304 3.438107-2.238605 3.438107-1.506351C3.438107-.711333 2.915068-.125529 2.322291-.125529C1.708593-.125529 1.436613-.662516 1.415691-.704359V-2.322291Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-114" d="M1.387796-1.590037C1.387796-2.175841 1.659776-2.880199 2.322291-2.880199C2.259527-2.831382 2.203736-2.740722 2.203736-2.629141C2.203736-2.399004 2.385056-2.308344 2.517559-2.308344C2.684932-2.308344 2.838356-2.419925 2.838356-2.629141C2.838356-2.866252 2.615193-3.075467 2.287422-3.075467C1.93873-3.075467 1.555168-2.859278 1.345953-2.329265H1.338979V-3.075467L.341719-2.998755V-2.747696C.808966-2.747696 .864757-2.698879 .864757-2.357161V-.550934C.864757-.251059 .795019-.251059 .341719-.251059V0C.376588 0 .850809-.027895 1.136737-.027895C1.436613-.027895 1.743462-.013948 2.043337 0V-.251059H1.903861C1.387796-.251059 1.387796-.327771 1.387796-.564882V-1.590037Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-115" d="M2.643088-2.929016C2.643088-3.047572 2.643088-3.110336 2.545455-3.110336C2.510585-3.110336 2.496638-3.110336 2.405978-3.02665C2.39203-3.019676 2.322291-2.956912 2.280448-2.922042C2.071233-3.068493 1.806227-3.110336 1.548194-3.110336C.550934-3.110336 .313823-2.587298 .313823-2.238605C.313823-2.015442 .411457-1.834122 .578829-1.694645C.843836-1.464508 1.108842-1.415691 1.54122-1.345953C1.889913-1.283188 2.454795-1.185554 2.454795-.718306C2.454795-.446326 2.266501-.125529 1.597011-.125529S.683437-.564882 .557908-1.039103C.536986-1.129763 .530012-1.157659 .432379-1.157659C.313823-1.157659 .313823-1.108842 .313823-.969365V-.111582C.313823 .006974 .313823 .069738 .411457 .069738C.474222 .069738 .606725-.076712 .746202-.230137C1.053051 .055791 1.429639 .069738 1.597011 .069738C2.503611 .069738 2.838356-.418431 2.838356-.913574C2.838356-1.17858 2.719801-1.387796 2.538481-1.555168C2.273474-1.799253 1.952677-1.855044 1.708593-1.896887C1.150685-1.994521 .697385-2.078207 .697385-2.447821C.697385-2.670984 .885679-2.942964 1.548194-2.942964C2.357161-2.942964 2.39203-2.378082 2.405978-2.175841C2.412951-2.099128 2.496638-2.099128 2.524533-2.099128C2.643088-2.099128 2.643088-2.147945 2.643088-2.280448V-2.929016Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-116" d="M1.401743-2.75467H2.489664V-3.005729H1.401743V-4.288917H1.164633C1.157659-3.66127 .871731-2.970859 .202242-2.949938V-2.75467H.850809V-.871731C.850809-.09066 1.436613 .069738 1.827148 .069738C2.294396 .069738 2.615193-.327771 2.615193-.878705V-1.262267H2.378082V-.885679C2.378082-.411457 2.154919-.153425 1.882939-.153425C1.401743-.153425 1.401743-.739228 1.401743-.864757V-2.75467Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-117" d="M2.517559-2.998755V-2.747696C2.984807-2.747696 3.040598-2.698879 3.040598-2.357161V-1.164633C3.040598-.550934 2.643088-.125529 2.113076-.125529C1.478456-.125529 1.45056-.425405 1.45056-.781071V-3.075467L.376588-2.998755V-2.747696C.899626-2.747696 .899626-2.726775 .899626-2.106102V-1.060025C.899626-.578829 .899626 .069738 2.064259 .069738C2.217684 .069738 2.726775 .069738 3.061519-.516065H3.068493V.069738L4.11457 0V-.251059C3.647323-.251059 3.591532-.299875 3.591532-.641594V-3.075467L2.517559-2.998755Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-118" d="M3.305604-2.322291C3.500872-2.747696 3.849564-2.75467 3.961146-2.75467V-3.005729C3.7868-2.991781 3.605479-2.977833 3.431133-2.977833C3.242839-2.977833 2.984807-2.984807 2.796513-3.005729V-2.75467C3.089415-2.740722 3.089415-2.510585 3.089415-2.489664C3.089415-2.454795 3.082441-2.385056 3.033624-2.287422L2.245579-.564882L1.380822-2.461768C1.380822-2.468742 1.338979-2.545455 1.338979-2.594271C1.338979-2.75467 1.57609-2.75467 1.694645-2.75467V-3.005729C1.680697-3.005729 1.185554-2.977833 .899626-2.977833C.690411-2.977833 .418431-2.984807 .216189-3.005729V-2.75467C.599751-2.75467 .683437-2.740722 .788045-2.503611L1.889913-.076712C1.924782 .006974 1.966625 .069738 2.085181 .069738C2.217684 .069738 2.245579 .006974 2.280448-.069738L3.305604-2.322291Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-120" d="M2.364134-1.562142C2.357161-1.569116 2.308344-1.624907 2.308344-1.63188C2.308344-1.652802 2.768618-2.147945 2.831382-2.21071C3.075467-2.48269 3.319552-2.747696 3.870486-2.75467V-3.005729C3.675218-2.991781 3.472976-2.977833 3.284682-2.977833C3.075467-2.977833 2.803487-2.984807 2.594271-3.005729V-2.75467C2.712827-2.733748 2.733748-2.657036 2.733748-2.594271C2.733748-2.580324 2.733748-2.475716 2.629141-2.357161L2.140971-1.806227L1.562142-2.468742C1.492403-2.545455 1.48543-2.580324 1.48543-2.608219C1.48543-2.712827 1.583064-2.75467 1.673724-2.75467V-3.005729C1.415691-2.984807 1.150685-2.977833 .892653-2.977833C.683437-2.977833 .418431-2.984807 .216189-3.005729V-2.75467C.536986-2.75467 .718306-2.75467 .899626-2.545455L1.771357-1.54122C1.778331-1.534247 1.827148-1.478456 1.827148-1.471482C1.827148-1.45056 1.30411-.878705 1.234371-.801993C.976339-.523039 .739228-.265006 .18132-.251059V0C.390535-.013948 .54396-.027895 .760149-.027895C.969365-.027895 1.248319-.020922 1.457534 0V-.251059C1.373848-.265006 1.318057-.313823 1.318057-.411457C1.318057-.54396 1.39477-.63462 1.506351-.753176L1.994521-1.290162L2.601245-.599751C2.733748-.4533 2.733748-.439352 2.733748-.397509C2.733748-.258032 2.57335-.251059 2.545455-.251059V0C2.608219-.006974 3.110336-.027895 3.333499-.027895S3.779826-.020922 4.002989 0V-.251059C3.535741-.251059 3.47995-.292902 3.319552-.474222L2.364134-1.562142Z"></path>
+<path id="tz_os_quatro_grupos_de_modulo_do_pam_g2-126" d="M3.124284-4.6934C2.922042-4.47721 2.719801-4.372603 2.524533-4.372603C2.343213-4.372603 2.133998-4.47721 2.078207-4.51208C1.827148-4.630635 1.680697-4.6934 1.527273-4.6934C1.241345-4.6934 1.136737-4.581818 .697385-4.135492L.836862-3.996015C1.039103-4.212204 1.241345-4.316812 1.436613-4.316812C1.617933-4.316812 1.827148-4.212204 1.882939-4.177335C2.133998-4.05878 2.280448-3.996015 2.433873-3.996015C2.719801-3.996015 2.824408-4.107597 3.263761-4.553923L3.124284-4.6934Z"></path>
+</defs>
+<g id="tz_os_quatro_grupos_de_modulo_do_pam_page1">
+<g stroke-miterlimit="10" transform="translate(-25.096775,-53.364352)scale(0.996264,-0.996264)">
+<g fill="#000" stroke="#000">
+<g stroke-width="0.4">
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#e5f0fc">
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#e5f0fc">
+<path d="M39.67912 14.30554H-39.67912C-41.336 14.30554-42.67912 12.96242-42.67912 11.30554V-11.30554C-42.67912-12.96242-41.336-14.30554-39.67912-14.30554H39.67912C41.336-14.30554 42.67912-12.96242 42.67912-11.30554V11.30554C42.67912 12.96242 41.336 14.30554 39.67912 14.30554ZM-42.67912-14.30554"></path>
+</g>
+</g>
+</g>
+<g transform="translate(-32.32306,-9.55554)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(-25.096775,-53.364352)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="-1.859786" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-97"></use>
+<use x="2.529988" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-117"></use>
+<use x="7.538976" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-116"></use>
+<use x="11.061868" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-104"></use>
+<use x="-25.096775" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="-20.696585" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-17.583242" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="-13.826484" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-118"></use>
+<use x="-10.069711" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-3.414079" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="3.241553" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="5.496999" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="9.897188" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="13.43948" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="17.625187" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="20.73853" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="22.993976" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="27.394165" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="31.365405" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="35.765594" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-22.866232" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-40"></use>
+<use x="-19.752889" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-118"></use>
+<use x="-15.78165" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-12.239358" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-9.126015" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="-6.870569" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-12"></use>
+<use x="-2.359684" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="1.182607" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="7.838239" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="14.493871" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="17.650112" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="21.192404" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="25.592593" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="29.992782" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="33.964023" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-41"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#3fb618">
+<g fill="#e5f5df">
+<g stroke-width="0.8">
+<g stroke="#3fb618">
+<g fill="#e5f5df">
+<path d="M142.10916 14.22636H62.75092C61.09404 14.22636 59.75092 12.88324 59.75092 11.22636V-11.22636C59.75092-12.88324 61.09404-14.22636 62.75092-14.22636H142.10916C143.76604-14.22636 145.10916-12.88324 145.10916-11.22636V11.22636C145.10916 12.88324 143.76604 14.22636 142.10916 14.22636ZM59.75092-14.22636"></path>
+</g>
+</g>
+</g>
+<g transform="translate(66.12085,-9.34723)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(-25.096775,-53.364352)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="-4.039767" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-97"></use>
+<use x=".350007" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-99"></use>
+<use x="4.368262" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-99"></use>
+<use x="8.386516" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-111"></use>
+<use x="12.900141" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-117"></use>
+<use x="17.90913" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-110"></use>
+<use x="22.670435" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-116"></use>
+<use x="-25.096775" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-18.441143" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="-14.898851" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="-10.92761" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="-6.741903" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="-3.62856" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="3.027072" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="7.641728" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="11.827435" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="16.227624" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="22.454308" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="25.996599" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="30.182307" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="33.29565" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="36.408993" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="40.380233" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="43.493576" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-63"></use>
+<use x="-23.380995" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-40"></use>
+<use x="-20.267652" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-16.72536" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-120"></use>
+<use x="-12.539639" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="-8.139449" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="-5.884004" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-2.770661" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="1.20058" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-24"></use>
+<use x="1.200583" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="4.742874" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-126"></use>
+<use x="4.742877" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="8.714118" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="12.685358" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-44"></use>
+<use x="17.625195" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="22.025385" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="25.996625" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="29.109968" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-19"></use>
+<use x="29.109971" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="33.081211" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="36.194555" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="38.45" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="42.421241" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-41"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#ff7518">
+<g fill="#ffe1cc">
+<g stroke-width="0.8">
+<g stroke="#ff7518">
+<g fill="#ffe1cc">
+<path d="M244.53879 14.30554H165.18054C163.52367 14.30554 162.18054 12.96242 162.18054 11.30554V-11.30554C162.18054-12.96242 163.52367-14.30554 165.18054-14.30554H244.53879C246.19566-14.30554 247.53879-12.96242 247.53879-11.30554V11.30554C247.53879 12.96242 246.19566 14.30554 244.53879 14.30554ZM162.18054-14.30554"></path>
+</g>
+</g>
+</g>
+<g transform="translate(176.01508,-9.55554)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(-25.096775,-53.364352)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="-14.380582" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-112"></use>
+<use x="-9.371594" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-97"></use>
+<use x="-4.98182" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-115"></use>
+<use x="-1.409387" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-115"></use>
+<use x="2.163046" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-119"></use>
+<use x="8.410449" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-111"></use>
+<use x="12.924074" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-114"></use>
+<use x="16.651763" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-100"></use>
+<use x="-21.713603" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="-18.60026" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-15.486917" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="-11.301209" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="-7.758918" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-1.103286" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="3.296904" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="9.523587" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="12.679828" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="16.222119" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="20.622309" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="25.022498" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-25.096775" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-40"></use>
+<use x="-21.983431" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-18.870088" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-15.327797" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-103"></use>
+<use x="-11.356556" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-8.243213" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-4.271973" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="1.56866" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="5.968849" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="12.195532" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-102"></use>
+<use x="14.665459" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="18.636699" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="21.750042" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-24"></use>
+<use x="21.750045" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="25.292337" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="29.263577" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-41"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#d7433b">
+<g fill="#fbebea">
+<g stroke-width="0.8">
+<g stroke="#d7433b">
+<g fill="#fbebea">
+<path d="M346.96883 14.30554H267.61058C265.9537 14.30554 264.61058 12.96242 264.61058 11.30554V-11.30554C264.61058-12.96242 265.9537-14.30554 267.61058-14.30554H346.96883C348.6257-14.30554 349.96883-12.96242 349.96883-11.30554V11.30554C349.96883 12.96242 348.6257 14.30554 346.96883 14.30554ZM264.61058-14.30554"></path>
+</g>
+</g>
+</g>
+<g transform="translate(273.56734,-9.55554)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(-25.096775,-53.364352)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="-4.951905" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-115"></use>
+<use x="-1.379471" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-101"></use>
+<use x="2.751567" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-115"></use>
+<use x="6.324" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-115"></use>
+<use x="9.896433" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-105"></use>
+<use x="12.428592" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-111"></use>
+<use x="16.942216" y="-69.304576" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-110"></use>
+<use x="-25.096775" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="-20.696585" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-17.583242" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-14.040951" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="-9.640761" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="-5.669521" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="-2.556178" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="4.099454" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="10.755086" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="14.726327" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="21.056777" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-98"></use>
+<use x="25.456967" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="27.712412" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="31.254704" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="35.440411" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="38.553754" y="-61.334464" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="-23.647345" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-40"></use>
+<use x="-20.534002" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="-13.98907" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="-10.017829" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="-5.832122" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="-2.718779" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="3.936853" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="8.337042" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="12.308283" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="18.853215" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="22.395507" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-44"></use>
+<use x="27.335344" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-108"></use>
+<use x="29.59079" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="33.562031" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-103"></use>
+<use x="37.533271" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-41"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g stroke-width="0.8">
+<path d="M43.07912 0H56.3052" fill="none"></path>
+<g transform="translate(54.35092,0.0)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.86082 0L1.29172 .9765L2.15428 0L1.29172-.9765Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g stroke-width="0.8">
+<path d="M145.50916 0H158.73483" fill="none"></path>
+<g transform="translate(156.78055,0.0)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.86082 0L1.29172 .9765L2.15428 0L1.29172-.9765Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g stroke-width="0.8">
+<path d="M247.93878 0H261.16487" fill="none"></path>
+<g transform="translate(259.21059,0.0)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.86082 0L1.29172 .9765L2.15428 0L1.29172-.9765Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g fill="#6c757d" stroke="#6c757d">
+</g>
+<g transform="translate(-24.18507,-40.52634)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(-25.096775,-53.364352)scale(-1,-1)">
+<g fill="#6c757d">
+<g stroke="none">
+<g fill="#6c757d">
+<use x="-25.096775" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-79"></use>
+<use x="-16.333598" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="-9.788665" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="-7.53322" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="-4.376979" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="-1.478118" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-19"></use>
+<use x="-1.263633" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="2.278659" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="5.392002" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="7.647448" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="14.265881" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="18.66607" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="25.284503" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="29.255744" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-98"></use>
+<use x="33.8704" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="37.412691" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="40.526034" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="43.639378" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-117"></use>
+<use x="48.039567" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="51.15291" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="57.771343" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="64.316276" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="68.287516" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="71.400859" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="78.019293" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="81.561584" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="90.75371" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-97"></use>
+<use x="95.143484" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-99"></use>
+<use x="99.161739" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-99"></use>
+<use x="103.179993" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-111"></use>
+<use x="107.693618" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-117"></use>
+<use x="112.702607" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-110"></use>
+<use x="117.463912" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g1-116"></use>
+<use x="120.986804" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-58"></use>
+<use x="127.213472" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="133.758404" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="137.300696" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="140.456937" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="147.001869" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="153.620303" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="157.162594" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="161.133835" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="170.32596" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="176.944393" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="180.100634" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="183.642926" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="188.043115" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="192.443304" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="199.061737" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="202.604029" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="206.146321" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="209.259664" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="212.373007" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="218.99144" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-40"></use>
+<use x="222.104783" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-97"></use>
+<use x="225.809693" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-117"></use>
+<use x="229.514603" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-116"></use>
+<use x="233.219513" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-104"></use>
+<use x="239.571616" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="243.971805" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="247.943046" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="251.099286" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="254.255527" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="258.226768" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-41"></use>
+<use x="261.340111" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-44"></use>
+<use x="266.242749" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="272.861182" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="279.406115" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-19"></use>
+<use x="279.406118" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="283.377358" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="287.777547" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-117"></use>
+<use x="292.177737" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-108"></use>
+<use x="294.433182" y="-53.364352" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="-25.096775" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-112"></use>
+<use x="-21.391865" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-97"></use>
+<use x="-17.686955" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-109"></use>
+</g>
+<rect x="-13.537484" y="-45.79274" height=".3985" width="2.222957" fill="#6c757d"></rect>
+<g fill="#6c757d">
+<use x="-11.314527" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-117"></use>
+<use x="-7.609617" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-110"></use>
+<use x="-3.904707" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-105"></use>
+<use x="-.199797" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-120"></use>
+<use x="6.152306" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="10.552495" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="16.741979" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-97"></use>
+<use x="20.446889" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-99"></use>
+<use x="24.151799" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-99"></use>
+<use x="27.856709" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-111"></use>
+<use x="31.561619" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-117"></use>
+<use x="35.266529" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-110"></use>
+<use x="38.971439" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g0-116"></use>
+<use x="45.323542" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="48.436885" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="51.979177" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="55.521469" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-117"></use>
+<use x="59.921658" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="63.077899" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="69.696332" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-117"></use>
+<use x="74.096521" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="80.641454" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="87.259887" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="90.802179" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="94.773419" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="98.959126" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-116"></use>
+<use x="102.072469" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="108.690903" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="112.233194" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-120"></use>
+<use x="116.418916" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="120.819105" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="123.074551" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="126.187894" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="130.159134" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-100"></use>
+<use x="134.559324" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="138.530564" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-46"></use>
+<use x="144.757232" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-65"></use>
+<use x="153.285191" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-115"></use>
+<use x="156.441431" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="159.983723" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="164.383912" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-104"></use>
+<use x="168.784101" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="175.402535" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="179.588242" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-117"></use>
+<use x="183.988431" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-110"></use>
+<use x="188.38862" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-99"></use>
+<use x="191.930912" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="198.549345" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-102"></use>
+<use x="201.019272" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="204.990512" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-105"></use>
+<use x="209.893151" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="216.511584" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-112"></use>
+<use x="220.911773" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-114"></use>
+<use x="224.025116" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-111"></use>
+<use x="227.996357" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-98"></use>
+<use x="232.396546" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-108"></use>
+<use x="234.651992" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-101"></use>
+<use x="238.194283" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-109"></use>
+<use x="244.739216" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-97"></use>
+<use x="248.710457" y="-45.39424" href="#tz_os_quatro_grupos_de_modulo_do_pam_g2-46"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</svg>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-pam-stack-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figura&nbsp;25.1: Os quatro grupos de módulo do PAM; a expiração de conta é decidida no grupo <code>account</code>.
+</figcaption>
+</figure>
+</div>
+<ul>
+<li><strong>auth</strong> — verifica quem você é (senha, chave, biometria, token).</li>
+<li><strong>account</strong> — verifica se a conta <em>pode</em> ser usada agora: não expirada, dentro do horário permitido, não bloqueada. Foi aqui que a conta da abertura foi barrada.</li>
+<li><strong>password</strong> — governa a <em>troca</em> de senha: complexidade mínima, histórico, tamanho.</li>
+<li><strong>session</strong> — prepara e encerra a sessão: monta o diretório pessoal, registra no log, aplica limites.</li>
+</ul>
+<p>A coluna de <strong>controle</strong> diz o peso de cada módulo:</p>
+<div id="tbl-pam-controle" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-tbl figure">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="tbl-pam-controle-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Tabela&nbsp;25.2: Palavras de controle do PAM (forma simples)
+</figcaption>
+<div aria-describedby="tbl-pam-controle-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table class="caption-top table">
+<colgroup>
+<col style="width: 62%">
+<col style="width: 37%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: center;">Controle</th>
+<th>Efeito se o módulo falha</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;"><code>requisite</code></td>
+<td>falha <strong>imediata</strong>, para o empilhamento na hora</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>required</code></td>
+<td>falha, mas o empilhamento continua (o resultado final é negativo)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;"><code>sufficient</code></td>
+<td>se <strong>passa</strong>, aprova na hora (se falha, ignora e segue)</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;"><code>optional</code></td>
+<td>o resultado quase nunca importa</td>
+</tr>
+</tbody>
+</table>
+</div>
+</figure>
+</div>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Importante</span>Editar PAM é operação de rede sob os pés
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Um erro num arquivo de <code>/etc/pam.d/</code> pode trancar <strong>todo</strong> o login da máquina, inclusive o seu e o do root — e você só descobre quando já está fora. A regra de ouro: <strong>mantenha uma sessão de root aberta</strong> num segundo terminal enquanto edita PAM, e teste o login numa <strong>nova</strong> sessão antes de fechar a antiga. Se travar, a sessão preservada é a sua única saída sem mídia de recuperação. Nunca edite PAM por SSH sem um plano B.</p>
+</div>
+</div>
+</section>
+<section id="regras-práticas-de-pam-que-você-vai-encontrar" class="level2" data-number="25.6">
+<h2 data-number="25.6" class="anchored" data-anchor-id="regras-práticas-de-pam-que-você-vai-encontrar"><span class="header-section-number">25.6</span> Regras práticas de PAM que você vai encontrar</h2>
+<p>Você raramente escreve PAM do zero; ajusta o que já existe. Dois módulos concentram o que mais aparece.</p>
+<p><strong>Força de senha — <code>pam_pwquality</code></strong> (pacote <code>libpam-pwquality</code>). Configurado em <code>/etc/security/pwquality.conf</code>, exige senhas com tamanho e complexidade mínimos na hora da troca:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-vE</span> <span class="st">'^\s*#|^\s*$'</span> /etc/security/pwquality.conf</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<pre class="text"><code>minlen = 12
+dcredit = -1     # exige ao menos 1 digito
+ucredit = -1     # ao menos 1 maiuscula
+ocredit = -1     # ao menos 1 caractere especial</code></pre>
+<p><strong>Bloqueio após tentativas — <code>pam_faillock</code></strong>. Trava a conta temporariamente depois de N senhas erradas, mitigando ataques de força bruta local. Consultar e desbloquear:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">faillock</span> <span class="at">--user</span> joao               <span class="co"># mostra as falhas registradas</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> faillock <span class="at">--user</span> joao <span class="at">--reset</span>  <span class="co"># zera o contador, desbloqueia</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>E dois utilitários de linha de comando para conferir estado, que valem mais que decorar arquivos:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="fu">who</span>                  <span class="co"># sessoes ativas agora</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="fu">w</span>                    <span class="co"># sessoes + o que cada uma faz</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="fu">last</span>                 <span class="co"># historico de logins (le /var/log/wtmp)</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="fu">lastb</span>                <span class="co"># historico de logins FALHOS (precisa de sudo)</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="ex">lastlog</span>              <span class="co"># ultimo login de cada conta</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O <code>lastb</code>, em particular, é ouro numa investigação: uma enxurrada de logins falhos de um mesmo IP é a assinatura de um ataque de força bruta em andamento.</p>
+</section>
+<section id="no-kali" class="level2" data-number="25.7">
+<h2 data-number="25.7" class="anchored" data-anchor-id="no-kali"><span class="header-section-number">25.7</span> 🐉 No Kali</h2>
+<ul>
+<li><strong>Para o dia a dia, <code>adduser</code> poupa dor de cabeça.</strong> Numa VM de estudo, <code>sudo adduser analista</code> cria a conta completa — diretório, senha, grupo — de forma interativa. Guarde o <code>useradd</code> explícito para scripts de provisionamento, onde a previsibilidade de cada opção importa mais que a conveniência.</li>
+<li><strong><code>last</code>, <code>lastb</code> e <code>faillock</code> são análise de log de autenticação.</strong> Ao periciar uma máquina (sua ou de um alvo autorizado), <code>last</code> reconstrói quem entrou e quando, e <code>sudo lastb</code> expõe a maré de tentativas falhas que denuncia força bruta. Esses arquivos (<code>/var/log/wtmp</code>, <code>/var/log/btmp</code>) são também os que um invasor tenta limpar — um <code>wtmp</code> truncado é, por si, um indício.</li>
+<li><strong>PAM é vetor de persistência avançado — logo, alvo de auditoria.</strong> Um invasor com root pode inserir um módulo PAM malicioso (por exemplo, um <code>pam_unix</code> adulterado ou um módulo que aceita uma senha-mestra) para garantir acesso futuro. Auditar <code>/etc/pam.d/</code> e os módulos em <code>/lib/x86_64-linux-gnu/security/</code> (data de modificação, hash contra um pacote limpo) é parte de uma resposta a incidente. Fazer isso no seu sistema ou num engajamento autorizado é defesa; adulterar PAM alheio é crime (Lei 12.737/2012).</li>
+<li><strong><code>pam_pwquality</code> e <code>pam_faillock</code> são hardening barato.</strong> Numa máquina Kali exposta (um C2 de laboratório, um servidor de treino), impor senha forte e bloqueio por tentativa reduz a superfície de força bruta local com poucas linhas. É o tipo de configuração que um relatório de teste recomenda ao cliente.</li>
+<li><strong>A conta <code>kali</code> e o <code>/etc/skel</code> definem o ambiente padrão.</strong> Personalizações que você quer em toda conta nova de um laboratório multiusuário (um <code>.zshrc</code> com aliases de ferramentas, uma pasta de wordlists) vão no <code>/etc/skel</code> antes de criar as contas.</li>
+<li><strong>Cuidado ao expirar a própria conta em teste.</strong> <code>chage -E</code> ou <code>usermod -e</code> com data passada trava o login na próxima sessão. Em VM descartável, sem problema; numa máquina que importa, é o tipo de “experimento” que exige a sessão de root aberta em paralelo, como no aviso sobre PAM.</li>
+</ul>
+<blockquote class="blockquote">
+<p><strong>Nota sobre a família RHEL.</strong> As ferramentas de conta (<code>useradd</code>, <code>usermod</code>, <code>userdel</code>, <code>chage</code>) são idênticas — vêm do mesmo <code>shadow-utils</code>. Duas diferenças: (1) o RHEL não tem o <code>adduser</code>/<code>deluser</code> do Debian; lá <code>useradd</code> é a ferramenta padrão e já cria o <code>/home</code> por default de fábrica, sem exigir <code>-m</code> na maioria das configs. (2) A stack PAM tem nomes de arquivo próprios (<code>system-auth</code>, <code>password-auth</code>) gerados pela ferramenta <code>authselect</code> (antiga <code>authconfig</code>), em vez da edição manual comum no Debian. Os módulos (<code>pam_unix</code>, <code>pam_pwquality</code>, <code>pam_faillock</code>) são os mesmos. O log de autenticação vai para <code>/var/log/secure</code>.</p>
+</blockquote>
+</section>
+<section id="laboratório" class="level2" data-number="25.8">
+<h2 data-number="25.8" class="anchored" data-anchor-id="laboratório"><span class="header-section-number">25.8</span> 🧪 Laboratório</h2>
+<p>Roteiro em VM descartável. Cria e remove contas de teste; o passo final limpa tudo.</p>
+<ol type="1">
+<li><p><strong>Veja a diferença entre <code>useradd</code> cru e o esperado.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd lab025a</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="fu">getent</span> passwd lab025a</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-ld</span> /home/lab025a <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> lab025a</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: a conta existe, mas <strong>não</strong> há <code>/home/lab025a</code> e o status é <code>L</code> ou <code>NP</code> — sem <code>-m</code> e sem senha, o login não funcionaria.</p></li>
+<li><p><strong>Crie uma conta completa do jeito explícito.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash <span class="at">-c</span> <span class="st">"Conta de teste"</span> <span class="at">-G</span> sudo lab025b</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="fu">getent</span> passwd lab025b</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-ld</span> /home/lab025b</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-a</span> /home/lab025b</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: diretório pessoal criado e povoado com os arquivos vindos de <code>/etc/skel</code> (<code>.bashrc</code>, <code>.profile</code>).</p></li>
+<li><p><strong>Confirme o papel do <code>/etc/skel</code>.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-a</span> /etc/skel</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">"alias ll='ls -la'"</span> <span class="kw">|</span> <span class="fu">sudo</span> tee <span class="at">-a</span> /etc/skel/.bash_aliases</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> lab025c</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /home/lab025c/.bash_aliases</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> rm /etc/skel/.bash_aliases</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: a conta <code>lab025c</code>, criada <strong>depois</strong> da edição, herdou o <code>.bash_aliases</code>; contas anteriores não.</p></li>
+<li><p><strong>Defina uma senha e leia o status.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">'lab025b:SenhaForte#2026'</span> <span class="kw">|</span> <span class="fu">sudo</span> chpasswd</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> lab025b</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> getent shadow lab025b <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-d:</span> <span class="at">-f2</span> <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-c1-4</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: status <code>P</code> (senha válida) e o prefixo de hash (<code>$y$</code>). O <code>chpasswd</code> define senha sem interação, útil em script.</p></li>
+<li><p><strong>Explore o envelhecimento com <code>chage</code>.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-l</span> lab025b</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-M</span> 90 <span class="at">-m</span> 7 <span class="at">-W</span> 14 lab025b</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-l</span> lab025b</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: os valores de “máximo de dias”, “mínimo” e “aviso” mudam na segunda listagem.</p></li>
+<li><p><strong>Reproduza o mistério da abertura: conta expirada.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-E</span> 2020-01-01 lab025b       <span class="co"># data no passado</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-l</span> lab025b <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> <span class="st">"expira\|expires"</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> su <span class="at">-</span> lab025b <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span> <span class="kw">|</span> <span class="fu">head</span> <span class="at">-3</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: a troca de usuário é recusada com “account has expired” ou equivalente — a senha está certa, mas o grupo <code>account</code> do PAM barra. Exatamente o cenário da abertura.</p></li>
+<li><p><strong>Conserte a expiração.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb19"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-E</span> <span class="at">-1</span> lab025b               <span class="co"># -1 remove a expiracao</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-l</span> lab025b <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> <span class="st">"expira\|expires"</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> su <span class="at">-</span> lab025b <span class="at">-c</span> <span class="st">'whoami'</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: com a expiração removida (<code>-1</code> = nunca), o login volta a funcionar.</p></li>
+<li><p><strong>Force uma troca de senha no próximo login.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb20"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chage <span class="at">-d</span> 0 lab025b</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> lab025b</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: o status mostra a data da última troca zerada — no próximo login interativo, o sistema exigiria nova senha antes de prosseguir.</p></li>
+<li><p><strong>Entenda a substituição de grupos.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb21"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-aG</span> adm lab025b</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="fu">id</span> lab025b</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-G</span> lab025b lab025b       <span class="co"># SEM -a: substitui tudo</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="fu">id</span> lab025b</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-aG</span> sudo,adm lab025b     <span class="co"># recompoe</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="fu">id</span> lab025b</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: depois do <code>usermod -G</code> sem <code>-a</code>, os grupos <code>sudo</code> e <code>adm</code> somem, restando só o primário. É a demonstração do porquê o <code>-a</code> é obrigatório.</p></li>
+<li><p><strong>Bloqueie e desbloqueie a conta.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb22"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-L</span> lab025b</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> lab025b               <span class="co"># status L</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> getent shadow lab025b <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-d:</span> <span class="at">-f2</span> <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-c1</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> usermod <span class="at">-U</span> lab025b</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> passwd <span class="at">-S</span> lab025b               <span class="co"># status P</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: o <code>L</code> no status e o <code>!</code> no início do hash quando bloqueada; ambos revertem no desbloqueio.</p></li>
+<li><p><strong>Inspecione a stack PAM de um serviço.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb23"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-vE</span> <span class="st">'^\s*#|^\s*$'</span> /etc/pam.d/sshd</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-rl</span> pam_unix /etc/pam.d/ <span class="kw">|</span> <span class="fu">head</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /lib/<span class="pp">*</span>/security/pam_unix.so <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="fu">ls</span> /usr/lib/<span class="pp">*</span>/security/pam_unix.so</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: as linhas <code>auth</code>, <code>account</code>, <code>password</code>, <code>session</code> e o caminho do módulo <code>pam_unix.so</code>. <strong>Não edite</strong> nada aqui neste laboratório.</p></li>
+<li><p><strong>Leia os logs de autenticação.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb24"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="fu">last</span> <span class="at">-n</span> 5</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> lastb <span class="at">-n</span> 5 <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="bu">echo</span> <span class="st">"sem btmp ou vazio"</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="fu">who</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="fu">w</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: <code>last</code> mostra logins recentes; <code>lastb</code>, os falhos (se houver). São as fontes de uma triagem de acesso.</p></li>
+<li><p><strong>Encontre arquivos que ficarão órfãos.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb25"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> <span class="at">-u</span> lab025b touch /tmp/orfao-lab025b</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> find /tmp <span class="at">-user</span> lab025b <span class="dv">2</span><span class="op">&gt;</span>/dev/null</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: o arquivo aparece; depois da remoção da conta, ele vira <code>-nouser</code>.</p></li>
+<li><p><strong>Remova as contas com backup.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb26"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> deluser <span class="at">--backup</span> <span class="at">--backup-to</span> /tmp <span class="at">--remove-home</span> lab025b <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="dt">\</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  <span class="kw">||</span> <span class="fu">sudo</span> userdel <span class="at">-r</span> lab025b</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /tmp/lab025b<span class="pp">*</span>.tar.<span class="pp">*</span> <span class="dv">2</span><span class="op">&gt;</span>/dev/null</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> find / <span class="at">-xdev</span> <span class="at">-nouser</span> <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">|</span> <span class="fu">grep</span> orfao</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: o <code>.tar</code> de backup do <code>/home</code> (se o <code>deluser</code> estiver disponível) e o <code>/tmp/orfao-lab025b</code> agora listado como <code>-nouser</code>.</p></li>
+<li><p><strong>Limpe o resto.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb27"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel <span class="at">-r</span> lab025a <span class="dv">2</span><span class="op">&gt;</span>/dev/null</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel <span class="at">-r</span> lab025c <span class="dv">2</span><span class="op">&gt;</span>/dev/null</span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> rm <span class="at">-f</span> /tmp/orfao-lab025b /tmp/lab025b<span class="pp">*</span>.tar.<span class="pp">*</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a><span class="fu">getent</span> passwd lab025a lab025b lab025c<span class="kw">;</span> <span class="bu">echo</span> <span class="st">"codigo: </span><span class="va">$?</span><span class="st">"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: nenhuma saída e código diferente de zero — todas as contas de teste desapareceram.</p></li>
+</ol>
+</section>
+<section id="resumo" class="level2" data-number="25.9">
+<h2 data-number="25.9" class="anchored" data-anchor-id="resumo"><span class="header-section-number">25.9</span> Resumo</h2>
+<ul>
+<li><strong><code>useradd</code> é baixo nível; <code>adduser</code> é alto nível.</strong> <code>useradd</code> sozinho só escreve em <code>/etc/passwd</code> — sem <code>-m</code> não há <code>/home</code>, sem senha não há login. <code>adduser</code> (Debian/Kali) orquestra tudo interativamente. Para scripts, <code>useradd</code> explícito; para uso manual, <code>adduser</code>.</li>
+<li><strong><code>/etc/skel</code> é o modelo</strong> copiado para cada <code>/home</code> novo criado com <code>-m</code>. Personalizá-lo padroniza o ambiente inicial de todas as contas futuras.</li>
+<li><strong><code>usermod -aG</code> acrescenta; <code>usermod -G</code> substitui.</strong> Esquecer o <code>-a</code> remove a conta de todos os outros grupos — o erro que mais destrói acesso.</li>
+<li><strong>Expirar senha ≠ expirar conta.</strong> <code>chage -M</code>/<code>passwd -e</code> forçam troca de senha; <code>chage -E</code>/<code>usermod -e</code> desativam a conta numa data. <code>chage -l</code> revela o que <code>passwd -S</code> esconde.</li>
+<li><strong><code>userdel</code> preserva o <code>/home</code>; <code>userdel -r</code> o apaga.</strong> <code>deluser --backup</code> arquiva antes. Remover conta deixa arquivos órfãos (<code>-nouser</code>) fora do <code>/home</code>, encontráveis com <code>find -nouser</code>.</li>
+<li><strong>O PAM decide a autenticação</strong>, não o <code>sshd</code>/<code>login</code>/<code>sudo</code> sozinhos. Quatro grupos empilhados: <code>auth</code> (identidade), <code>account</code> (pode entrar agora?), <code>password</code> (troca), <code>session</code> (ambiente). Expiração de conta é barrada no grupo <code>account</code>.</li>
+<li><strong>Editar <code>/etc/pam.d/</code> é arriscado</strong>: um erro tranca todo o login. Sempre mantenha uma sessão de root aberta e teste numa sessão nova antes de fechar.</li>
+<li><strong><code>pam_pwquality</code> impõe senha forte, <code>pam_faillock</code> bloqueia força bruta.</strong> <code>last</code>, <code>lastb</code>, <code>who</code>, <code>w</code> e <code>lastlog</code> leem o estado e o histórico de autenticação — base de qualquer triagem de acesso.</li>
+</ul>
 
 
+</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
@@ -1383,7 +2269,7 @@ ul.task-list li input[type="checkbox"] {
 </div>   
     <div class="nav-footer-center">
       &nbsp;
-    <div class="toc-actions"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></div>
+    <div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></div>
     <div class="nav-footer-right">
 <p>Licença CC BY-SA 4.0</p>
 </div>
