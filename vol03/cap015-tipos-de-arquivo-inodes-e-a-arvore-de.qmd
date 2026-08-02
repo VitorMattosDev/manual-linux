@@ -1,3 +1,470 @@
 # Tipos de arquivo, inodes e a árvore de diretórios {#sec-cap015}
 
-*(em elaboracao)*
+Um servidor para de aceitar upload. O erro é `No space left on device`, mas o `df -h` mostra 40% de uso na partição. Você apaga alguns gigabytes de log, tenta de novo, e o erro continua idêntico. O disco tem espaço sobrando e mesmo assim o sistema jura que não tem.
+
+O comando que resolve o mistério é este:
+
+```bash
+df -i
+```
+
+E a saída mostra `IUse% 100%`. Acabaram os **inodes** — não os bytes. Existem espaço de sobra e nenhum lugar para registrar que um arquivo novo existe.
+
+Esse tipo de falha só faz sentido quando se entende que, no Linux, o nome de um arquivo e o arquivo em si são coisas separadas, guardadas em lugares diferentes, e ligadas por um número. Este capítulo desmonta essa estrutura. Ela é a base dos links (@sec-cap016), das permissões (@sec-cap020) e de praticamente tudo que o Volume 8 vai tratar sobre armazenamento.
+
+## "Tudo é um arquivo" — e o que isso quer dizer
+
+A frase é herdada do Unix e costuma ser repetida sem explicação. O sentido prático é: o kernel oferece **uma única interface** — abrir, ler, escrever, fechar, posicionar — e faz com que ela sirva para o máximo de coisas possível.
+
+Um arquivo de texto no disco responde a essa interface. Mas também respondem:
+
+- o teclado e a tela, através de `/dev/tty`;
+- um disco inteiro, através de `/dev/sda`;
+- a memória usada pelo processo 1, através de `/proc/1/maps`;
+- a temperatura da CPU, através de um arquivo em `/sys`;
+- uma conexão de rede aberta, através de um descritor de socket.
+
+O ganho é enorme: o mesmo `cat`, o mesmo `grep` e o mesmo redirecionamento de @sec-cap012 funcionam sobre qualquer uma dessas coisas. Você lê a temperatura do processador com `cat`, exatamente como leria uma lista de compras.
+
+A frase tem exceções — sockets de rede não aparecem no sistema de arquivos com um caminho, e processos não são arquivos de verdade. Uma formulação mais honesta seria "quase tudo é um arquivo, ou tem um nome no sistema de arquivos". Mas a ideia central se sustenta [@kerrisk2010tlpi].
+
+## Os sete tipos de arquivo
+
+O primeiro caractere de cada linha do `ls -l` não é enfeite: é o tipo do objeto.
+
+```bash
+ls -l /dev/sda /dev/null /etc/passwd
+ls -ld /tmp
+```
+
+| Símbolo | Tipo | O que é |
+|:---:|---|---|
+| `-` | arquivo comum | dados: texto, binário, imagem, qualquer coisa |
+| `d` | diretório | tabela que mapeia nomes para números de inode |
+| `l` | link simbólico | um caminho armazenado como conteúdo (@sec-cap016) |
+| `c` | dispositivo de caractere | acesso byte a byte: terminais, `/dev/null`, `/dev/urandom` |
+| `b` | dispositivo de bloco | acesso por blocos: discos, partições, `/dev/sda1` |
+| `p` | pipe nomeado (FIFO) | cano com nome no disco, criado por `mkfifo` |
+| `s` | socket | comunicação entre processos locais |
+
+: Os sete tipos de arquivo do Linux e o caractere que os identifica no `ls -l` {#tbl-tipos-arquivo}
+
+Vale ver cada um ao vivo:
+
+```bash
+ls -l /etc/hostname        # - arquivo comum
+ls -ld /etc                # d diretorio
+ls -l /usr/bin/vi          # l link simbolico (no Kali, aponta para vim.basic)
+ls -l /dev/null            # c dispositivo de caractere
+ls -l /dev/sda             # b dispositivo de bloco
+ls -l /run/systemd/notify  # s socket
+```
+
+O `-d` no segundo comando é essencial: sem ele o `ls` lista o **conteúdo** do diretório, não o diretório em si. É um dos tropeços mais comuns de quem está começando.
+
+Os dois tipos de dispositivo merecem uma nota. Em vez de tamanho, o `ls -l` mostra dois números separados por vírgula — o **major** e o **minor**. O major identifica qual driver do kernel atende aquele dispositivo; o minor, qual instância. É por isso que `/dev/sda` e `/dev/sdb` compartilham o major e diferem no minor.
+
+## O inode: onde o arquivo realmente mora
+
+Aqui está o ponto que reorganiza o entendimento de todo o resto: **o nome do arquivo não faz parte do arquivo**.
+
+Um arquivo, para o sistema de arquivos, é uma estrutura chamada **inode** (de *index node*). O inode guarda tudo sobre o arquivo — exceto o nome:
+
+- o tipo (dos sete acima);
+- as permissões;
+- o dono (UID) e o grupo (GID);
+- o tamanho em bytes;
+- as marcas de tempo;
+- o **contador de links** — quantos nomes apontam para ele;
+- e os ponteiros para os blocos de dados no disco.
+
+O nome mora em outro lugar: dentro do diretório. Um diretório é, essencialmente, uma tabela de duas colunas — nome e número de inode. @fig-inode-anatomia mostra a cadeia completa.
+
+::: {#fig-inode-anatomia}
+```{.tikz}
+%%| filename: anatomia-do-inode
+%%| alt: Diretorio com pares nome e numero de inode apontando para uma estrutura de inode que aponta para blocos de dados no disco
+\begin{tikzpicture}[
+    cx/.style={draw=manualgray,fill=manualgray!8,rounded corners=2pt,font=\scriptsize\ttfamily,minimum height=0.52cm,text width=3.1cm,align=left,inner sep=3pt},
+    ino/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize,text width=3.3cm,align=left,inner sep=4pt,thick},
+    blo/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.1cm,minimum height=0.6cm,thick},
+    tit/.style={font=\scriptsize\bfseries,manualgray},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    fv/.style={manualgreen,thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[tit] at (0,2.6) {diretório /home/kali};
+  \node[cx] (d1) at (0,1.85) {relatorio.txt\hfill 917};
+  \node[cx] (d2) at (0,1.28) {notas.md\hfill 4432};
+  \node[cx] (d3) at (0,0.71) {backup.txt\hfill 917};
+  \node[font=\scriptsize,manualgray,align=center,text width=3.6cm] at (0,-0.2) {só nome e número: nenhum dado do arquivo aqui};
+
+  \node[tit] at (5.9,2.6) {inode 917};
+  \node[ino] (i1) at (5.9,1.1) {tipo: arquivo comum\\permissões: \texttt{rw-r--r--}\\dono: \texttt{kali}\\tamanho: \texttt{2048}\\\textbf{links: 2}\\mtime, atime, ctime\\ponteiros de bloco};
+
+  \node[tit] at (10.4,2.6) {blocos de dados};
+  \node[blo] (b1) at (9.9,1.75) {0x1A};
+  \node[blo] (b2) at (11.1,1.75) {0x1B};
+  \node[blo] (b3) at (9.9,0.95) {0x2F};
+  \node[blo] (b4) at (11.1,0.95) {0x30};
+  \node[font=\scriptsize,manualgray,align=center,text width=3.2cm] at (10.5,0.05) {o conteúdo em si, espalhado pelo disco};
+
+  \draw[fl] (d1.east) -- (i1.west);
+  \draw[fl] (d3.east) to[out=0,in=200] (i1.west);
+  \draw[fv] (i1.east) to[out=20,in=180] (b1.west);
+  \draw[fv] (i1.east) to[out=0,in=180] (b3.west);
+
+  \node[font=\scriptsize,manualgray,align=center,text width=11.5cm] at (5.2,-1.4) {Dois nomes, um inode: apagar \texttt{relatorio.txt} apenas remove a linha do diretório e baixa o contador para 1. O conteúdo continua acessível por \texttt{backup.txt}.};
+\end{tikzpicture}
+```
+A separação entre nome, metadados e conteúdo. O diretório guarda nomes; o inode guarda todo o resto.
+:::
+
+Essa arquitetura explica comportamentos que, de outra forma, parecem arbitrários:
+
+- **Renomear um arquivo enorme é instantâneo.** O `mv` dentro do mesmo sistema de arquivos só reescreve uma linha da tabela do diretório. Os dados não se movem.
+- **Você pode apagar um arquivo que um programa está usando.** O nome some do diretório, mas o inode só é liberado quando o contador de links chega a zero **e** nenhum processo o mantém aberto. É por isso que apagar um log gigante nem sempre devolve espaço: se o serviço ainda está com ele aberto, o espaço só volta no restart.
+- **Permissão de apagar um arquivo é permissão sobre o diretório**, não sobre o arquivo. Apagar é editar a tabela do diretório. Esse detalhe volta em @sec-cap020.
+- **Copiar não é o mesmo que mover.** O `cp` cria um inode novo; o `mv` entre sistemas de arquivos diferentes é, na prática, um `cp` seguido de `rm`.
+
+Para ver o número do inode:
+
+```bash
+ls -i arquivo.txt
+ls -li            # listagem longa com o inode na primeira coluna
+```
+
+## `stat`: o inode em texto legível
+
+O `ls -l` mostra um resumo. O `stat` mostra o inode quase inteiro:
+
+```bash
+stat /etc/passwd
+```
+
+```text
+  File: /etc/passwd
+  Size: 2913        Blocks: 8          IO Block: 4096   regular file
+Device: 8,1     Inode: 1443183     Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Access: 2026-08-01 09:14:22.108374912 -0300
+Modify: 2026-07-28 21:03:41.552118304 -0300
+Change: 2026-07-28 21:03:41.556118217 -0300
+ Birth: 2026-07-28 21:03:41.552118304 -0300
+```
+
+Três detalhes que costumam passar despercebidos.
+
+**`Size` e `Blocks` medem coisas diferentes.** O tamanho é o número de bytes lógicos; `Blocks` conta setores de 512 bytes efetivamente alocados. Para arquivos esparsos — comuns em imagens de máquina virtual — o tamanho lógico é enorme e a alocação real é mínima.
+
+**`Links: 1` é o contador que decide quando o inode morre.** Um arquivo comum novo nasce com 1. Um diretório vazio nasce com **2** (o próprio nome no diretório pai e a entrada `.` dentro dele), e ganha mais um a cada subdiretório criado — porque cada subdiretório tem um `..` apontando de volta.
+
+**As marcas de tempo são três, e são frequentemente confundidas.**
+
+| Marca | Nome | Muda quando |
+|---|---|---|
+| `atime` | *access time* | o conteúdo é **lido** |
+| `mtime` | *modify time* | o **conteúdo** é alterado |
+| `ctime` | *change time* | o **inode** muda: permissão, dono, nome, contador de links |
+| `btime` | *birth time* | nunca muda — é a criação, e nem todo sistema de arquivos a guarda |
+
+: As marcas de tempo de um inode e o que altera cada uma {#tbl-timestamps}
+
+A confusão clássica é achar que `ctime` é *creation time*. Não é: é *change time*, e ele muda com um simples `chmod`, sem que o conteúdo tenha sido tocado. Do ponto de vista forense isso é ouro — o `ctime` não pode ser definido com `touch`, enquanto `atime` e `mtime` podem:
+
+```bash
+touch -d "2020-01-01 10:00" arquivo.txt   # falsifica atime e mtime
+stat arquivo.txt                          # o ctime denuncia a operacao de agora
+```
+
+Um aviso sobre o `atime`: por padrão, distribuições modernas montam os sistemas de arquivos com `relatime`, que só atualiza o `atime` se ele estiver mais antigo que o `mtime` ou tiver mais de 24 horas. Sem isso, cada leitura viraria uma escrita — péssimo para desempenho e para SSD. Portanto, não trate o `atime` como registro exato de acesso.
+
+O `stat` aceita formato personalizado, o que o torna útil em script:
+
+```bash
+stat -c '%n %s %U %A' /etc/passwd      # nome, tamanho, dono, permissoes
+stat -c '%i' arquivo.txt               # so o numero do inode
+stat -c '%Y' arquivo.txt               # mtime em segundos desde 1970
+stat -f /                              # dados do SISTEMA DE ARQUIVOS, nao do arquivo
+```
+
+## Diretórios são arquivos com um formato especial
+
+Um diretório é um arquivo cujo conteúdo o kernel interpreta como uma lista de pares nome/inode. Duas entradas existem sempre:
+
+```bash
+ls -lia /tmp | head -3
+```
+
+- `.` — aponta para o inode do próprio diretório;
+- `..` — aponta para o inode do diretório pai.
+
+No caso da raiz, `..` aponta para ela mesma. Verifique:
+
+```bash
+ls -id / /..
+```
+
+Os dois números são idênticos. É o que impede um `cd ..` de escapar da árvore: não existe nada acima da raiz.
+
+Essas duas entradas explicam a contagem de links de um diretório. @fig-arvore-diretorios mostra o mecanismo.
+
+::: {#fig-arvore-diretorios}
+```{.tikz}
+%%| filename: arvore-de-diretorios-e-entradas
+%%| alt: Diretorio pai com dois subdiretorios, mostrando as entradas ponto e ponto-ponto e a contagem de links resultante
+\begin{tikzpicture}[
+    dir/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize\ttfamily,minimum width=1.9cm,minimum height=0.62cm,thick},
+    ent/.style={draw=manualgray,fill=manualgray!8,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.3cm,minimum height=0.45cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    fp/.style={manualred,thick,-{Stealth[length=4pt]},dashed},
+    nt/.style={font=\scriptsize,manualgray}
+  ]
+  \node[dir] (proj) at (0,2.2) {projeto};
+  \node[dir] (src)  at (-2.4,0.3) {src};
+  \node[dir] (doc)  at (2.4,0.3) {doc};
+
+  \draw[fl] (proj) -- (src);
+  \draw[fl] (proj) -- (doc);
+
+  \node[ent] (p1) at (0,3.5) {.};
+  \draw[fp] (p1) -- (proj.north);
+
+  \node[ent] (s2) at (-4.6,1.5) {..};
+  \draw[fl] (src.west) to[out=180,in=270] (s2);
+  \draw[fp] (s2) to[out=45,in=195] (proj.west);
+
+  \node[ent] (d2) at (4.6,1.5) {..};
+  \draw[fl] (doc.east) to[out=0,in=270] (d2);
+  \draw[fp] (d2) to[out=135,in=345] (proj.east);
+
+  \node[nt,align=left,text width=5.0cm] at (-2.2,-1.5) {\textbf{links de} \texttt{projeto}\textbf{: 4}\\1 do nome no diretório pai\\1 da entrada \texttt{.} dentro dele\\2 das entradas \texttt{..} dos subdiretórios};
+  \node[nt,align=left,text width=4.4cm] at (3.6,-1.5) {Um diretório com \emph{n} subdiretórios sempre mostra \emph{n} mais 2 links no \texttt{ls -ld}.};
+\end{tikzpicture}
+```
+As entradas `.` e `..` não são atalhos do shell: são linhas reais na tabela de cada diretório, e contam para o número de links.
+:::
+
+Confirme na prática:
+
+```bash
+mkdir -p /tmp/demo/a /tmp/demo/b
+ls -ld /tmp/demo        # 4 links: nome no pai, o proprio ".", e os dois ".."
+mkdir /tmp/demo/c
+ls -ld /tmp/demo        # agora 5
+```
+
+## Quando os inodes acabam
+
+O número de inodes de um sistema de arquivos ext4 é fixado na formatação. O padrão reserva um inode a cada 16 KB de espaço — generoso para arquivos normais, insuficiente para milhões de arquivos minúsculos.
+
+```bash
+df -h        # espaco em bytes
+df -i        # espaco em inodes
+```
+
+Uma partição com `IUse% 100%` recusa a criação de qualquer arquivo novo, com a mensagem enganosa `No space left on device`. Os culpados habituais: cache de sessão PHP, filas de e-mail, diretórios de spool e — no contexto do Kali — pastas de saída de ferramentas que geram um arquivo por alvo.
+
+Para achar o vilão, conte arquivos por diretório:
+
+```bash
+sudo du --inodes -x -d 2 / 2>/dev/null | sort -rn | head -20
+```
+
+A opção `-x` impede que a contagem atravesse para outros sistemas de arquivos, e o `2>/dev/null` descarta os erros de permissão — um dos usos legítimos daquele descarte discutido em @sec-cap012.
+
+Nem todo sistema de arquivos sofre disso. Btrfs e XFS alocam inodes dinamicamente e praticamente não esgotam. O Volume 8 compara as opções.
+
+::: {.callout-warning}
+## Aumentar inodes exige reformatar
+
+Não existe comando para acrescentar inodes a um ext4 já formatado. A quantidade é definida por `mkfs.ext4 -N` ou `-i` no momento da criação e é imutável depois. Em sistema que vai hospedar muitos arquivos pequenos, isso precisa ser decidido antes — ou a saída é fazer backup, reformatar e restaurar.
+:::
+
+## `file`: descobrir o que é, ignorando o nome
+
+O Linux não usa extensão para determinar o tipo do conteúdo. `relatorio.pdf` pode ser um executável; `dados`, sem extensão nenhuma, pode ser uma imagem PNG. Quem descobre é o `file`, que lê os primeiros bytes e compara com um banco de assinaturas — os *magic numbers*:
+
+```bash
+file /bin/ls
+file /etc/passwd
+file /dev/sda
+file -b arquivo          # so a descricao, sem o nome
+file -i arquivo          # tipo MIME
+file -L link             # segue o link em vez de descrever o link
+sudo file -s /dev/sda1   # inspeciona o dispositivo: mostra o sistema de arquivos
+```
+
+O `file -s` num dispositivo é o jeito rápido de descobrir se uma partição está formatada e com quê, sem montá-la.
+
+Esse hábito tem valor prático imediato: um arquivo baixado com nome `.jpg` que o `file` identifica como `PE32 executable` é um problema, não uma foto.
+
+## 🐉 No Kali
+
+- **A raiz do Kali é ext4 por padrão**, com inodes fixos. Em laboratório com disco pequeno, sessões longas de ferramentas que escrevem um arquivo por alvo (`gobuster` com saída por host, `nuclei` com saída por template, `masscan` fragmentado) esgotam inodes muito antes do espaço. Cheque `df -i` sempre que o `No space left` não bater com o `df -h`.
+- **`/usr/share/wordlists` é um campo minado de links.** No Kali, vários nomes ali são links simbólicos para os diretórios reais dos pacotes (`/usr/share/seclists`, `/usr/share/dirb/wordlists`), e o `rockyou.txt` vem comprimido como `rockyou.txt.gz`. `ls -l /usr/share/wordlists` mostra os alvos; `file -L` resolve o link antes de descrever.
+- **Ferramentas ofensivas dependem de arquivos de dispositivo.** `/dev/net/tun` para VPN e `openvpn`, `/dev/rfkill` e as interfaces em `/sys/class/net` para Wi-Fi, `/dev/bus/usb` para adaptadores externos. Quando uma ferramenta reclama de permissão sobre algo em `/dev`, o problema quase sempre é grupo do usuário, não a ferramenta.
+- **`stat` é ferramenta forense de primeira linha.** Num sistema comprometido, `mtime` e `atime` podem ter sido reajustados com `touch`, mas o `ctime` só muda com operação real sobre o inode — e não há opção de `touch` que o defina. Divergência entre `ctime` muito recente e `mtime` antigo é indicador clássico de arquivo adulterado.
+- **`file` antes de executar qualquer coisa baixada.** Em análise de artefato, `file`, `strings` e `sha256sum` são os três primeiros comandos, sempre com o arquivo sem permissão de execução. O Volume 14 aprofunda integridade e verificação.
+- **Sockets em `/run` são o mapa dos serviços locais.** `ls -l /run/*.sock` revela o que está escutando localmente sem passar pela rede — útil tanto para diagnóstico quanto para enumeração em teste autorizado.
+- **Em modo live com persistência, o inode não é identificador estável.** A persistência do Kali usa um sistema de arquivos sobreposto (overlayfs), e o número de inode que você vê para um mesmo caminho pode mudar entre reinicializações. Não use inode como chave em script que precise sobreviver a reboot nesse cenário.
+
+> **Nota sobre a família RHEL.** A estrutura de inode pertence ao sistema de arquivos, não à distribuição, e vale igual em Fedora e RHEL. A diferença relevante é o padrão de formatação: RHEL usa **XFS** desde a versão 7, e XFS aloca inodes dinamicamente — o esgotamento descrito acima praticamente não ocorre lá. Em compensação, um XFS não pode ser reduzido de tamanho depois de criado.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`, sem risco para o sistema.
+
+1. **Colecione os sete tipos.**
+
+   ```bash
+   mkdir -p /tmp/lab015 && cd /tmp/lab015
+   echo "conteudo" > comum.txt
+   mkdir umdir
+   ln -s comum.txt atalho
+   mkfifo cano
+   ls -l comum.txt umdir atalho cano /dev/null /dev/sda /run/systemd/notify
+   ```
+
+   Esperado: `-`, `d`, `l`, `p`, `c`, `b` e `s` na primeira coluna. Repare que `/dev/null` e `/dev/sda` mostram dois números no lugar do tamanho — major e minor.
+
+2. **Veja o inode de um arquivo por inteiro.**
+
+   ```bash
+   stat comum.txt
+   ls -li comum.txt
+   ```
+
+   Esperado: o número após `Inode:` no `stat` é o mesmo da primeira coluna do `ls -li`. Anote-o.
+
+3. **Prove que o nome não é o arquivo.**
+
+   ```bash
+   cp comum.txt copia.txt
+   ls -li comum.txt copia.txt
+   mv comum.txt renomeado.txt
+   ls -li renomeado.txt
+   ```
+
+   Esperado: a cópia recebeu um inode **novo**; o `mv` manteve o inode **original**. Copiar cria um arquivo; renomear só reescreve a tabela do diretório.
+
+4. **Separe as três marcas de tempo.**
+
+   ```bash
+   stat -c 'A:%x%nM:%y%nC:%z' renomeado.txt
+   cat renomeado.txt > /dev/null      # so leitura
+   stat -c 'A:%x%nM:%y%nC:%z' renomeado.txt
+   chmod 600 renomeado.txt            # so metadados
+   stat -c 'A:%x%nM:%y%nC:%z' renomeado.txt
+   echo "linha nova" >> renomeado.txt # conteudo
+   stat -c 'A:%x%nM:%y%nC:%z' renomeado.txt
+   ```
+
+   Esperado: o `chmod` mexeu **apenas** no `ctime`; o `>>` mexeu no `mtime` e no `ctime`. O `atime` pode não ter mudado na leitura, por causa do `relatime`.
+
+5. **Tente falsificar o tempo e veja o `ctime` denunciar.**
+
+   ```bash
+   touch -d "2015-03-10 08:00:00" renomeado.txt
+   stat -c 'M:%y%nC:%z' renomeado.txt
+   ```
+
+   Esperado: o `mtime` foi para 2015, o `ctime` marca **agora**. É exatamente essa divergência que se procura em análise forense.
+
+6. **Conte os links de um diretório.**
+
+   ```bash
+   mkdir -p arvore
+   ls -ld arvore            # 2
+   mkdir arvore/a arvore/b
+   ls -ld arvore            # 4
+   ls -lia arvore | head -4
+   ```
+
+   Esperado: 2 no início, 4 depois dos dois subdiretórios. Na listagem, `.` tem o mesmo inode que `arvore`, e `..` tem o inode de `/tmp/lab015`. Compare com @fig-arvore-diretorios.
+
+7. **Confirme que a raiz é o topo.**
+
+   ```bash
+   ls -id / /.. /../.. /../../..
+   ```
+
+   Esperado: os quatro números idênticos. Subir a partir de `/` devolve `/`.
+
+8. **Segure um arquivo apagado e observe o espaço.**
+
+   ```bash
+   head -c 50M /dev/zero > grande.bin
+   df -h /tmp | tail -1
+   tail -f grande.bin > /dev/null &
+   rm grande.bin
+   ls grande.bin            # nao existe mais
+   df -h /tmp | tail -1     # espaco ainda ocupado
+   kill %1
+   df -h /tmp | tail -1     # agora liberou
+   ```
+
+   Esperado: entre o `rm` e o `kill`, o arquivo não aparece na listagem e mesmo assim ocupa espaço. O inode só morre quando o último processo o fecha. É a explicação de "apaguei o log e o disco continua cheio". Em `/tmp` montado como tmpfs, o efeito aparece no consumo de memória em vez de disco — o princípio é o mesmo.
+
+9. **Localize o arquivo apagado que ainda está aberto.**
+
+   Repita o passo anterior até o `rm`, e então:
+
+   ```bash
+   sudo lsof +L1 2>/dev/null | head
+   ls -l /proc/$(pgrep -n tail)/fd/
+   ```
+
+   Esperado: o `lsof` lista arquivos com contador de links zero; o `/proc/<pid>/fd/` mostra o caminho seguido de `(deleted)`. Encerre com `kill %1`.
+
+10. **Cheque a saúde dos inodes do sistema.**
+
+    ```bash
+    df -h
+    df -i
+    df -i /tmp | tail -1
+    ```
+
+    Esperado: `IUse%` bem abaixo de `Use%` num sistema saudável. Se um dia os dois divergirem para o lado errado, você já sabe o que aconteceu.
+
+11. **Descubra o que é o arquivo, ignorando o nome.**
+
+    ```bash
+    cp /bin/ls foto.jpg
+    file foto.jpg
+    file -i foto.jpg
+    file -b /etc/passwd /dev/null umdir
+    sudo file -s /dev/sda1
+    ```
+
+    Esperado: `foto.jpg` é identificado como executável ELF, não como imagem. O `file -s` no dispositivo revela o sistema de arquivos sem montá-lo.
+
+12. **Veja um arquivo esparso.**
+
+    ```bash
+    truncate -s 500M esparso.img
+    ls -lh esparso.img
+    du -h esparso.img
+    stat -c 'tamanho: %s   blocos: %b' esparso.img
+    ```
+
+    Esperado: 500 MB no `ls`, praticamente zero no `du`. Nenhum bloco foi realmente alocado — o mesmo truque que faz imagens de VM ocuparem menos do que declaram.
+
+13. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -la /tmp/lab015
+    rm -rf /tmp/lab015 /tmp/demo
+    ```
+
+## Resumo
+
+- **"Tudo é um arquivo" significa uma interface única** — abrir, ler, escrever — servindo para discos, terminais, processos e sensores. É o que faz `cat` funcionar sobre a temperatura da CPU.
+- **São sete tipos**, identificados pelo primeiro caractere do `ls -l`: `-` comum, `d` diretório, `l` link simbólico, `c` e `b` dispositivos, `p` pipe nomeado e `s` socket.
+- **O nome não faz parte do arquivo.** O inode guarda tipo, permissões, dono, tamanho, tempos, contador de links e os ponteiros de dados; o nome mora na tabela do diretório.
+- **Essa separação explica o cotidiano**: renomear é instantâneo, apagar um arquivo aberto não libera espaço, e permissão de apagar é permissão sobre o diretório.
+- **`stat` mostra o inode em texto**, incluindo as três marcas de tempo. `ctime` é *change time*, não *creation time* — e é a única que `touch` não consegue falsificar.
+- **Um diretório vazio tem 2 links** (o nome no pai e o `.`), e ganha um a cada subdiretório por causa do `..`. Em `/`, o `..` aponta para a própria raiz.
+- **Inodes acabam antes do espaço** em ext4 com muitos arquivos pequenos. O sintoma é `No space left on device` com `df -h` tranquilo; o diagnóstico é `df -i`; e não há como acrescentar inodes sem reformatar.
+- **Extensão não determina conteúdo no Linux.** Quem responde o que um arquivo é de fato é o `file`, lendo assinaturas — e `file -s` funciona até em dispositivo de bloco não montado.
+</content>

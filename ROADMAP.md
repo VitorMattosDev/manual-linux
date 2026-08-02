@@ -30,12 +30,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 3 — Arquivos e o Sistema de Arquivos
 
-- [ ] **cap 015** - Tipos de arquivo, inodes e a árvore de diretórios - `vol03/cap015-tipos-de-arquivo-inodes-e-a-arvore-de.qmd`
-- [ ] **cap 016** - Links simbólicos e hard links - `vol03/cap016-links-simbolicos-e-hard-links.qmd`
-- [ ] **cap 017** - Localizando arquivos: find, locate, which e type - `vol03/cap017-localizando-arquivos-find-locate-which-e-type.qmd`
-- [ ] **cap 018** - Compactação e arquivamento: tar, gzip, xz e zip - `vol03/cap018-compactacao-e-arquivamento-tar-gzip-xz-e-zip.qmd`
-- [ ] **cap 019** - Montagem de dispositivos e o comando mount - `vol03/cap019-montagem-de-dispositivos-e-o-comando-mount.qmd`
-- [ ] **cap 020** - Permissões de arquivo: leitura, escrita e execução - `vol03/cap020-permissoes-de-arquivo-leitura-escrita-e.qmd`
+- [x] **cap 015** - Tipos de arquivo, inodes e a árvore de diretórios - `vol03/cap015-tipos-de-arquivo-inodes-e-a-arvore-de.qmd`
+- [x] **cap 016** - Links simbólicos e hard links - `vol03/cap016-links-simbolicos-e-hard-links.qmd`
+- [x] **cap 017** - Localizando arquivos: find, locate, which e type - `vol03/cap017-localizando-arquivos-find-locate-which-e-type.qmd`
+- [x] **cap 018** - Compactação e arquivamento: tar, gzip, xz e zip - `vol03/cap018-compactacao-e-arquivamento-tar-gzip-xz-e-zip.qmd`
+- [x] **cap 019** - Montagem de dispositivos e o comando mount - `vol03/cap019-montagem-de-dispositivos-e-o-comando-mount.qmd`
+- [x] **cap 020** - Permissões de arquivo: leitura, escrita e execução - `vol03/cap020-permissoes-de-arquivo-leitura-escrita-e.qmd`
 
 ### Volume 4 — Usuários, Grupos e Permissões
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (14 concluidos).
+**Total:** 103 capitulos em 16 volumes (20 concluidos).
 

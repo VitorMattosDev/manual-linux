@@ -1,3 +1,477 @@
 # Localizando arquivos: find, locate, which e type {#sec-cap017}
 
-*(em elaboracao)*
+Duas perguntas aparecem toda semana e têm respostas completamente diferentes.
+
+A primeira: *"o disco encheu — quais arquivos com mais de 100 MB foram modificados no último mês?"* Nenhum índice tem isso pronto. É preciso percorrer a árvore, olhar o inode de cada arquivo e filtrar.
+
+A segunda: *"onde está o `nmap`?"* Aqui não se percorre nada: o shell já sabe, porque ele mesmo resolveu o nome quando você digitou.
+
+O erro clássico é usar a ferramenta da segunda pergunta para responder a primeira, ou o contrário — e concluir que "não achou". Este capítulo separa as três famílias: quem varre a árvore (`find`), quem consulta um índice (`locate`), e quem responde sobre comandos (`type`, `command -v`, `which`).
+
+## `find`: a varredura completa
+
+O `find` percorre a árvore a partir de um ou mais pontos de partida, avalia expressões sobre cada arquivo encontrado e executa ações sobre os que passam. A estrutura da linha de comando é rígida e vale internalizar. @fig-find-anatomia mostra.
+
+::: {#fig-find-anatomia}
+```{.tikz}
+%%| filename: anatomia-de-um-comando-find
+%%| alt: Linha de comando find decomposta em ponto de partida, opcoes globais, testes e acao, com o fluxo de avaliacao por arquivo
+\begin{tikzpicture}[
+    bl/.style={rounded corners=3pt,font=\scriptsize\ttfamily,minimum height=0.7cm,thick,inner sep=5pt},
+    p1/.style={bl,draw=manualblue,fill=manualblue!12},
+    p2/.style={bl,draw=manualgray,fill=manualgray!10},
+    p3/.style={bl,draw=manualyellow,fill=manualyellow!20},
+    p4/.style={bl,draw=manualgreen,fill=manualgreen!14},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}}
+  ]
+  \node[p1] (a) at (0,0)    {/var/log};
+  \node[p2] (b) at (2.5,0)  {-maxdepth 2};
+  \node[p3] (c) at (5.6,0)  {-type f -size +10M};
+  \node[p4] (d) at (9.3,0)  {-exec ls -lh \{\} +};
+  \node[nt] at (0,0.85) {\textbf{onde}};
+  \node[nt] at (2.5,0.85) {\textbf{opções globais}};
+  \node[nt] at (5.6,0.85) {\textbf{testes}};
+  \node[nt] at (9.3,0.85) {\textbf{ação}};
+  \node[nt,text width=2.3cm] at (0,-0.95) {ponto de partida da descida};
+  \node[nt,text width=2.6cm] at (2.5,-0.95) {valem para a busca inteira};
+  \node[nt,text width=3.4cm] at (5.6,-0.95) {avaliados em sequência, da esquerda para a direita};
+  \node[nt,text width=3.4cm] at (9.3,-0.95) {roda só no que passou em todos os testes};
+
+  \draw[auxiliar] (-1.6,-1.9) -- (11.1,-1.9);
+
+  \node[nt,font=\scriptsize\bfseries,manualgray] at (-0.2,-2.4) {para cada arquivo encontrado:};
+  \node[p3] (t1) at (2.9,-3.2) {-type f};
+  \node[p3] (t2) at (5.6,-3.2) {-size +10M};
+  \node[p4] (t3) at (8.9,-3.2) {executa a ação};
+  \draw[fl] (t1) -- node[nt,above]{passou} (t2);
+  \draw[fl] (t2) -- node[nt,above]{passou} (t3);
+  \node[nt,manualred] at (2.9,-4.35) {falhou: descarta};
+  \node[nt,manualred] at (5.6,-4.35) {falhou: descarta};
+  \draw[manualred,thick,-{Stealth[length=4pt]}] (t1.south) -- (2.9,-4.1);
+  \draw[manualred,thick,-{Stealth[length=4pt]}] (t2.south) -- (5.6,-4.1);
+\end{tikzpicture}
+```
+A linha do `find` tem quatro partes em ordem fixa, e os testes funcionam como um `E` lógico com curto-circuito: o primeiro que falha descarta o arquivo.
+:::
+
+Esse curto-circuito não é detalhe acadêmico — é o que faz a diferença entre uma busca de segundos e uma de minutos. Colocar o teste mais barato e mais restritivo primeiro (`-type f` antes de `-size`, e `-name` antes de qualquer coisa que leia o conteúdo) economiza chamadas ao sistema.
+
+### Testes que se usa de verdade
+
+```bash
+find . -name "*.conf"           # nome, sensivel a maiusculas, glob
+find . -iname "*.CONF"          # ignora maiusculas
+find . -path "*/etc/*.conf"     # casa contra o CAMINHO inteiro
+find . -regex '.*/cap0[12][0-9].*'   # expressao regular sobre o caminho
+
+find . -type f                  # arquivo comum
+find . -type d                  # diretorio
+find . -type l                  # link simbolico
+find . -xtype l                 # link QUEBRADO
+
+find . -size +100M              # maior que 100 MB
+find . -size -1k                # menor que 1 KB
+find . -size 0                  # exatamente zero blocos
+find . -empty                   # arquivo vazio OU diretorio vazio
+
+find . -mtime -7                # conteudo alterado nos ultimos 7 dias
+find . -mtime +30               # alterado ha mais de 30 dias
+find . -mmin -15                # alterado nos ultimos 15 minutos
+find . -newer referencia.txt    # mais recente que outro arquivo
+find . -cmin -60                # INODE alterado na ultima hora
+
+find . -user kali -group sudo
+find . -perm 644                # exatamente 644
+find . -perm -u+w               # pelo menos escrita para o dono
+find . -perm /o+w               # QUALQUER bit de escrita para outros
+
+find . -links +1                # arquivos com hard link
+find . -inum 1443183            # busca pelo numero de inode
+```
+
+Três sutilezas escondidas aí:
+
+**O sinal muda tudo.** Sem sinal, o valor é exato; `+` é "mais que"; `-` é "menos que". Isso vale para `-size`, `-mtime`, `-links` e `-perm` — e `-mtime 7` (exatamente sete dias atrás, arredondado para baixo) quase nunca é o que se quer.
+
+**`-name` casa só o nome-base, `-path` casa o caminho inteiro.** Procurar `find . -name "*/logs/*"` nunca acha nada, porque nome-base não contém barra.
+
+**As unidades de `-size` são armadilha.** O padrão é blocos de 512 bytes. Use sempre o sufixo: `c` para bytes, `k`, `M`, `G`.
+
+### Operadores lógicos
+
+Por padrão, testes justapostos são um `E`. Para `OU` e negação:
+
+```bash
+find . -name "*.log" -o -name "*.txt"          # OU
+find . ! -name "*.log"                          # NAO
+find . -type f \( -name "*.sh" -o -name "*.py" \) -size +1k
+```
+
+Os parênteses precisam ser escapados ou entre aspas — o shell os interpretaria antes. E cuidado com a precedência: `E` liga mais forte que `OU`. Sem parênteses, `find . -name a -o -name b -delete` apaga apenas os `b`.
+
+::: {.callout-warning}
+## `-delete` e `-exec rm` merecem um ensaio antes
+
+Toda busca destrutiva deve ser rodada **primeiro** com `-print` no lugar da ação:
+
+```bash
+find /var/log -name "*.gz" -mtime +90 -print      # confira a lista
+find /var/log -name "*.gz" -mtime +90 -delete     # so depois
+```
+
+O `-delete` implica `-depth` e altera a ordem de avaliação, o que já produziu remoções inesperadas quando combinado com `-prune`. Se a expressão for complexa, prefira `-print0 | xargs -0 rm --` depois de conferir a lista.
+:::
+
+### Ações
+
+```bash
+find . -name "*.log" -print              # padrao
+find . -name "*.log" -print0             # separado por NUL: seguro para nome com espaco
+find . -name "*.log" -ls                 # formato de "ls -l"
+find . -name "*.log" -printf '%s %p\n'   # formato personalizado: tamanho e caminho
+find . -name "*.tmp" -delete
+
+find . -name "*.sh" -exec chmod +x {} \;   # UMA execucao por arquivo
+find . -name "*.sh" -exec chmod +x {} +    # AGRUPA: uma execucao para muitos
+find . -name "*.conf" -execdir grep -l senha {} +   # roda DENTRO do diretorio de cada achado
+find . -name "alvo" -quit                  # para na primeira ocorrencia
+```
+
+A diferença entre `\;` e `+` é de desempenho e é grande. Com `\;`, mil arquivos significam mil processos. Com `+`, o `find` agrupa quantos couberem na linha de comando — geralmente uma ou duas execuções no total.
+
+O `-execdir` existe por segurança: ele executa com o diretório de trabalho posicionado no diretório do arquivo encontrado e passa `./nome`, o que elimina a classe de ataques baseada em nomes de diretório manipulados.
+
+### Controlar a descida
+
+```bash
+find . -maxdepth 1 -type f             # so o nivel atual
+find . -mindepth 2                     # ignora o nivel de partida
+find / -xdev -name "*.core"            # NAO atravessa para outro sistema de arquivos
+find . -name node_modules -prune -o -type f -print   # pula a arvore inteira
+```
+
+O `-prune` é o mais confuso dos quatro. Ele significa "não desça neste diretório", e sozinho não filtra a saída — por isso o idioma vem sempre com `-o ... -print`. Leia como: "se casar com o padrão, pode; senão, se for arquivo comum, imprima".
+
+O `-xdev` merece destaque: sem ele, um `find /` entra em `/proc`, `/sys`, `/run` e em qualquer pen drive montado, o que gera ruído e demora. Em varredura do sistema inteiro, `-xdev` deveria ser reflexo.
+
+### `find` com `xargs`
+
+Quando a ação é complexa, `xargs` é mais flexível que `-exec`:
+
+```bash
+find . -name "*.log" -print0 | xargs -0 grep -l "ERRO"
+find . -name "*.txt" -print0 | xargs -0 -P 4 -n 20 gzip    # 4 processos em paralelo
+find . -type f -print0 | xargs -0 -I{} cp {} /destino/     # -I define o marcador
+```
+
+A dupla `-print0` / `-0` é obrigatória, não opcional. Sem ela, um arquivo chamado `relatório final.txt` vira dois argumentos e o comando falha — ou pior, acerta o alvo errado. Nome de arquivo no Linux pode conter espaço, quebra de linha e quase qualquer byte; o único separador seguro é o NUL.
+
+## `locate`: a consulta ao índice
+
+O `find` percorre o disco a cada execução. O `locate` consulta um banco de dados construído antes, e por isso responde instantaneamente:
+
+```bash
+sudo apt install plocate      # no Kali/Debian atuais, plocate substituiu o mlocate
+locate rockyou
+locate -i ROCKYOU             # ignora maiusculas
+locate -b '\rockyou.txt'      # so o nome-base, casamento exato
+locate -c wordlist            # so a contagem
+locate -e arquivo             # so o que ainda existe no disco
+locate -r '\.conf$'           # expressao regular
+```
+
+As duas limitações que importam:
+
+**O índice envelhece.** Ele é atualizado por um *timer* do systemd, normalmente uma vez por dia. Um arquivo criado há dez minutos não está lá. Para forçar:
+
+```bash
+sudo updatedb
+```
+
+**O índice respeita permissões só parcialmente.** O `plocate` filtra os resultados conforme o que o usuário pode ver, mas o banco em si (`/var/lib/plocate/plocate.db`) contém a árvore inteira. Configurações de exclusão ficam em `/etc/updatedb.conf` — vale olhar `PRUNEPATHS` e `PRUNEFS` lá, especialmente se houver montagens de rede lentas.
+
+A regra de escolha é simples: **`locate` para "onde fica um arquivo com esse nome?", `find` para qualquer pergunta que envolva tamanho, data, permissão, dono ou conteúdo.**
+
+## Onde está um comando: `type`, `command -v`, `which`, `whereis`
+
+Este é o grupo mais mal compreendido, porque as ferramentas respondem perguntas diferentes. @fig-resolucao-comando mostra o caminho que o shell percorre ao resolver um nome — e o que cada ferramenta enxerga desse caminho.
+
+::: {#fig-resolucao-comando}
+```{.tikz}
+%%| filename: resolucao-de-um-nome-de-comando
+%%| alt: Sequencia de resolucao de um nome no shell passando por alias, funcao, builtin, tabela hash e varredura do PATH
+\begin{tikzpicture}[
+    et/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize,text width=2.5cm,align=center,minimum height=0.72cm,thick},
+    fim/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=3pt,font=\scriptsize,text width=2.5cm,align=center,minimum height=0.72cm,thick},
+    err/.style={draw=manualred,fill=manualred!12,rounded corners=3pt,font=\scriptsize,text width=2.5cm,align=center,minimum height=0.72cm,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[et] (a1) at (0,0)    {1. alias};
+  \node[et] (a2) at (0,-1.1) {2. função do shell};
+  \node[et] (a3) at (0,-2.2) {3. builtin};
+  \node[et] (a4) at (0,-3.3) {4. tabela \emph{hash}};
+  \node[et] (a5) at (0,-4.4) {5. varredura do \texttt{PATH}};
+  \node[err] (a6) at (0,-5.5) {command not found};
+  \foreach \i/\j in {a1/a2,a2/a3,a3/a4,a4/a5,a5/a6}
+    \draw[fl] (\i) -- (\j);
+
+  \node[fim] (ex) at (4.6,-2.75) {executa};
+  \foreach \i in {a1,a2,a3,a4,a5}
+    \draw[manualgreen,thick,-{Stealth[length=4pt]}] (\i.east) to[out=0,in=180] (ex.west);
+
+  \draw[auxiliar] (6.4,0.6) -- (6.4,-6.0);
+
+  \node[nt,text width=5.2cm] at (9.4,-0.4) {\textbf{\texttt{type -a nome}}\\vê as cinco etapas, na ordem, e lista todas as ocorrências};
+  \node[nt,text width=5.2cm] at (9.4,-2.1) {\textbf{\texttt{command -v nome}}\\vê as cinco etapas, imprime só a primeira — é a forma POSIX};
+  \node[nt,text width=5.2cm] at (9.4,-3.7) {\textbf{\texttt{which nome}}\\programa externo: enxerga apenas o \texttt{PATH}, ignora alias, função e builtin};
+  \node[nt,text width=5.2cm] at (9.4,-5.2) {\textbf{\texttt{whereis nome}}\\procura binário, fonte e página de manual em diretórios fixos};
+\end{tikzpicture}
+```
+A ordem de resolução do shell e o que cada ferramenta de consulta consegue observar dela.
+:::
+
+```bash
+type ls                 # "ls is aliased to 'ls --color=auto'"
+type -a python3         # TODAS as ocorrencias, em ordem
+type -t grep            # so a categoria: alias, function, builtin, file, keyword
+command -v nmap         # caminho, ou nada com status diferente de zero
+which nmap              # programa externo, so olha o PATH
+whereis nmap            # binario, fonte e pagina de manual
+```
+
+A recomendação prática é direta: **`type` no terminal, `command -v` em script**. O `which` é um programa externo, tem comportamento inconsistente entre distribuições e não sabe da existência de aliases, funções e builtins. Um script que faz `if which foo` pode responder errado justamente nos casos que importam.
+
+```bash
+if command -v nmap > /dev/null 2>&1; then
+  echo "nmap disponivel"
+fi
+```
+
+### A tabela `hash` e o comando que "sumiu"
+
+O Bash memoriza onde encontrou cada comando, para não varrer o `PATH` toda vez. Isso gera um comportamento desconcertante: você move ou reinstala um binário e o shell continua tentando o caminho antigo.
+
+```bash
+hash          # mostra a tabela
+hash -r       # limpa a tabela inteira
+hash -d nmap  # esquece so um comando
+```
+
+O sintoma é `bash: /usr/bin/ferramenta: No such file or directory` para um comando que você acabou de ver com `ls`. A cura é `hash -r`.
+
+## 🐉 No Kali
+
+- **`locate` não vem instalado por padrão em várias imagens do Kali.** `sudo apt install plocate && sudo updatedb` resolve. O `plocate` substituiu o `mlocate` no Debian e é ordens de grandeza mais rápido; o banco fica em `/var/lib/plocate/`.
+- **Achar a wordlist certa é caso de `locate`, não de `find`.** `locate -b '\rockyou.txt'` responde na hora; `find / -name rockyou.txt` percorre o disco inteiro, e ainda entra em `/proc`. Se o `locate` não estiver disponível, ao menos limite: `find /usr/share -name 'rockyou*'`.
+- **Varredura de permissão frouxa é um `find` de uma linha.** `find / -xdev -perm /o+w -type f 2>/dev/null` lista arquivos graváveis por qualquer usuário; `find / -xdev -perm -4000 -type f 2>/dev/null` lista binários SUID. Os dois são inspeção legítima do próprio sistema e material do Volume 14 — em máquina de terceiros, só com autorização escrita.
+- **`-xdev` é obrigatório em varredura a partir de `/`.** Sem ele, o `find` entra em `/proc` e `/sys`, que são sistemas de arquivos virtuais com milhares de entradas sintéticas, e em qualquer imagem forense que você tenha montado — misturando os dados da análise com os do seu sistema.
+- **Arquivos de saída de ferramenta acumulam rápido.** `find ~/engajamentos -type f -size +50M -mtime +30 -printf '%s\t%p\n' | sort -rn | head` mostra o que está ocupando espaço antes de o disco encher. Sempre com `-printf` e revisão antes de qualquer remoção.
+- **`type -a` denuncia atalho perigoso.** Num sistema comprometido, um alias ou uma função de shell com nome de comando legítimo em `~/.bashrc` intercepta chamadas sem alterar binário nenhum. `type -a ls`, `type -a sudo` e `type -a ssh` mostram a cadeia inteira — o `which` não mostraria.
+- **`hash -r` depois de `apt install`.** No Kali rolling, atualizações movem binários entre `/usr/bin` e `/usr/sbin` com frequência. Se um comando recém-instalado "não existe", `hash -r` costuma ser a resposta antes de qualquer investigação mais profunda.
+- **`find` com `-print0` sempre, nas saídas de ferramenta.** Nomes gerados por scanner frequentemente contêm dois-pontos, colchetes e espaços vindos de URLs e cabeçalhos HTTP. Sem `-print0`/`-0`, o pipeline se desmonta.
+
+> **Nota sobre a família RHEL.** O `find` é idêntico (GNU findutils nas duas famílias). A diferença é o `locate`: RHEL e Fedora ainda distribuem `mlocate` (pacote `mlocate`, banco em `/var/lib/mlocate/`), com opções compatíveis mas desempenho inferior ao `plocate`. Em ambientes com SELinux, vale acrescentar `-context` às buscas: `find /var/www -context '*httpd_sys_content_t*'`.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`.
+
+1. **Monte um terreno de teste.**
+
+   ```bash
+   mkdir -p /tmp/lab017/{docs,logs,scripts,node_modules} && cd /tmp/lab017
+   echo texto > docs/relatorio.txt
+   echo "nome com espaco" > "docs/relatorio final.txt"
+   printf '%s\n' "#!/bin/bash" "echo ola" > scripts/exemplo.sh
+   printf '%s\n' "#!/usr/bin/env python3" "print('ola')" > scripts/exemplo.py
+   head -c 12M /dev/zero > logs/grande.log
+   echo pequeno > logs/pequeno.log
+   touch -d "60 days ago" logs/antigo.log
+   touch node_modules/lixo.js
+   ln -s /nao/existe docs/quebrado
+   find . -ls | head -20
+   ```
+
+2. **Filtre por tipo e por nome.**
+
+   ```bash
+   find . -type f
+   find . -type d
+   find . -name "*.log"
+   find . -iname "*.LOG"
+   find . -path "*/logs/*"
+   find . -name "*/logs/*"          # nao acha nada: -name so ve o nome-base
+   ```
+
+   Esperado: o penúltimo funciona, o último devolve vazio. É a diferença entre `-path` e `-name`.
+
+3. **Filtre por tamanho, com e sem sufixo.**
+
+   ```bash
+   find . -type f -size +10M
+   find . -type f -size +10          # SEM sufixo: blocos de 512 bytes
+   find . -type f -size -1k
+   find . -empty
+   ```
+
+   Esperado: o segundo comando devolve muito mais coisa que o primeiro, porque 10 blocos são 5 KB. Sempre use sufixo.
+
+4. **Filtre por tempo.**
+
+   ```bash
+   find . -type f -mmin -5
+   find . -type f -mtime +30
+   touch referencia
+   find . -type f -newer referencia
+   ```
+
+   Esperado: quase tudo no primeiro (você acabou de criar), só o `antigo.log` no segundo, e nada no terceiro além do que for tocado depois.
+
+5. **Combine com operadores.**
+
+   ```bash
+   find . -type f \( -name "*.sh" -o -name "*.py" \)
+   find . -type f ! -name "*.log"
+   find . -name "*.log" -o -name "*.sh" -ls        # SEM parenteses: veja o efeito
+   ```
+
+   Esperado: no último, o `-ls` só se aplica ao segundo termo, por causa da precedência. É a armadilha que transforma `-delete` num acidente.
+
+6. **Pule uma subárvore com `-prune`.**
+
+   ```bash
+   find . -type f | wc -l
+   find . -name node_modules -prune -o -type f -print | wc -l
+   find . -name node_modules -prune -o -type f -print
+   ```
+
+   Esperado: a segunda contagem é menor. O `-prune` impede a descida, e o `-o ... -print` é o que faz a saída sair certa.
+
+7. **Compare `\;` com `+`.**
+
+   ```bash
+   time find . -type f -exec echo {} \; > /dev/null
+   time find . -type f -exec echo {} + > /dev/null
+   ```
+
+   Esperado: o segundo é visivelmente mais rápido. Um processo por arquivo contra um processo para todos.
+
+8. **Veja por que `-print0` importa.**
+
+   ```bash
+   find docs -name "*.txt" | xargs ls -l        # quebra no nome com espaco
+   find docs -name "*.txt" -print0 | xargs -0 ls -l
+   ```
+
+   Esperado: o primeiro reclama de `docs/relatorio` e `final.txt` como se fossem dois arquivos; o segundo acerta. Esse par é obrigatório, não opcional.
+
+9. **Formate a saída com `-printf`.**
+
+   ```bash
+   find . -type f -printf '%s\t%p\n' | sort -rn | head -5
+   find . -type f -printf '%TY-%Tm-%Td %p\n' | sort | head
+   find . -xtype l -printf '%p -> %l\n'
+   ```
+
+   Esperado: ranking por tamanho, listagem por data e o link quebrado com o alvo inexistente ao lado.
+
+10. **Ensaie uma remoção antes de executá-la.**
+
+    ```bash
+    find . -name "*.log" -mtime +30 -print
+    find . -name "*.log" -mtime +30 -delete
+    find . -name "*.log"
+    ```
+
+    Esperado: só `antigo.log` na primeira lista, e ele desaparece depois. **Sempre** rode a versão com `-print` antes.
+
+11. **Limite a profundidade e o sistema de arquivos.**
+
+    ```bash
+    find . -maxdepth 1
+    find . -mindepth 2 -type f
+    time find / -xdev -name "hostname" 2>/dev/null | head
+    ```
+
+    Esperado: o `-xdev` evita a descida em `/proc` e `/sys` e reduz muito o tempo.
+
+12. **Use o `locate` e sinta a diferença.**
+
+    ```bash
+    command -v locate || sudo apt install -y plocate
+    sudo updatedb
+    time locate -b '\hostname'
+    time find / -xdev -name hostname 2>/dev/null | head
+    ```
+
+    Esperado: milissegundos contra segundos. Índice contra varredura.
+
+13. **Descubra o limite do índice.**
+
+    ```bash
+    touch /tmp/lab017/arquivo-novissimo.txt
+    locate arquivo-novissimo
+    sudo updatedb
+    locate arquivo-novissimo
+    ```
+
+    Esperado: nada na primeira consulta, resultado depois do `updatedb`. O índice não sabe do que acabou de nascer.
+
+14. **Compare as ferramentas de comando.**
+
+    ```bash
+    type ls
+    type -a ls
+    type -t ls
+    command -v ls
+    which ls
+    whereis ls
+    ```
+
+    Esperado: o `type` revela o alias `ls --color=auto` que o Kali configura; o `which` mostra só `/usr/bin/ls`, ignorando o alias que de fato será executado.
+
+15. **Crie uma função com nome de comando e veja quem a detecta.**
+
+    ```bash
+    grep() { echo "esta funcao interceptou o grep"; }
+    type -a grep
+    command -v grep
+    which grep
+    grep teste
+    unset -f grep
+    type grep
+    ```
+
+    Esperado: `type -a` e `command -v` denunciam a função; o `which` não faz ideia. É exatamente o cenário de um `.bashrc` adulterado.
+
+16. **Provoque e resolva o problema da tabela `hash`.**
+
+    ```bash
+    hash
+    hash -r
+    hash
+    ```
+
+    Esperado: a tabela lista os comandos já resolvidos nesta sessão e fica vazia depois do `-r`. Guarde `hash -r` para quando um binário recém-instalado "não existir".
+
+17. **Limpe.**
+
+    ```bash
+    cd /tmp
+    rm -rf /tmp/lab017
+    ```
+
+## Resumo
+
+- **Duas perguntas, duas famílias**: `find` varre a árvore e responde sobre tamanho, data, dono e permissão; `locate` consulta um índice e responde sobre nome, instantaneamente.
+- **A linha do `find` tem quatro partes em ordem fixa** — caminho, opções globais, testes, ação — e os testes funcionam como um `E` com curto-circuito. Teste barato primeiro é otimização real.
+- **O sinal muda o significado**: `-size +100M` é maior, `-size -100M` é menor, `-size 100M` é exato. Sem sufixo, a unidade é bloco de 512 bytes.
+- **`-name` casa o nome-base, `-path` casa o caminho inteiro**, e `-prune` só funciona no idioma `-prune -o ... -print`.
+- **`-exec ... +` agrupa e `-exec ... \;` não.** Para mil arquivos, isso é a diferença entre um processo e mil. `-execdir` acrescenta segurança.
+- **`-print0` com `xargs -0` é obrigatório**, porque nome de arquivo pode conter espaço e quebra de linha; NUL é o único separador seguro.
+- **Toda busca destrutiva roda antes com `-print`.** `-delete` altera a ordem de avaliação e já causou remoção inesperada em expressão com `-prune`.
+- **`type` no terminal e `command -v` em script; `which` só enxerga o `PATH`** e por isso ignora alias, função e builtin — os três lugares onde um comando pode ter sido sequestrado.
+- **`hash -r`** resolve o comando que "sumiu" depois de uma reinstalação: o shell estava lembrando o caminho antigo.
+</content>

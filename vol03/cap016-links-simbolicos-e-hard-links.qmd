@@ -1,3 +1,511 @@
 # Links simbólicos e hard links {#sec-cap016}
 
-*(em elaboracao)*
+Você organiza o diretório de trabalho, move uma pasta de lugar e, na volta, metade dos atalhos que tinha criado aponta para o vazio. O `ls` mostra os nomes em vermelho piscante, e qualquer tentativa de abri-los devolve:
+
+```text
+cat: config.yaml: No such file or directory
+```
+
+Só que o arquivo existe. Está ali, dois diretórios adiante, intacto. O que quebrou foi o link — e ele quebrou porque guardava um **caminho**, não uma referência ao arquivo.
+
+Existe outro tipo de link, o *hard link*, que não teria quebrado. Ele aponta direto para o inode e sobrevive a qualquer renomeação. Em compensação, tem limitações que o simbólico não tem. Escolher entre os dois é uma decisão prática que aparece toda semana, e depende inteiramente daquela separação entre nome e inode vista em @sec-cap015.
+
+## Hard link: outro nome para o mesmo inode
+
+Criar um hard link é acrescentar uma linha na tabela de um diretório apontando para um inode que já existe:
+
+```bash
+echo "conteudo original" > original.txt
+ln original.txt segundo-nome.txt
+ls -li original.txt segundo-nome.txt
+```
+
+Os dois nomes mostram o **mesmo número de inode**, e o contador de links subiu para 2. Aqui está o ponto que costuma surpreender: **não existe "o original"**. Os dois nomes são igualmente legítimos, e o sistema de arquivos não guarda qual veio primeiro.
+
+```bash
+rm original.txt
+cat segundo-nome.txt      # o conteudo continua la
+```
+
+Apagar um dos nomes só decrementa o contador. O inode e os dados desaparecem quando o contador chega a zero — e nenhum processo mantém o arquivo aberto.
+
+As limitações vêm da própria natureza da coisa:
+
+- **Não atravessa sistemas de arquivos.** Números de inode só fazem sentido dentro de um sistema de arquivos. Tentar ligar `/home/kali/a.txt` a algo em `/mnt/usb` devolve `Invalid cross-device link`.
+- **Não funciona para diretórios.** Se fosse permitido, seria possível criar ciclos na árvore, e ferramentas que percorrem diretórios entrariam em laço infinito sem forma segura de detectar. Só o kernel cria hard links de diretório, para as entradas `.` e `..`.
+- **Não sobrevive a um `cp` ingênuo.** Copiar um arquivo com hard links produz cópias independentes, a menos que se use `cp -a` ou `cp --preserve=links` sobre o conjunto todo.
+
+## Link simbólico: um arquivo que contém um caminho
+
+O link simbólico — *symlink*, ou link "mole" — é um arquivo de tipo próprio (`l` no `ls -l`) cujo conteúdo é uma **cadeia de caracteres com um caminho**. Quando o kernel resolve um caminho e encontra um symlink, ele substitui o link pelo texto guardado e continua a resolução.
+
+```bash
+ln -s /etc/passwd atalho-passwd
+ls -l atalho-passwd
+readlink atalho-passwd
+```
+
+A saída do `ls -l` mostra `atalho-passwd -> /etc/passwd`, e o tamanho do link é exatamente o número de caracteres do caminho armazenado. Um symlink para `/etc/passwd` tem 11 bytes.
+
+Isso libera tudo que o hard link proíbe: pode atravessar sistemas de arquivos, pode apontar para diretórios, pode até apontar para algo que **não existe**. O preço é a fragilidade: se o alvo sair do lugar, o link fica pendurado.
+
+@fig-hard-vs-simbolico coloca os dois lado a lado.
+
+::: {#fig-hard-vs-simbolico}
+```{.tikz}
+%%| filename: hard-link-versus-link-simbolico
+%%| alt: Comparacao entre hard link, com dois nomes apontando para o mesmo inode, e link simbolico, com um inode proprio contendo um caminho
+\begin{tikzpicture}[
+    nome/.style={draw=manualgray,fill=manualgray!8,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=2.1cm,minimum height=0.55cm},
+    ino/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize,text width=2.4cm,align=center,minimum height=1.0cm,thick},
+    ins/.style={draw=manualyellow,fill=manualyellow!22,rounded corners=3pt,font=\scriptsize,text width=2.4cm,align=center,minimum height=1.0cm,thick},
+    dat/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=2pt,font=\scriptsize,text width=1.6cm,align=center,minimum height=0.7cm,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    fy/.style={manualyellow!70!black,thick,-{Stealth[length=4.5pt]},dashed},
+    tit/.style={font=\scriptsize\bfseries},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \node[tit,manualblue] at (0,2.9) {hard link};
+  \node[nome] (h1) at (-1.4,1.9) {dados.txt};
+  \node[nome] (h2) at (-1.4,0.9) {copia.txt};
+  \node[ino]  (hi) at (1.9,1.4) {inode 4711\\\textbf{links: 2}};
+  \node[dat]  (hd) at (4.8,1.4) {conteúdo};
+  \draw[fl] (h1.east) to[out=0,in=160] (hi.west);
+  \draw[fl] (h2.east) to[out=0,in=200] (hi.west);
+  \draw[fl] (hi.east) -- (hd.west);
+  \node[nt,text width=7.2cm] at (1.6,-0.2) {Dois nomes, um inode. Apagar um deixa o outro intacto. Mesmo sistema de arquivos, nunca diretório.};
+
+  \draw[auxiliar] (-3.2,-1.0) -- (6.4,-1.0);
+
+  \node[tit,manualyellow!65!black] at (0,-1.6) {link simbólico};
+  \node[nome] (s1) at (-1.4,-2.7) {atalho};
+  \node[ins]  (si) at (1.9,-2.7) {inode 9002\\conteúdo:\\\texttt{dados.txt}};
+  \node[ino]  (ti) at (6.6,-2.7) {inode 4711\\\textbf{links: 2}};
+  \draw[fl] (s1.east) -- (si.west);
+  \draw[fy] (si.east) -- node[nt,above,yshift=1pt]{resolve o texto} (ti.west);
+  \node[nt,text width=8.8cm] at (1.9,-4.3) {O link tem inode próprio e guarda um \emph{texto}. Atravessa sistemas de arquivos, aceita diretório — e fica pendurado se o alvo sumir.};
+\end{tikzpicture}
+```
+O hard link é um nome a mais para o inode; o link simbólico é um arquivo separado cujo conteúdo é o caminho do alvo.
+:::
+
+Um resumo das diferenças:
+
+| Característica | Hard link | Link simbólico |
+|---|:---:|:---:|
+| Aponta para | inode | caminho (texto) |
+| Tipo no `ls -l` | `-`, indistinguível | `l` |
+| Atravessa sistema de arquivos | não | sim |
+| Funciona para diretório | não | sim |
+| Sobrevive ao alvo ser renomeado | sim | não |
+| Pode apontar para o inexistente | não | sim |
+| Ocupa inode próprio | não | sim |
+| Incrementa o contador de links | sim | não |
+
+: Hard link e link simbólico, ponto a ponto {#tbl-links-comparacao}
+
+## `ln`: a ordem dos argumentos e outras armadilhas
+
+A sintaxe segue o padrão do `cp`: **origem primeiro, destino depois**.
+
+```bash
+ln -s ALVO NOME_DO_LINK
+```
+
+O erro mais comum é inverter. E ele é traiçoeiro, porque a forma invertida frequentemente **funciona** — criando um link no lugar errado, apontando para o lugar errado. A regra mnemônica que resolve: leia da esquerda para a direita como "faça *isto* ficar disponível *ali*".
+
+Um segundo detalhe que morde: se o segundo argumento for um **diretório existente**, o `ln` cria o link dentro dele com o nome-base do alvo. É conveniente e, quando não intencional, confuso.
+
+```bash
+ln -s /etc/hosts /tmp/        # cria /tmp/hosts
+```
+
+Omitir o segundo argumento cria o link no diretório atual:
+
+```bash
+ln -s /usr/share/wordlists/rockyou.txt.gz     # cria ./rockyou.txt.gz
+```
+
+Opções que valem memorizar:
+
+```bash
+ln -s alvo link          # cria link simbolico
+ln -sf alvo link         # substitui o link se ja existir
+ln -sfn alvo link        # -n e ESSENCIAL quando "link" ja aponta para um diretorio
+ln -sr alvo link         # cria o link com caminho RELATIVO calculado automaticamente
+ln -sv alvo link         # mostra o que fez
+ln alvo copia            # hard link
+```
+
+O `-n` merece explicação. Sem ele, se `link` já for um link simbólico apontando para um diretório, o `ln -sf` **entra** no diretório e cria o novo link lá dentro, em vez de substituir. Com `-n`, o link existente é tratado como arquivo comum e substituído. Toda receita de "atualizar o link `atual` para a nova versão" precisa de `ln -sfn`.
+
+### Caminho relativo ou absoluto
+
+O caminho guardado dentro do symlink pode ser absoluto ou relativo, e a escolha tem consequência:
+
+```bash
+ln -s /home/kali/projeto/config.yaml conf-abs
+ln -s ../projeto/config.yaml conf-rel
+```
+
+Um link **relativo** é resolvido a partir do diretório onde o link está — não do diretório onde você estava quando o criou. Isso confunde muita gente:
+
+```bash
+cd /tmp
+ln -s ../etc/hostname teste     # resolve /tmp/../etc/hostname = /etc/hostname: funciona
+mv teste /var/tmp/              # agora resolve /var/tmp/../etc/hostname: quebrou
+```
+
+Regra prática: **relativo** dentro de uma árvore que se move junto (um repositório, um pacote, uma estrutura de dotfiles); **absoluto** quando o alvo é um caminho fixo do sistema. O `ln -sr` calcula o relativo correto sozinho, o que evita contar `..` na mão.
+
+## Como os comandos tratam os links
+
+Este é o ponto onde script quebra em silêncio. A convenção geral usa três letras:
+
+- `-P` (*physical*): **não** segue links — opera sobre o link em si;
+- `-L` (*logical*): segue todos os links encontrados;
+- `-H`: segue apenas os links dados na linha de comando, não os encontrados durante a descida recursiva.
+
+```bash
+ls -l link              # descreve o LINK
+ls -lL link             # descreve o ALVO
+cat link                # le o ALVO: leitura sempre segue
+rm link                 # remove o LINK, nunca o alvo
+cp link copia           # copia o CONTEUDO do alvo
+cp -P link copia        # copia o LINK como link
+cp -a origem/ destino/  # preserva links, permissoes e tempos: o padrao para backup
+du -sh link             # tamanho do link, poucos bytes
+du -shL link            # tamanho do alvo
+```
+
+O caso mais perigoso é o `chown -R`. Por padrão ele **não** segue links simbólicos, o que é o comportamento seguro. Mas `chown -RL` segue, e num diretório que contenha um link para `/etc` isso muda o dono de arquivos de sistema.
+
+::: {.callout-warning}
+## `chown -R` com `-L` pode arruinar o sistema
+
+```bash
+sudo chown -RL kali:kali /var/www      # PERIGOSO se houver link para fora da arvore
+sudo chown -Rh kali:kali /var/www      # muda o dono do LINK, nao do alvo: seguro
+```
+
+Antes de qualquer `chown -R` ou `chmod -R` em diretório que você não criou, liste os links que existem lá dentro: `find /var/www -type l -ls`. Se algum apontar para fora da árvore, trate-o individualmente.
+:::
+
+## Resolvendo caminhos: `readlink`, `realpath` e `namei`
+
+```bash
+readlink link              # mostra o caminho armazenado, um nivel so
+readlink -f link           # resolve ate o fim; o alvo final pode nao existir
+realpath link              # resolve ate o fim; exige que o alvo exista
+realpath --relative-to=/usr /usr/bin/vim
+namei -l /usr/bin/vi       # mostra CADA etapa da resolucao, com permissoes
+```
+
+O `namei -l` é subestimado. Quando um caminho devolve `Permission denied` e você não sabe qual componente é o culpado, ele responde de imediato — mostrando permissão e dono de cada diretório do caminho, além de resolver os links pelo meio.
+
+O `readlink -f` é o idioma padrão em script para descobrir onde o script realmente está:
+
+```bash
+DIR="$(dirname "$(readlink -f "$0")")"
+```
+
+Sem ele, um script chamado através de um link no `PATH` acha que mora no diretório do link, não no diretório real.
+
+## Links quebrados e laços
+
+Um link cujo alvo não existe é um *dangling symlink*. Ele não dá erro na criação nem na listagem — só na hora do uso.
+
+```bash
+find /caminho -xtype l                 # lista links quebrados
+find /caminho -xtype l -printf '%p -> %l\n'
+find /caminho -type l -exec test ! -e {} \; -print   # forma portavel
+```
+
+O `-xtype l` é o teste certo: `-type l` lista **todos** os links, enquanto `-xtype l` lista aqueles cujo alvo, depois de resolvido, ainda é um link — na prática, os quebrados.
+
+Um link também pode apontar para si mesmo, direta ou indiretamente:
+
+```bash
+ln -s laco laco
+cat laco
+# cat: laco: Too many levels of symbolic links
+```
+
+O kernel limita a cadeia de resolução — tipicamente 40 níveis — e devolve `ELOOP`. É proteção, não defeito.
+
+## O caso concreto do Kali: `update-alternatives`
+
+Debian e Kali resolvem "qual programa atende o nome genérico" com uma cadeia dupla de links simbólicos gerenciada pelo `update-alternatives` [@debianpolicy]. @fig-alternatives mostra a cadeia de `vi`.
+
+::: {#fig-alternatives}
+```{.tikz}
+%%| filename: cadeia-de-links-do-update-alternatives
+%%| alt: Cadeia de links de usr bin vi para etc alternatives vi e daqui para usr bin vim basic
+\begin{tikzpicture}[
+    lk/.style={draw=manualyellow,fill=manualyellow!20,rounded corners=3pt,font=\scriptsize\ttfamily,minimum width=3.4cm,minimum height=0.65cm,thick},
+    al/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize\ttfamily,minimum width=3.4cm,minimum height=0.65cm,thick},
+    bi/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=3pt,font=\scriptsize\ttfamily,minimum width=3.4cm,minimum height=0.65cm,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \node[lk] (a) at (0,0)    {/usr/bin/vi};
+  \node[al] (b) at (0,-1.5) {/etc/alternatives/vi};
+  \node[bi] (c) at (0,-3.0) {/usr/bin/vim.basic};
+  \draw[fl] (a) -- node[nt,left,xshift=-2pt]{link} (b);
+  \draw[fl] (b) -- node[nt,left,xshift=-2pt]{link} (c);
+
+  \node[nt,text width=4.8cm,align=left] at (5.2,-0.1) {o nome genérico que o usuário digita};
+  \node[nt,text width=4.8cm,align=left] at (5.2,-1.5) {o ponto de troca: só este link muda ao escolher outro editor};
+  \node[nt,text width=4.8cm,align=left] at (5.2,-3.0) {o binário de verdade, instalado pelo pacote};
+
+  \node[nt,text width=10.8cm] at (2.2,-4.4) {O comando \texttt{update-alternatives} reescreve apenas o link do meio. Nada em \texttt{/usr/bin} é tocado, e a troca vale para o sistema inteiro.};
+\end{tikzpicture}
+```
+A cadeia dupla do `update-alternatives`: o nível intermediário é o que permite trocar de programa sem mexer nos arquivos dos pacotes.
+:::
+
+```bash
+ls -l /usr/bin/vi
+namei -l /usr/bin/vi
+update-alternatives --list editor
+sudo update-alternatives --config editor
+```
+
+A elegância do arranjo está no nível do meio. Sem ele, trocar de editor exigiria sobrescrever `/usr/bin/vi` — o que o gerenciador de pacotes desfaria na próxima atualização.
+
+## Segurança: por que links merecem desconfiança
+
+Links simbólicos são um vetor clássico de ataque local, e o mecanismo é simples: um programa privilegiado escreve num caminho previsível dentro de `/tmp`; um usuário sem privilégio cria antes um link com aquele nome apontando para um arquivo sensível; o programa privilegiado escreve no alvo do link.
+
+As defesas do Linux moderno:
+
+```bash
+sysctl fs.protected_symlinks     # 1 por padrao no Debian/Kali
+sysctl fs.protected_hardlinks    # 1 por padrao
+```
+
+Com `fs.protected_symlinks=1`, um link num diretório com *sticky bit* — como `/tmp`, tema de @sec-cap020 — só é seguido se o dono do link for o mesmo dono do diretório ou o mesmo do processo. `fs.protected_hardlinks=1` impede criar hard link para um arquivo que você não pode ler.
+
+Isso mitiga, mas não substitui a prática correta em script: usar `mktemp` em vez de nome previsível.
+
+```bash
+tmp="$(mktemp -d)"       # nome imprevisivel, permissoes 700
+trap 'rm -rf "$tmp"' EXIT
+```
+
+O tema completo de escrita segura em `/tmp` volta no Volume 12; o de superfície de ataque, no Volume 14.
+
+## 🐉 No Kali
+
+- **`/usr/share/wordlists` é quase todo feito de links.** `dirb`, `dirbuster`, `fasttrack.txt`, `metasploit`, `wfuzz` e `seclists` aparecem lá como links simbólicos para os diretórios reais dos pacotes. `ls -l /usr/share/wordlists` mostra os alvos; `namei -l` mostra onde de fato vão parar. Se um pacote for removido, o link fica pendurado e a ferramenta reclama de arquivo inexistente sem dizer que a causa é um link morto.
+- **`update-alternatives` governa `editor`, `x-terminal-emulator`, `x-www-browser` e vários outros.** Trocar o editor padrão do `visudo` e do `git` no Kali é `sudo update-alternatives --config editor`, não editar `/usr/bin/vi`.
+- **Wordlist gigante em outra partição pede link, não cópia.** Se o `rockyou.txt` descomprimido só existe numa partição de dados montada, `ln -s /mnt/dados/rockyou.txt ~/wordlists/rockyou.txt` resolve sem duplicar 130 MB. Hard link não serviria: sistemas de arquivos diferentes.
+- **Estruture o diretório de engajamento com links relativos.** Uma árvore `~/engajamentos/cliente-x/` com links criados por `ln -sr` continua íntegra quando a pasta inteira for arquivada, movida ou copiada para a máquina do relatório. Com caminho absoluto, tudo quebra na primeira mudança de host.
+- **Em análise de artefato, nunca copie um diretório suspeito sem `-P` ou `-a`.** Um `cp -r` comum segue os links e pode arrastar arquivos de fora da amostra para dentro dela — ou, pior, escrever onde não devia. `cp -a` preserva a estrutura como está.
+- **Hard link é a forma de "congelar" evidência sem duplicar espaço.** Enquanto o contador de links for maior que zero, o conteúdo não vai embora, mesmo que o nome original seja apagado. Use dentro do mesmo sistema de arquivos e registre o inode com `stat`.
+- **Cheque links quebrados depois de um `apt autoremove` agressivo.** No Kali rolling, remover metapacotes pode deixar links pendurados em `/usr/share`. `sudo find /usr/share -xtype l` faz a varredura em segundos.
+
+> **Nota sobre a família RHEL.** O mecanismo de links é do kernel e idêntico. A diferença é administrativa: RHEL e Fedora usam `alternatives` (sem o `update-`) para o mesmo papel, com sintaxe própria. Além disso, o SELinux atribui contexto ao link **e** ao alvo separadamente — um link com contexto errado pode ser negado mesmo com permissões corretas, e o diagnóstico aparece em `ls -lZ`, não em `ls -l`.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`.
+
+1. **Crie um hard link e observe o contador.**
+
+   ```bash
+   mkdir -p /tmp/lab016 && cd /tmp/lab016
+   echo "conteudo original" > dados.txt
+   ls -li dados.txt
+   ln dados.txt copia-hard.txt
+   stat -c '%n inode=%i links=%h' dados.txt copia-hard.txt
+   ```
+
+   Esperado: inode idêntico e contador 2 nos dois. São dois nomes do mesmo arquivo.
+
+2. **Prove que não existe "o original".**
+
+   ```bash
+   rm dados.txt
+   ls -li copia-hard.txt
+   cat copia-hard.txt
+   ```
+
+   Esperado: o conteúdo continua acessível e o contador voltou a 1. Apagar um nome não apaga o arquivo.
+
+3. **Escreva por um nome e leia pelo outro.**
+
+   ```bash
+   ln copia-hard.txt terceiro.txt
+   echo "linha acrescentada" >> terceiro.txt
+   cat copia-hard.txt
+   ```
+
+   Esperado: a linha aparece nos dois. É o mesmo inode, os mesmos blocos.
+
+4. **Esbarre nos limites do hard link.**
+
+   ```bash
+   mkdir umdir
+   ln umdir outro-dir
+   ln copia-hard.txt /dev/shm/tentativa
+   ```
+
+   Esperado: `hard link not allowed for directory` no primeiro e `Invalid cross-device link` no segundo. As duas restrições, ao vivo.
+
+5. **Crie um link simbólico e inspecione.**
+
+   ```bash
+   ln -s copia-hard.txt atalho
+   ls -li copia-hard.txt atalho
+   stat -c '%n tipo=%F tamanho=%s' atalho
+   readlink atalho
+   ```
+
+   Esperado: inode **diferente**, tipo `symbolic link`, e tamanho igual ao número de caracteres do alvo — 15 bytes para `copia-hard.txt`.
+
+6. **Quebre o link e conserte.**
+
+   ```bash
+   mv copia-hard.txt renomeado.txt
+   ls -l atalho
+   cat atalho
+   ln -sf renomeado.txt atalho
+   cat atalho
+   ```
+
+   Esperado: depois do `mv` o link fica pendurado e o `cat` falha; o `ln -sf` reaponta. Um hard link não teria notado a renomeação.
+
+7. **Entenda relativo contra absoluto.**
+
+   ```bash
+   mkdir -p arv/sub
+   echo alvo > arv/alvo.txt
+   ln -s arv/alvo.txt rel-frag
+   ln -sr arv/alvo.txt arv/sub/rel-certo
+   ls -l rel-frag arv/sub/rel-certo
+   cat arv/sub/rel-certo
+   mv rel-frag arv/sub/
+   cat arv/sub/rel-frag
+   ```
+
+   Esperado: o `ln -sr` calculou `../alvo.txt` e funciona de dentro de `sub`; o link criado à mão quebrou ao ser movido, porque o caminho relativo é resolvido a partir de onde o link **está**.
+
+8. **Veja o `-n` fazer diferença.**
+
+   ```bash
+   mkdir -p versao-1 versao-2
+   ln -s versao-1 atual
+   ls -l atual
+   ln -sf versao-2 atual           # SEM -n
+   ls -l atual; ls -l versao-1/
+   rm -f versao-1/versao-2
+   ln -sfn versao-2 atual          # COM -n
+   ls -l atual
+   ```
+
+   Esperado: sem `-n`, o link foi criado **dentro** de `versao-1`; com `-n`, o link `atual` foi substituído. É a diferença entre uma troca de versão que funciona e uma que se enrola.
+
+9. **Compare como os comandos tratam o link.**
+
+   ```bash
+   ln -s renomeado.txt ponteiro
+   ls -l ponteiro
+   ls -lL ponteiro
+   du -sh ponteiro
+   du -shL ponteiro
+   cp ponteiro copia-conteudo
+   cp -P ponteiro copia-link
+   ls -l copia-conteudo copia-link
+   ```
+
+   Esperado: `ls -lL` e `du -shL` mostram o alvo; `cp` sem opção copiou o conteúdo, `cp -P` copiou o link como link.
+
+10. **Confirme que `rm` nunca toca o alvo.**
+
+    ```bash
+    rm ponteiro
+    ls -l renomeado.txt
+    ```
+
+    Esperado: o alvo intacto. Remover um link simbólico é sempre seguro.
+
+11. **Provoque um laço.**
+
+    ```bash
+    ln -s laco laco
+    cat laco
+    ```
+
+    Esperado: `Too many levels of symbolic links`. O kernel corta a resolução por volta de 40 níveis.
+
+12. **Cace os links quebrados.**
+
+    ```bash
+    find . -type l | wc -l
+    find . -xtype l
+    find . -xtype l -printf '%p -> %l\n'
+    ```
+
+    Esperado: a primeira contagem inclui todos os links; a segunda lista só os pendurados, com o alvo inexistente ao lado.
+
+13. **Rastreie a cadeia do `vi`.**
+
+    ```bash
+    ls -l /usr/bin/vi
+    namei -l /usr/bin/vi
+    readlink -f /usr/bin/vi
+    update-alternatives --list editor
+    ```
+
+    Esperado: a cadeia `/usr/bin/vi` até `/usr/bin/vim.basic` passando por `/etc/alternatives`, exatamente como em @fig-alternatives. O `namei -l` mostra permissão e dono de cada etapa.
+
+14. **Descubra por que um caminho dá "Permission denied".**
+
+    ```bash
+    mkdir -p fechado/dentro
+    echo segredo > fechado/dentro/arq.txt
+    chmod 000 fechado
+    cat fechado/dentro/arq.txt
+    namei -l "$PWD/fechado/dentro/arq.txt"
+    chmod 755 fechado
+    ```
+
+    Esperado: o `cat` falha e o `namei -l` aponta exatamente qual componente do caminho barrou. É o diagnóstico mais rápido que existe para esse erro.
+
+15. **Explore os links reais do Kali.**
+
+    ```bash
+    ls -l /usr/share/wordlists/
+    sudo find /usr/share -xtype l 2>/dev/null | head
+    ```
+
+    Esperado: vários links apontando para os diretórios dos pacotes. A segunda linha revela se algum ficou pendurado depois de remoções de pacote.
+
+16. **Confira as proteções do kernel.**
+
+    ```bash
+    sysctl fs.protected_symlinks fs.protected_hardlinks
+    ```
+
+    Esperado: `= 1` nas duas. É o que impede o ataque clássico de link em `/tmp`.
+
+17. **Limpe.**
+
+    ```bash
+    cd /tmp
+    ls -laR /tmp/lab016 | head -30
+    rm -rf /tmp/lab016
+    ```
+
+## Resumo
+
+- **Hard link é outro nome para o mesmo inode.** Não existe "o original": os nomes são equivalentes, e o arquivo só some quando o contador de links zera.
+- **Hard link não atravessa sistema de arquivos nem funciona para diretório**, porque números de inode são locais e ciclos de diretório quebrariam qualquer travessia recursiva.
+- **Link simbólico é um arquivo cujo conteúdo é um caminho.** Tem inode próprio, tamanho igual ao comprimento do caminho, e resolve na hora do uso — por isso pode apontar para o inexistente.
+- **`ln -s ALVO LINK`**, nessa ordem. Se o destino for diretório existente, o link nasce dentro dele; `-sfn` é obrigatório para substituir um link que aponta para diretório.
+- **Relativo se move junto com a árvore; absoluto fixa o alvo.** `ln -sr` calcula o relativo correto sem contar `..` na mão.
+- **`-P` não segue, `-L` segue, `-H` segue só o da linha de comando.** `cp` copia conteúdo por padrão e `cp -a` preserva a estrutura; `rm` nunca toca o alvo; `chown -RL` pode arrastar arquivos de fora da árvore.
+- **`readlink -f`, `realpath` e `namei -l` resolvem a cadeia**, e o `namei -l` é o diagnóstico mais rápido para `Permission denied` num caminho longo.
+- **`find -xtype l` acha os links quebrados**, e `fs.protected_symlinks` protege contra o ataque clássico em diretório com sticky bit — mas `mktemp` continua sendo a prática correta em script.
+</content>

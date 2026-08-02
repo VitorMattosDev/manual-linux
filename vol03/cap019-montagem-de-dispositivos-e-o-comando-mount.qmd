@@ -1,3 +1,493 @@
 # Montagem de dispositivos e o comando mount {#sec-cap019}
 
-*(em elaboracao)*
+Você copia dois gigabytes para um pen drive. A barra de progresso termina em três segundos — suspeitamente rápido —, você puxa o dispositivo e vai embora. Na outra máquina, o pen drive está vazio, ou tem arquivos truncados pela metade.
+
+Não foi defeito do hardware. O Linux confirmou a cópia assim que os dados entraram no **cache de escrita** da memória, e a gravação real aconteceria alguns segundos depois. Puxar o dispositivo antes de `umount` interrompeu exatamente isso.
+
+Esse comportamento é uma consequência direta de como o Linux trata dispositivos de armazenamento: eles não são "unidades" com letra, são sistemas de arquivos **enxertados** em algum ponto da árvore única que começa em `/`. Entender o enxerto — quando ele acontece, quem o desfaz, e o que fica pendente enquanto ele existe — é o assunto deste capítulo.
+
+## Uma árvore só, sem letras de unidade
+
+No Windows, cada dispositivo ganha uma letra e vira a raiz de uma árvore própria. No Linux existe **uma** árvore, começando em `/` (@sec-cap005), e cada sistema de arquivos adicional é ligado a um diretório existente dela. Esse diretório é o **ponto de montagem**.
+
+@fig-arvore-montagem mostra o enxerto.
+
+::: {#fig-arvore-montagem}
+```{.tikz}
+%%| filename: enxerto-de-sistema-de-arquivos-na-arvore
+%%| alt: Arvore de diretorios da raiz com um sistema de arquivos separado enxertado no ponto de montagem mnt dados
+\begin{tikzpicture}[
+    d/.style={draw=manualblue,fill=manualblue!12,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.15cm,minimum height=0.5cm},
+    m/.style={draw=manualred,fill=manualred!12,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.15cm,minimum height=0.5cm,thick},
+    g/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.15cm,minimum height=0.5cm},
+    fl/.style={manualgray,thick},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    tit/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  % arvore raiz
+  \node[tit] at (-3.0,2.6) {sistema de arquivos raiz — \texttt{/dev/sda1}};
+  \node[d] (r)  at (-3.0,1.8) {/};
+  \node[d] (e)  at (-5.2,0.7) {etc};
+  \node[d] (h)  at (-3.9,0.7) {home};
+  \node[d] (u)  at (-2.6,0.7) {usr};
+  \node[d] (mn) at (-1.1,0.7) {mnt};
+  \foreach \x in {e,h,u,mn} \draw[fl] (r) -- (\x);
+  \node[m] (dd) at (-1.1,-0.5) {dados};
+  \draw[fl] (mn) -- (dd);
+
+  % sistema de arquivos externo
+  \node[tit] at (5.0,0.5) {segundo sistema de arquivos — \texttt{/dev/sdb1}};
+  \node[g] (r2) at (5.0,-0.5) {(raiz)};
+  \node[g] (p1) at (3.6,-1.6) {fotos};
+  \node[g] (p2) at (5.0,-1.6) {docs};
+  \node[g] (p3) at (6.4,-1.6) {backup};
+  \foreach \x in {p1,p2,p3} \draw[fl] (r2) -- (\x);
+
+  \draw[manualred,very thick,-{Stealth[length=6pt]},dashed] (r2.west) -- node[nt,above,pos=0.5]{\texttt{mount /dev/sdb1 /mnt/dados}} (dd.east);
+
+  \node[nt,text width=12.0cm] at (0.6,-2.9) {Depois do enxerto, \texttt{/mnt/dados/fotos} é um caminho válido. O conteúdo que \texttt{/mnt/dados} porventura tivesse antes fica \textbf{escondido} — não é apagado, apenas inacessível até o \texttt{umount}.};
+\end{tikzpicture}
+```
+Montar é enxertar a raiz de um sistema de arquivos num diretório da árvore existente. Não há letras de unidade porque não há árvores paralelas.
+:::
+
+Duas consequências práticas desse desenho:
+
+**O conteúdo anterior do ponto de montagem some de vista.** Se você tinha arquivos em `/mnt/dados` e montou algo por cima, eles continuam no disco — invisíveis — e reaparecem no `umount`. Isso já assustou muita gente que achou ter perdido dados.
+
+**Um caminho pode atravessar vários sistemas de arquivos sem que você perceba.** `/home/kali/dados/foto.jpg` pode ter `/`, `/home` e `/home/kali/dados` em três dispositivos diferentes. É por isso que o `-xdev` do `find` (@sec-cap017) e o `-x` do `du` existem.
+
+## Ver o que está montado
+
+Quatro ferramentas, com propósitos distintos:
+
+```bash
+lsblk                       # arvore de DISPOSITIVOS de bloco: discos, particoes, montagens
+lsblk -f                    # acrescenta sistema de arquivos, rotulo e UUID
+findmnt                     # arvore de MONTAGENS, hierarquica e legivel
+findmnt /home               # quem esta montado ali
+findmnt -t ext4,vfat        # so os tipos indicados
+df -hT                      # espaco livre com o tipo do sistema de arquivos
+mount | column -t           # lista bruta, herdeira do /etc/mtab
+cat /proc/mounts            # a fonte da verdade, direto do kernel
+blkid                       # UUID, rotulo e tipo de cada dispositivo
+```
+
+O `lsblk` e o `findmnt` respondem perguntas diferentes e complementares: o primeiro parte do hardware, o segundo parte da árvore. Quando um pen drive é conectado e "não aparece", o `lsblk` mostra se o kernel ao menos o enxergou.
+
+O `mount` sem argumentos ainda funciona, mas hoje é a opção pior — a saída é longa e cheia de sistemas de arquivos virtuais. `findmnt` é a substituição moderna.
+
+## Montar e desmontar
+
+```bash
+sudo mount /dev/sdb1 /mnt/dados
+sudo mount -t vfat /dev/sdb1 /mnt/pendrive
+sudo mount -o ro /dev/sdb1 /mnt/leitura
+sudo mount UUID=1a2b-3c4d /mnt/dados
+sudo mount -o remount,rw /             # remonta sem desmontar
+sudo umount /mnt/dados
+sudo umount /dev/sdb1                  # pelo dispositivo tambem funciona
+```
+
+O tipo (`-t`) quase nunca é necessário: o `mount` detecta pelo conteúdo. Ele importa quando o mesmo dispositivo pode ser lido de mais de uma forma, ou quando você quer forçar uma implementação específica.
+
+### As opções que importam
+
+```bash
+-o ro          # somente leitura
+-o rw          # leitura e escrita (padrao)
+-o noexec      # proibe executar binarios daqui
+-o nosuid      # ignora os bits SUID/SGID (@sec-cap020 e Volume 4)
+-o nodev       # ignora arquivos de dispositivo
+-o noatime     # nao atualiza atime: desempenho
+-o sync        # escreve na hora, sem cache — lento, mas resiste a remocao abrupta
+-o uid=1000,gid=1000,umask=022    # dono e permissoes em vfat/ntfs, que nao guardam isso
+-o defaults    # rw,suid,dev,exec,auto,nouser,async
+```
+
+A trinca `noexec,nosuid,nodev` é a configuração padrão de higiene para qualquer mídia que não é sua. Sistemas de arquivos como FAT e NTFS não guardam permissões Unix, então tudo neles aparece com o dono e o modo definidos na montagem — daí o `uid=`, `gid=` e `umask=`.
+
+### `umount` e o "target is busy"
+
+O erro mais comum ao desmontar:
+
+```text
+umount: /mnt/dados: target is busy.
+```
+
+Significa que algum processo tem um arquivo aberto ali, ou tem o diretório como diretório de trabalho. Para descobrir quem:
+
+```bash
+lsof +f -- /mnt/dados       # lista processos usando o ponto de montagem
+fuser -vm /mnt/dados        # o mesmo, com formato compacto
+fuser -km /mnt/dados        # MATA os processos: use com consciencia
+```
+
+A causa número um é banal: **o seu próprio shell está com `cd` dentro do diretório**. Um `cd /` resolve.
+
+Existe a saída de emergência:
+
+```bash
+sudo umount -l /mnt/dados   # lazy: desliga da arvore agora, libera quando os processos soltarem
+```
+
+Ela remove o ponto da árvore imediatamente, mas o sistema de arquivos só é realmente liberado quando o último processo fechar. Não é substituto de `umount` normal, e não garante que os dados foram gravados.
+
+::: {.callout-warning}
+## Remover mídia sem desmontar perde dados
+
+O Linux confirma a escrita quando os dados chegam ao cache, não ao disco. Antes de puxar qualquer mídia removível:
+
+```bash
+sync                        # forca a gravacao de tudo que esta pendente
+sudo umount /mnt/pendrive   # o umount ja inclui o sync do sistema montado
+```
+
+Se `umount` falhar por "busy", **não** puxe o dispositivo — descubra o processo com `fuser -vm` e resolva. O `sync` sozinho reduz o risco, mas não substitui o `umount`, porque metadados do sistema de arquivos podem ficar em estado inconsistente.
+:::
+
+## `/etc/fstab`: montagens permanentes
+
+O `/etc/fstab` descreve o que deve ser montado no boot. Cada linha tem seis campos, e @fig-fstab-campos os detalha.
+
+::: {#fig-fstab-campos}
+```{.tikz}
+%%| filename: os-seis-campos-de-uma-linha-do-fstab
+%%| alt: Linha do arquivo fstab decomposta nos seis campos com a explicacao de cada um
+\begin{tikzpicture}[
+    c/.style={rounded corners=2pt,font=\scriptsize\ttfamily,minimum height=0.62cm,thick,inner sep=4pt,align=center},
+    c1/.style={c,draw=manualblue,fill=manualblue!12},
+    c2/.style={c,draw=manualgreen,fill=manualgreen!14},
+    c3/.style={c,draw=manualgray,fill=manualgray!10},
+    c4/.style={c,draw=manualyellow,fill=manualyellow!20},
+    c5/.style={c,draw=manualred,fill=manualred!12},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={manualgray,-{Stealth[length=3.5pt]}}
+  ]
+  \node[c1] (a) at (0,0)     {UUID=1a2b-3c4d};
+  \node[c2] (b) at (3.1,0)   {/mnt/dados};
+  \node[c3] (c) at (5.3,0)   {ext4};
+  \node[c4] (d) at (8.2,0)   {defaults,nofail};
+  \node[c5] (e) at (10.4,0)  {0};
+  \node[c5] (f) at (11.2,0)  {2};
+
+  \node[nt] at (0,0.75) {\textbf{1. o quê}};
+  \node[nt] at (3.1,0.75) {\textbf{2. onde}};
+  \node[nt] at (5.3,0.75) {\textbf{3. tipo}};
+  \node[nt] at (8.2,0.75) {\textbf{4. opções}};
+  \node[nt] at (10.8,0.75) {\textbf{5. 6.}};
+
+  \node[nt,text width=3.0cm] at (-0.2,-1.5) {UUID, LABEL ou caminho. \textbf{Sempre UUID}: nomes como \texttt{/dev/sdb1} mudam de ordem entre boots.};
+  \node[nt,text width=2.2cm] at (3.2,-1.5) {o ponto de montagem, que precisa existir};
+  \node[nt,text width=2.0cm] at (5.6,-1.5) {\texttt{ext4}, \texttt{vfat}, \texttt{swap}, \texttt{auto}};
+  \node[nt,text width=3.0cm] at (8.5,-1.5) {as mesmas do \texttt{-o}. \texttt{nofail} evita que o boot pare se o disco faltar};
+  \node[nt,text width=2.6cm] at (11.6,-1.5) {\texttt{dump} (quase sempre 0) e ordem do \texttt{fsck}: 1 para a raiz, 2 para o resto, 0 para não checar};
+\end{tikzpicture}
+```
+A anatomia de uma linha do `/etc/fstab`. O primeiro e o quarto campos são os que causam problema de boot quando mal preenchidos.
+:::
+
+```bash
+cat /etc/fstab
+blkid                        # pegue o UUID daqui
+sudo findmnt --verify        # CONFERE a sintaxe do fstab: rode sempre apos editar
+sudo mount -a                # monta tudo que esta no fstab e ainda nao esta montado
+```
+
+::: {.callout-warning}
+## Erro no `fstab` impede o sistema de iniciar
+
+Uma linha inválida — UUID errado, ponto de montagem inexistente, tipo incorreto — pode deixar o boot travado numa `emergency shell`. Depois de **qualquer** edição:
+
+1. `sudo findmnt --verify` para checar a sintaxe;
+2. `sudo mount -a` para testar sem reiniciar;
+3. acrescente `nofail` em toda montagem de mídia removível ou de rede, para que a ausência do dispositivo não interrompa o boot.
+
+Faça uma cópia antes: `sudo cp /etc/fstab /etc/fstab.bak`.
+:::
+
+O uso de **UUID em vez de `/dev/sdX`** não é preciosismo. A ordem de enumeração dos discos depende do tempo de resposta do hardware, e um disco que era `/dev/sdb` pode virar `/dev/sda` na próxima inicialização. Com UUID, o alvo é sempre o mesmo sistema de arquivos.
+
+Em sistemas com systemd, o `fstab` é lido por um gerador que produz *units* de montagem. Isso significa que opções como `x-systemd.automount` (montar sob demanda, no primeiro acesso) e `x-systemd.device-timeout=5s` estão disponíveis. O assunto pertence ao Volume 7.
+
+## Montagem automática no ambiente gráfico
+
+No Xfce do Kali, conectar um pen drive dispara o `udisks2`, que monta em `/media/<usuário>/<rótulo>` sem pedir senha. É conveniente e tem duas implicações:
+
+- O ponto de montagem depende do **rótulo** do dispositivo, que pode mudar;
+- As opções aplicadas são as do `udisks2`, não as suas.
+
+Para controle real — especialmente com mídia que você não confia — desmonte e remonte à mão:
+
+```bash
+udisksctl unmount -b /dev/sdb1
+sudo mkdir -p /mnt/inspecao
+sudo mount -o ro,noexec,nosuid,nodev /dev/sdb1 /mnt/inspecao
+```
+
+## Arquivos-imagem: montar sem hardware
+
+Um arquivo pode conter um sistema de arquivos inteiro. Montá-lo usa um **dispositivo de loop**, que faz o kernel tratar o arquivo como se fosse um disco.
+
+```bash
+sudo mount -o loop imagem.iso /mnt/iso
+sudo mount -o ro,loop imagem.img /mnt/analise
+```
+
+Para imagens com tabela de partição (uma imagem de disco inteiro, não de partição), é preciso mapear as partições:
+
+```bash
+sudo losetup -Pf --show disco.img      # -P le a tabela de particoes; imprime /dev/loopN
+sudo mount -o ro /dev/loop0p1 /mnt/analise
+sudo umount /mnt/analise
+sudo losetup -d /dev/loop0             # desfaz
+losetup -a                             # lista os loops ativos
+```
+
+Esse é o mecanismo que permite todo o laboratório deste capítulo acontecer dentro de um arquivo em `/tmp`, sem tocar em nenhum disco real.
+
+## Bind mount e tmpfs
+
+Duas montagens que não envolvem dispositivo nenhum.
+
+**Bind mount** faz um diretório aparecer em dois lugares da árvore:
+
+```bash
+sudo mount --bind /origem /destino
+sudo mount --rbind /origem /destino      # inclui as montagens que estao dentro
+sudo mount -o remount,ro,bind /destino   # a copia fica somente-leitura
+```
+
+Diferente de um link simbólico, o bind mount é resolvido pelo kernel na camada de montagem: funciona dentro de um `chroot`, funciona quando o programa recusa seguir links, e permite montar o mesmo conteúdo com opções diferentes em cada lugar. É a base de boa parte do que os contêineres fazem (Volume 16).
+
+**tmpfs** é um sistema de arquivos que mora na memória:
+
+```bash
+findmnt -t tmpfs
+sudo mount -t tmpfs -o size=256M tmpfs /mnt/rapido
+```
+
+Rápido e volátil: o conteúdo desaparece no desligamento. `/run`, `/dev/shm` e frequentemente `/tmp` são tmpfs. Para dado sensível que não deve encostar no disco, é a escolha óbvia — desde que a máquina não use *swap*, que reintroduziria o problema.
+
+## 🐉 No Kali
+
+- **Monte mídia de terceiros somente-leitura, sempre.** `sudo mount -o ro,noexec,nosuid,nodev /dev/sdb1 /mnt/inspecao` é o comando padrão para qualquer pen drive achado, recebido ou apreendido. O `ro` protege a evidência de alteração acidental; o `noexec,nosuid` protege você.
+- **Em análise forense, `ro` no `mount` não basta.** O ideal é um bloqueador de escrita de hardware ou, na falta dele, trabalhar sobre uma **cópia** da imagem e nunca sobre a mídia original. `losetup -r` cria o dispositivo de loop já somente-leitura, o que fecha mais uma porta.
+- **Persistência do Kali live é uma montagem sobreposta.** A partição rotulada `persistence`, com o arquivo `persistence.conf`, é combinada com o sistema somente-leitura da imagem via overlayfs. `findmnt -t overlay` mostra o arranjo, e `lsblk -f` mostra os rótulos que o mecanismo procura.
+- **NTFS funciona, com o pacote certo.** `sudo apt install ntfs-3g` habilita leitura e escrita em partições do Windows. Para uma imagem de disco de Windows em análise, monte com `-o ro,show_sys_files,streams_interface=windows` para enxergar fluxos alternativos de dados — um lugar clássico de esconder conteúdo.
+- **`/dev/shm` e `/tmp` são tmpfs e ficam em memória.** Deixar coleta ou credencial ali evita rastro no disco, mas some no desligamento e aparece no *swap* se a memória apertar. Para trabalho sensível, tmpfs mais `swapoff` (ou uma máquina sem swap) é o par correto.
+- **`lsblk` primeiro, sempre.** Antes de qualquer `mount`, `dd` ou `mkfs`, `lsblk -f` mostra tamanho, rótulo e sistema de arquivos de cada dispositivo. Confundir `/dev/sda` com `/dev/sdb` é o erro que destrói o disco do próprio analista — e ele acontece justamente quando se pula esse passo.
+- **Arquivo-imagem com `losetup` é o laboratório mais seguro que existe.** Para praticar particionamento, formatação, LUKS ou LVM (Volume 8), um arquivo de 200 MB em `/tmp` se comporta como um disco de verdade e não tem como destruir nada importante.
+
+> **Nota sobre a família RHEL.** `mount`, `fstab`, `lsblk` e `findmnt` são idênticos (util-linux nas duas famílias). As diferenças: RHEL usa XFS como padrão, que aceita `-o remount` para crescer mas nunca para encolher; o SELinux exige contexto correto no ponto de montagem, e uma montagem sem `-o context=...` pode resultar em acesso negado mesmo com permissões corretas — `ls -lZ` e `restorecon` são as ferramentas de diagnóstico. Em mídia removível, o Fedora monta em `/run/media/<usuário>/`, não em `/media/<usuário>/`.
+
+## 🧪 Laboratório
+
+Roteiro inteiro dentro de um arquivo-imagem em `/tmp`. **Nenhum comando abaixo toca em disco real** — mas leia cada linha antes de executar, especialmente as que envolvem `mkfs` e `losetup`.
+
+1. **Veja o estado atual do sistema.**
+
+   ```bash
+   lsblk -f
+   findmnt
+   findmnt -t ext4,vfat,tmpfs
+   df -hT
+   cat /etc/fstab
+   ```
+
+   Esperado: `lsblk` mostra os dispositivos; `findmnt` mostra a árvore de montagens, com `/proc`, `/sys` e `/run` entre elas.
+
+2. **Crie um "disco" de mentira.**
+
+   ```bash
+   mkdir -p /tmp/lab019 && cd /tmp/lab019
+   truncate -s 200M disco.img
+   ls -lh disco.img
+   file disco.img
+   ```
+
+   Esperado: 200 MB declarados, quase nada ocupado (arquivo esparso, como em @sec-cap015), e o `file` dizendo apenas `data` — ainda não há sistema de arquivos.
+
+3. **Formate a imagem.**
+
+   O `mkfs` é destrutivo por natureza. Aqui o alvo é o arquivo `/tmp/lab019/disco.img` e nada mais — confira o caminho antes de dar Enter.
+
+   ```bash
+   mkfs.ext4 -q -L LABTESTE /tmp/lab019/disco.img
+   file disco.img
+   blkid disco.img
+   ```
+
+   Esperado: agora o `file` identifica `ext4 filesystem` e o `blkid` mostra o rótulo `LABTESTE` e um UUID.
+
+4. **Monte e use.**
+
+   ```bash
+   mkdir -p ponto
+   sudo mount -o loop disco.img ponto
+   findmnt ponto
+   df -hT ponto
+   sudo chown "$USER" ponto
+   echo "arquivo dentro da imagem" > ponto/teste.txt
+   ls -l ponto
+   ```
+
+   Esperado: `findmnt` mostra a montagem com origem `/dev/loopN`, e o arquivo criado vive dentro da imagem.
+
+5. **Comprove que o ponto de montagem esconde o conteúdo anterior.**
+
+   ```bash
+   sudo umount ponto
+   echo "eu estava aqui antes" > ponto/escondido.txt
+   ls ponto
+   sudo mount -o loop disco.img ponto
+   ls ponto
+   sudo umount ponto
+   ls ponto
+   ```
+
+   Esperado: `escondido.txt` desaparece durante a montagem e reaparece depois. Nada foi apagado.
+
+6. **Monte somente-leitura e tente escrever.**
+
+   ```bash
+   sudo mount -o ro,loop disco.img ponto
+   findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS ponto
+   touch ponto/tentativa.txt
+   sudo umount ponto
+   ```
+
+   Esperado: `Read-only file system`. É o modo em que qualquer mídia de terceiro deve ser aberta.
+
+7. **Veja o `noexec` em ação.**
+
+   ```bash
+   sudo mount -o loop disco.img ponto
+   sudo cp /bin/echo ponto/
+   ponto/echo "executou"
+   sudo umount ponto
+   sudo mount -o loop,noexec disco.img ponto
+   ponto/echo "executou"
+   sudo umount ponto
+   ```
+
+   Esperado: funciona na primeira montagem e devolve `Permission denied` na segunda. `noexec` é uma barreira real, não decorativa.
+
+8. **Provoque o "target is busy".**
+
+   ```bash
+   sudo mount -o loop disco.img ponto
+   cd ponto
+   sudo umount /tmp/lab019/ponto
+   cd ..
+   sudo umount ponto
+   ```
+
+   Esperado: a primeira tentativa falha porque o seu shell estava dentro; depois do `cd ..` funciona. É a causa número um do erro.
+
+9. **Descubra quem está segurando a montagem.**
+
+   ```bash
+   sudo mount -o loop disco.img ponto
+   sleep 300 > ponto/ocupado.log &
+   sudo umount ponto
+   fuser -vm ponto
+   sudo lsof +f -- ponto 2>/dev/null | head
+   kill %1
+   sudo umount ponto
+   ```
+
+   Esperado: o `fuser -vm` mostra o PID do `sleep` segurando o ponto. Depois do `kill`, o `umount` funciona.
+
+10. **Trabalhe com uma imagem particionada.**
+
+    ```bash
+    truncate -s 300M completo.img
+    printf 'label: dos\n,\n' | sfdisk completo.img
+    sudo losetup -Pf --show completo.img
+    lsblk /dev/loop*
+    ```
+
+    Esperado: o `losetup -P` cria `/dev/loopN` **e** `/dev/loopNp1` para a partição. Anote o número que apareceu; ele é usado a seguir como `loopN`.
+
+11. **Formate, monte e desfaça o loop.**
+
+    ```bash
+    LOOP=$(losetup -j completo.img | cut -d: -f1)
+    echo "usando $LOOP"
+    sudo mkfs.ext4 -q "${LOOP}p1"
+    mkdir -p ponto2
+    sudo mount "${LOOP}p1" ponto2
+    df -hT ponto2
+    sudo umount ponto2
+    sudo losetup -d "$LOOP"
+    losetup -a
+    ```
+
+    Esperado: montagem normal, e a lista de loops vazia ao final. Sempre desfaça o `losetup`: loops esquecidos seguram o arquivo e confundem a próxima tentativa.
+
+12. **Experimente um bind mount.**
+
+    ```bash
+    mkdir -p origem destino
+    echo "conteudo original" > origem/arq.txt
+    sudo mount --bind origem destino
+    ls destino
+    echo "escrito pelo destino" >> destino/arq.txt
+    cat origem/arq.txt
+    findmnt destino
+    sudo mount -o remount,ro,bind destino
+    touch destino/novo.txt
+    sudo umount destino
+    ```
+
+    Esperado: o mesmo diretório visível nos dois caminhos, e a segunda montagem somente-leitura enquanto a origem continua gravável. Um link simbólico não faria isso.
+
+13. **Monte um tmpfs.**
+
+    ```bash
+    mkdir -p memoria
+    sudo mount -t tmpfs -o size=64M,mode=700 tmpfs memoria
+    sudo chown "$USER" memoria
+    df -hT memoria
+    head -c 10M /dev/urandom > memoria/dados.bin
+    df -hT memoria
+    free -h | head -2
+    sudo umount memoria
+    ls memoria
+    ```
+
+    Esperado: o espaço sai da memória, não do disco, e o conteúdo some no `umount`. Repare no limite de 64 MB imposto pelo `size=`.
+
+14. **Confira o `fstab` sem editá-lo.**
+
+    ```bash
+    sudo findmnt --verify
+    blkid | head
+    ```
+
+    Esperado: `Success, no errors or warnings detected`. Guarde esse comando: ele é o que evita um boot travado depois de uma edição do `fstab`.
+
+15. **Limpe.**
+
+    ```bash
+    cd /tmp
+    findmnt | grep lab019 || echo "nada montado"
+    losetup -a | grep lab019 || echo "nenhum loop ativo"
+    rm -rf /tmp/lab019
+    ```
+
+    Esperado: nenhuma montagem e nenhum loop pendente antes de remover. Se algo aparecer, desfaça antes.
+
+## Resumo
+
+- **O Linux tem uma árvore só.** Montar é enxertar a raiz de outro sistema de arquivos num diretório existente; não há letras de unidade porque não há árvores paralelas.
+- **O ponto de montagem esconde o que havia nele**, sem apagar. O conteúdo anterior reaparece no `umount`.
+- **`lsblk` parte do hardware, `findmnt` parte da árvore**, e `/proc/mounts` é a fonte da verdade do kernel. `blkid` fornece os UUIDs.
+- **`ro,noexec,nosuid,nodev` é a montagem padrão para mídia que não é sua**, e `uid=`/`gid=`/`umask=` são necessários em FAT e NTFS, que não guardam permissões Unix.
+- **Escrita é confirmada no cache, não no disco.** `sync` e `umount` antes de remover qualquer mídia; `umount -l` é paliativo, não solução.
+- **"Target is busy" quase sempre é o seu próprio `cd`.** `fuser -vm` e `lsof +f --` identificam o culpado quando não é.
+- **No `fstab`, use UUID e `nofail`**, e valide com `findmnt --verify` e `mount -a` antes de reiniciar — uma linha errada trava o boot numa shell de emergência.
+- **`-o loop` e `losetup -Pf` transformam um arquivo em disco**, o que dá um laboratório completo e inofensivo para praticar particionamento, formatação e montagem.
+- **Bind mount duplica um diretório na árvore** com opções próprias, funciona onde link simbólico não funciona, e é a base do isolamento de contêineres.
+</content>

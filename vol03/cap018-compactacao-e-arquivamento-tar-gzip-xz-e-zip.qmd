@@ -1,3 +1,465 @@
 # Compactação e arquivamento: tar, gzip, xz e zip {#sec-cap018}
 
-*(em elaboracao)*
+Você baixa um arquivo chamado `ferramenta.tar.gz`, roda o comando de sempre no diretório em que estava, e o terminal despeja três mil linhas. Quando para, o seu diretório pessoal tem duzentos arquivos novos misturados com os seus, sem nenhuma pasta que os separe. Alguns sobrescreveram coisas que você tinha.
+
+É o *tarbomb*: um arquivo que, em vez de conter um diretório raiz, contém os arquivos soltos. O prejuízo é chato e a prevenção custa dois segundos — listar o conteúdo antes de extrair.
+
+Esse é o tipo de detalhe que separa quem usa arquivos compactados de quem apanha deles. E a origem de boa parte da confusão é conceitual: no mundo Unix, **juntar arquivos** e **comprimir dados** são duas operações separadas, feitas por programas diferentes. No mundo Windows, o ZIP faz as duas de uma vez. Entender essa divisão explica quase tudo o que vem a seguir.
+
+## Arquivar não é comprimir
+
+- **Arquivar** é pegar muitos arquivos, com seus nomes, permissões, donos e datas, e produzir **um único fluxo de bytes**. Quem faz isso é o `tar` (de *tape archive* — a origem é fita magnética, e ela explica várias esquisitices do formato).
+- **Comprimir** é reduzir o tamanho de um fluxo de bytes. Quem faz isso é o `gzip`, o `bzip2`, o `xz`, o `zstd`.
+
+Um arquivo `.tar.gz` é o resultado da composição: o `tar` produziu o fluxo, o `gzip` comprimiu o fluxo inteiro. O ZIP faz diferente: comprime **cada arquivo separadamente** e depois junta os pedaços comprimidos num contêiner com índice. @fig-tar-vs-zip mostra a diferença e as consequências.
+
+::: {#fig-tar-vs-zip}
+```{.tikz}
+%%| filename: tar-mais-gzip-versus-zip
+%%| alt: Comparacao entre o fluxo tar seguido de gzip, que comprime tudo junto, e o zip, que comprime cada arquivo separadamente
+\begin{tikzpicture}[
+    arq/.style={draw=manualgray,fill=manualgray!10,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.2cm,minimum height=0.5cm},
+    fluxo/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize,text width=1.9cm,align=center,minimum height=1.5cm,thick},
+    comp/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=3pt,font=\scriptsize,text width=1.9cm,align=center,minimum height=1.5cm,thick},
+    zbox/.style={draw=manualyellow,fill=manualyellow!20,rounded corners=3pt,font=\scriptsize,text width=2.1cm,align=center,minimum height=1.5cm,thick},
+    sm/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=0.85cm,minimum height=0.45cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    tit/.style={font=\scriptsize\bfseries}
+  ]
+  % --- tar + gzip
+  \node[tit,manualblue] at (-3.6,2.3) {tar seguido de gzip};
+  \node[arq] (t1) at (-4.6,1.5) {a.txt};
+  \node[arq] (t2) at (-4.6,0.9) {b.txt};
+  \node[arq] (t3) at (-4.6,0.3) {c.txt};
+  \node[fluxo] (tf) at (-2.2,0.9) {\texttt{.tar}\\um fluxo contínuo};
+  \node[comp] (tc) at (0.5,0.9) {\texttt{.tar.gz}\\comprimido \textbf{inteiro}};
+  \draw[fl] (t1.east) to[out=0,in=160] (tf.west);
+  \draw[fl] (t2.east) -- (tf.west);
+  \draw[fl] (t3.east) to[out=0,in=200] (tf.west);
+  \draw[fl] (tf) -- (tc);
+  \node[nt,text width=6.6cm] at (-2.0,-0.8) {Comprime melhor: repetições entre arquivos diferentes são aproveitadas. Em compensação, extrair \emph{um} arquivo obriga a descomprimir tudo até ele.};
+
+  \draw[auxiliar] (2.4,2.6) -- (2.4,-1.9);
+
+  % --- zip
+  \node[tit,manualyellow!65!black] at (6.6,2.3) {zip};
+  \node[arq] (z1) at (3.6,1.5) {a.txt};
+  \node[arq] (z2) at (3.6,0.9) {b.txt};
+  \node[arq] (z3) at (3.6,0.3) {c.txt};
+  \node[sm] (s1) at (5.6,1.5) {a.gz};
+  \node[sm] (s2) at (5.6,0.9) {b.gz};
+  \node[sm] (s3) at (5.6,0.3) {c.gz};
+  \draw[fl] (z1) -- (s1);
+  \draw[fl] (z2) -- (s2);
+  \draw[fl] (z3) -- (s3);
+  \node[zbox] (zc) at (8.2,0.9) {\texttt{.zip}\\índice mais blocos independentes};
+  \draw[fl] (s1.east) to[out=0,in=160] (zc.west);
+  \draw[fl] (s2.east) -- (zc.west);
+  \draw[fl] (s3.east) to[out=0,in=200] (zc.west);
+  \node[nt,text width=6.2cm] at (6.2,-0.8) {Comprime pior, mas o índice permite ler ou substituir \emph{um} arquivo sem tocar no resto — e é o formato que todo sistema abre.};
+\end{tikzpicture}
+```
+A composição do Unix contra o contêiner do ZIP: melhor taxa de compressão de um lado, acesso aleatório e portabilidade do outro.
+:::
+
+Isso responde a três perguntas frequentes de uma vez:
+
+- **Por que `.tar.gz` costuma ser menor que `.zip`?** Porque o compressor vê o conjunto todo e aproveita repetições entre arquivos. Num diretório com cem arquivos de configuração parecidos, a diferença é enorme.
+- **Por que não dá para extrair um único arquivo de um `.tar.gz` rapidamente?** Porque é preciso descomprimir o fluxo desde o começo até chegar nele.
+- **Por que `.zip` é o padrão de intercâmbio?** Porque qualquer sistema operacional abre, e porque o índice permite abrir sem descomprimir tudo.
+
+## `tar`: o comando e suas letras
+
+A sintaxe do `tar` é herdada dos anos 1970 e aceita opções sem hífen, o que confunde quem vem de outros comandos. As três operações principais:
+
+```bash
+tar -cf pacote.tar diretorio/     # (c)reate: criar
+tar -tf pacote.tar                # (t)able: listar
+tar -xf pacote.tar                # e(x)tract: extrair
+```
+
+O `f` indica que o próximo argumento é o **nome do arquivo** — e ele precisa vir por último no agrupamento, senão o `tar` pega a opção errada como nome. Essa é a origem do erro `tar: Cowardly refusing to create an empty archive`.
+
+A compressão entra com mais uma letra:
+
+```bash
+tar -czf pacote.tar.gz  dir/      # z: gzip
+tar -cjf pacote.tar.bz2 dir/      # j: bzip2
+tar -cJf pacote.tar.xz  dir/      # J maiusculo: xz
+tar --zstd -cf pacote.tar.zst dir/   # zstd
+tar -caf pacote.tar.xz  dir/      # a: escolhe pelo sufixo do nome
+```
+
+Na extração, o `tar` moderno **detecta a compressão sozinho**. Não é preciso lembrar a letra:
+
+```bash
+tar -xf qualquer-coisa.tar.gz
+tar -xf qualquer-coisa.tar.xz
+```
+
+Opções que resolvem problemas reais:
+
+```bash
+tar -xf pacote.tar.gz -C /destino/       # extrai EM outro diretorio
+tar -xvf pacote.tar.gz                   # v: mostra os nomes
+tar -tvf pacote.tar.gz | head            # LISTE antes de extrair: defesa contra tarbomb
+tar -czf b.tar.gz --exclude='*.log' --exclude='.git' dir/
+tar -xf p.tar.gz --strip-components=1    # descarta o primeiro nivel de diretorio
+tar -czpf b.tar.gz dir/                  # p: preserva permissoes
+tar -xf p.tar.gz caminho/especifico.txt  # extrai so um membro
+tar --diff -f p.tar.gz                   # compara o arquivo com o disco
+```
+
+O `--strip-components=1` é o companheiro diário de quem compila a partir do fonte: quase todo tarball do mundo livre embrulha tudo em `programa-1.2.3/`, e às vezes você quer o conteúdo direto.
+
+::: {.callout-warning}
+## Sempre liste antes de extrair
+
+```bash
+tar -tvf desconhecido.tar.gz | head -20
+```
+
+Três coisas para conferir: (1) existe um diretório raiz único, ou os arquivos estão soltos — tarbomb; (2) há caminhos começando com `/` ou contendo `../`, que tentam escapar do destino; (3) o tamanho declarado faz sentido.
+
+O GNU tar remove a barra inicial e recusa `../` por padrão, mas nem toda implementação faz isso, e o comportamento muda com `-P`. Na dúvida, extraia num diretório vazio:
+
+```bash
+mkdir -p /tmp/inspecao && tar -xf desconhecido.tar.gz -C /tmp/inspecao
+```
+:::
+
+## Os compressores, e quando usar cada um
+
+Os quatro que aparecem no dia a dia, com trocas bem diferentes:
+
+| Compressor | Sufixo | Compressão | Velocidade | Uso típico |
+|---|---|---|---|---|
+| `gzip` | `.gz` | modesta | rápida | padrão universal, logs, transferência |
+| `bzip2` | `.bz2` | boa | lenta | legado; hoje raramente a melhor escolha |
+| `xz` | `.xz` | excelente | muito lenta | distribuição de software, arquivamento longo |
+| `zstd` | `.zst` | boa a excelente | muito rápida | escolha moderna: quase tudo que o gzip fazia |
+
+: Os quatro compressores usuais e suas trocas {#tbl-compressores}
+
+A regra prática de 2020 em diante: **`zstd` quando você controla os dois lados, `gzip` quando precisa de compatibilidade universal, `xz` quando o arquivo será baixado muitas vezes e comprimido uma só.** O `bzip2` sobrevive por compatibilidade com arquivos antigos.
+
+Os três primeiros compartilham a mesma interface básica:
+
+```bash
+gzip arquivo.txt          # cria arquivo.txt.gz e APAGA o original
+gzip -k arquivo.txt       # -k: mantem o original
+gzip -9 arquivo.txt       # nivel maximo (1 = rapido, 9 = pequeno)
+gunzip arquivo.txt.gz     # o mesmo que gzip -d
+zcat arquivo.txt.gz       # le sem descomprimir para disco
+zless arquivo.txt.gz      # paginacao
+zgrep padrao arquivo.gz   # busca direto no comprimido
+```
+
+Que o `gzip` **apague o original** por padrão surpreende quem vem do ZIP. O `-k` corrige, e vale como hábito.
+
+A família tem equivalentes para cada compressor: `bzcat`/`bzgrep`, `xzcat`/`xzgrep`, `zstdcat`/`zstdgrep`.
+
+Um aviso sobre o `xz`: níveis altos consomem muita memória na **descompressão** também. Um arquivo criado com `xz -9` pode exigir centenas de megabytes para abrir, o que importa em máquina pequena ou em contêiner com limite.
+
+O `zstd` merece uma nota extra pelo alcance dos seus níveis:
+
+```bash
+zstd -1 arquivo          # rapidissimo
+zstd -19 arquivo         # comprime como xz, ainda mais rapido que ele
+zstd --long=27 -19 arq   # janela grande: excelente para arquivos muito repetitivos
+zstd -T0 arquivo         # usa todos os nucleos
+```
+
+## `zip` e `unzip`
+
+```bash
+zip -r pacote.zip diretorio/       # -r e OBRIGATORIO para diretorios
+zip -9 -r pacote.zip dir/          # nivel maximo
+zip -e pacote.zip arquivos         # com senha (ver aviso abaixo)
+unzip pacote.zip
+unzip -l pacote.zip                # LISTAR antes
+unzip -d /destino pacote.zip       # extrair em outro lugar
+unzip -o pacote.zip                # sobrescreve sem perguntar
+unzip -j pacote.zip                # descarta a estrutura de diretorios
+```
+
+O `-r` esquecido é o erro número um: sem ele, `zip pacote.zip diretorio/` cria um ZIP contendo apenas a entrada do diretório, vazia.
+
+::: {.callout-warning}
+## A criptografia do ZIP tradicional é quebrada
+
+O `zip -e` usa, por padrão, o algoritmo *ZipCrypto* dos anos 1990. Ele é vulnerável a ataque de texto claro conhecido: quem tiver **um** dos arquivos do pacote em versão não comprimida recupera a chave em minutos, sem precisar adivinhar a senha. Ferramentas públicas fazem isso automaticamente.
+
+Para proteger conteúdo de verdade, use `7z` com AES-256 ou, melhor ainda, `gpg` sobre o arquivo já compactado:
+
+```bash
+tar -czf dados.tar.gz dir/ && gpg -c dados.tar.gz && rm dados.tar.gz
+```
+
+Chaves, GPG e gestão de segredos são tema do Volume 14.
+:::
+
+O `7z` cobre os casos que o `zip` não cobre bem:
+
+```bash
+sudo apt install p7zip-full
+7z a -t7z -m0=lzma2 -mx=9 pacote.7z dir/
+7z a -p -mhe=on pacote.7z dir/     # AES-256 e nomes de arquivo tambem cifrados
+7z l pacote.7z
+7z x pacote.7z -o/destino
+```
+
+O `-mhe=on` cifra também a lista de nomes — sem ele, mesmo com senha, qualquer um vê o que há dentro.
+
+## Compactação em fluxo: sem arquivo temporário
+
+Como tudo isso opera sobre fluxos, o `tar` combina naturalmente com os pipes de @sec-cap012. É o que permite copiar uma árvore inteira por SSH sem tocar no disco intermediário. @fig-tar-ssh mostra o caminho dos dados.
+
+::: {#fig-tar-ssh}
+```{.tikz}
+%%| filename: tar-em-fluxo-sobre-ssh
+%%| alt: Fluxo de dados de um tar local comprimido passando por ssh e sendo extraido remotamente sem arquivo temporario
+\begin{tikzpicture}[
+    et/.style={draw=manualblue,fill=manualblue!12,rounded corners=3pt,font=\scriptsize\ttfamily,text width=2.2cm,align=center,minimum height=0.85cm,thick},
+    rt/.style={draw=manualgreen,fill=manualgreen!14,rounded corners=3pt,font=\scriptsize\ttfamily,text width=2.2cm,align=center,minimum height=0.85cm,thick},
+    net/.style={draw=manualyellow,fill=manualyellow!20,rounded corners=3pt,font=\scriptsize\ttfamily,text width=1.9cm,align=center,minimum height=0.85cm,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    tit/.style={font=\scriptsize\bfseries,manualgray}
+  ]
+  \node[tit] at (-3.0,1.6) {máquina local};
+  \node[tit] at (5.6,1.6) {máquina remota};
+  \draw[auxiliar] (1.9,1.2) -- (1.9,-2.3);
+  \node[nt,font=\scriptsize,manualgray] at (1.9,1.6) {rede};
+
+  \node[et] (a) at (-5.0,0.4) {tar -c dir/};
+  \node[et] (b) at (-2.3,0.4) {zstd -T0};
+  \node[net] (c) at (0.3,0.4) {ssh};
+  \node[rt] (d) at (3.6,0.4) {zstd -d};
+  \node[rt] (e) at (6.3,0.4) {tar -x -C /dst};
+
+  \draw[fl] (a) -- (b);
+  \draw[fl] (b) -- (c);
+  \draw[fl] (c) -- (d);
+  \draw[fl] (d) -- (e);
+
+  \node[nt,text width=11.8cm] at (0.6,-1.3) {Cinco processos rodando ao mesmo tempo. Nenhum arquivo intermediário é criado dos dois lados — o dado sai do disco de origem e entra no de destino, comprimido durante o trajeto.};
+\end{tikzpicture}
+```
+Arquivar, comprimir, transportar e extrair como um pipeline único. É a mesma ideia de @sec-cap012, aplicada a árvores de diretório.
+:::
+
+```bash
+# copiar uma arvore pela rede, comprimindo no caminho
+tar -cf - dir/ | zstd -T0 | ssh usuario@host 'zstd -d | tar -xf - -C /destino'
+
+# copiar entre dois diretorios locais preservando tudo
+tar -cf - -C origem . | tar -xpf - -C destino
+
+# criar um arquivo lendo a lista de outro comando
+find . -name "*.conf" -print0 | tar --null -czf confs.tar.gz -T -
+```
+
+O `-` no lugar do nome do arquivo significa "entrada ou saída padrão", e é o que torna o `tar` composável. O `-T -` lê a lista de arquivos do `stdin`, e `--null` faz ele esperar o separador NUL do `-print0` — a mesma preocupação com nomes contendo espaço vista em @sec-cap017.
+
+Para transferências repetidas, no entanto, o `rsync` é melhor: ele copia só as diferenças. Volume 13 trata dele.
+
+## Verificar antes de confiar
+
+Compactado ou não, arquivo baixado se verifica:
+
+```bash
+sha256sum pacote.tar.gz
+sha256sum -c CHECKSUMS.txt          # confere contra a lista publicada
+gzip -t arquivo.gz                  # testa integridade sem extrair
+xz -t arquivo.xz
+zstd -t arquivo.zst
+unzip -t pacote.zip
+tar -tf pacote.tar.gz > /dev/null && echo "estrutura ok"
+```
+
+O `-t` de "test" existe em todos os compressores e detecta corrupção sem gastar espaço em disco. Depois de uma transferência longa, é mais rápido que extrair para descobrir que quebrou.
+
+## 🐉 No Kali
+
+- **`rockyou.txt` vem comprimido.** A imagem do Kali distribui `/usr/share/wordlists/rockyou.txt.gz`. Descomprimir com `sudo gunzip` funciona, mas ocupa 130 MB permanentes e modifica `/usr/share`, que pertence ao pacote. A alternativa limpa é usar em fluxo: `zcat /usr/share/wordlists/rockyou.txt.gz | head -100000 > /tmp/curta.txt`, ou `gunzip -k` para uma cópia em `~`.
+- **`zgrep` e `zcat` poupam disco em análise de log.** Logs rotacionados chegam como `.gz`, e `zgrep "Failed password" /var/log/auth.log.*.gz` busca em todos sem descomprimir nenhum. Vale para `.xz` e `.zst` com os equivalentes.
+- **Empacote a saída de engajamento com `tar -czpf`.** O `p` preserva permissões, o que importa quando a coleta inclui arquivos com modos específicos que serão parte da evidência. E registre o hash junto: `sha256sum coleta.tar.gz > coleta.tar.gz.sha256`.
+- **ZIP com senha não é proteção de dados.** Como dito acima, o ZipCrypto é quebrável com um único arquivo conhecido dentro do pacote — e ferramentas para isso estão nos repositórios do Kali justamente porque o formato é indefensável. Para relatório com dado sensível, `7z` com AES e `-mhe=on`, ou GPG.
+- **`tar` em fluxo é a forma correta de mover coleta grande.** `tar -cf - coleta/ | zstd -T0 | ssh analista@host 'zstd -d | tar -xf - -C /casos/'` não deixa arquivo temporário na máquina de origem — o que é bom para espaço e melhor ainda para higiene em ambiente que não é seu.
+- **Cuidado com tarball de origem duvidosa.** Uma amostra baixada para análise se lista antes (`tar -tvf`), se extrai num diretório descartável, e nunca em `~` ou `/tmp` compartilhado. Um `.tar` pode conter caminhos absolutos e links simbólicos apontando para fora do destino — a combinação que já produziu escrita arbitrária de arquivo em vários extratores.
+- **`--exclude` mantém o pacote enxuto.** Ao arquivar um diretório de trabalho, `--exclude='.git' --exclude='*.pcap' --exclude='venv'` costuma cortar mais da metade do tamanho, e evita levar captura de tráfego bruta para onde ela não deveria ir.
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas (GNU tar, gzip, xz). A diferença prática está nos pacotes: `zip`/`unzip` e `p7zip` não vêm instalados por padrão em instalação mínima do RHEL, e o `p7zip` esteve por anos apenas no EPEL. O `zstd` é padrão no Fedora e no RHEL 9. Ao restaurar arquivos com `tar -xp` num sistema com SELinux, o contexto de segurança **não** vem no tarball comum — é preciso `--selinux` na criação e na extração, ou um `restorecon -R` depois.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`.
+
+1. **Monte o material de teste.**
+
+   ```bash
+   mkdir -p /tmp/lab018/projeto/{src,docs} && cd /tmp/lab018
+   for i in $(seq 1 30); do
+     cp /etc/services "projeto/src/copia$i.conf"
+   done
+   echo "documento" > projeto/docs/leiame.txt
+   du -sh projeto
+   ```
+
+   Esperado: alguns megabytes, com trinta arquivos praticamente idênticos — o cenário perfeito para ver a diferença entre os formatos.
+
+2. **Separe arquivar de comprimir.**
+
+   ```bash
+   tar -cf projeto.tar projeto/
+   ls -lh projeto.tar
+   gzip -k projeto.tar
+   ls -lh projeto.tar projeto.tar.gz
+   ```
+
+   Esperado: o `.tar` tem praticamente o tamanho do diretório; o `.gz` é uma fração dele. Duas operações, dois programas.
+
+3. **Compare os quatro compressores.**
+
+   ```bash
+   for c in "gzip -9" "bzip2 -9" "xz -9" "zstd -19"; do
+     nome=$(echo $c | cut -d' ' -f1)
+     /usr/bin/time -f "$nome: %e s" $c -k -c projeto.tar > "teste.$nome" 2>&1 || true
+   done
+   ls -lhS projeto.tar teste.*
+   ```
+
+   Esperado: `xz` e `zstd -19` produzem os menores; o `gzip` é o mais rápido dos clássicos; o `zstd` chega perto do `xz` em muito menos tempo. Se o `zstd` não estiver instalado, `sudo apt install zstd`.
+
+4. **Veja o `tar.gz` ganhar do `zip`.**
+
+   ```bash
+   command -v zip || sudo apt install -y zip unzip
+   zip -q -9 -r projeto.zip projeto/
+   ls -lh projeto.tar.gz projeto.zip
+   ```
+
+   Esperado: o `.tar.gz` é bem menor. Ele comprimiu os trinta arquivos parecidos como um bloco só; o ZIP comprimiu cada um isoladamente.
+
+5. **Liste antes de extrair.**
+
+   ```bash
+   tar -tvf projeto.tar.gz | head
+   unzip -l projeto.zip | head
+   ```
+
+   Esperado: os dois mostram um diretório raiz `projeto/`. É isso que se procura — sem raiz única, é tarbomb.
+
+6. **Fabrique e desarme um tarbomb.**
+
+   ```bash
+   cd projeto && tar -czf ../bomba.tar.gz . && cd ..
+   tar -tf bomba.tar.gz | head
+   mkdir -p seguro && tar -xf bomba.tar.gz -C seguro
+   ls seguro | head
+   ```
+
+   Esperado: a listagem mostra arquivos soltos, sem raiz. Extrair com `-C` num diretório vazio neutraliza o problema, sempre.
+
+7. **Extraia só um membro.**
+
+   ```bash
+   mkdir -p parcial
+   tar -xf projeto.tar.gz -C parcial projeto/docs/leiame.txt
+   find parcial
+   ```
+
+   Esperado: só o arquivo pedido, com a estrutura de diretórios recriada.
+
+8. **Descarte o nível de topo.**
+
+   ```bash
+   mkdir -p direto
+   tar -xf projeto.tar.gz -C direto --strip-components=1
+   ls direto
+   ```
+
+   Esperado: `src` e `docs` diretamente em `direto/`, sem a pasta `projeto/` no meio.
+
+9. **Exclua o que não interessa.**
+
+   ```bash
+   tar -czf enxuto.tar.gz --exclude='*.conf' projeto/
+   ls -lh projeto.tar.gz enxuto.tar.gz
+   tar -tf enxuto.tar.gz
+   ```
+
+   Esperado: pacote muito menor, só com o `leiame.txt` e a estrutura.
+
+10. **Trabalhe direto no comprimido.**
+
+    ```bash
+    gzip -k projeto/docs/leiame.txt
+    zcat projeto/docs/leiame.txt.gz
+    zgrep -c . projeto/docs/leiame.txt.gz
+    zless projeto/docs/leiame.txt.gz    # saia com q
+    ```
+
+    Esperado: leitura e busca sem gerar arquivo descomprimido em disco.
+
+11. **Teste a integridade e simule corrupção.**
+
+    ```bash
+    gzip -t projeto.tar.gz && echo "integro"
+    cp projeto.tar.gz corrompido.tar.gz
+    printf 'XXXX' | dd of=corrompido.tar.gz bs=1 seek=5000 conv=notrunc 2>/dev/null
+    gzip -t corrompido.tar.gz; echo "status: $?"
+    ```
+
+    Esperado: o segundo teste falha com `invalid compressed data`. O `dd` aqui escreve 4 bytes num arquivo de teste em `/tmp` — nunca aponte um `dd` para dispositivo sem ter certeza absoluta do destino.
+
+12. **Copie uma árvore em fluxo, sem intermediário.**
+
+    ```bash
+    mkdir -p destino
+    tar -cf - -C projeto . | tar -xpf - -C destino
+    diff -r projeto destino && echo "identicos"
+    ```
+
+    Esperado: cópia idêntica, com permissões preservadas, sem nenhum arquivo temporário. É o pipeline de @fig-tar-ssh sem a parte da rede.
+
+13. **Alimente o `tar` com a saída do `find`.**
+
+    ```bash
+    find projeto -name "*.txt" -print0 | tar --null -czf textos.tar.gz -T -
+    tar -tf textos.tar.gz
+    ```
+
+    Esperado: só os `.txt` no pacote. O `--null` casa com o `-print0` e sobrevive a nomes com espaço.
+
+14. **Registre o hash junto do pacote.**
+
+    ```bash
+    sha256sum projeto.tar.gz | tee projeto.tar.gz.sha256
+    sha256sum -c projeto.tar.gz.sha256
+    ```
+
+    Esperado: `projeto.tar.gz: OK`. É o procedimento mínimo para qualquer arquivo que vai ser transportado ou entregue.
+
+15. **Limpe.**
+
+    ```bash
+    cd /tmp
+    du -sh /tmp/lab018
+    rm -rf /tmp/lab018
+    ```
+
+## Resumo
+
+- **Arquivar e comprimir são operações distintas.** O `tar` junta arquivos num fluxo preservando nomes, permissões e datas; o compressor reduz o fluxo. `.tar.gz` é a composição das duas.
+- **O ZIP comprime arquivo por arquivo e junta com um índice**, o que dá acesso aleatório e portabilidade universal, ao custo de taxa de compressão pior em conjuntos parecidos.
+- **`-c` cria, `-t` lista, `-x` extrai, e `-f` precede o nome do arquivo.** Na extração, o `tar` detecta a compressão sozinho — não é preciso lembrar a letra.
+- **Liste sempre antes de extrair** (`tar -tvf`, `unzip -l`) e, na dúvida, extraia com `-C` num diretório vazio. É a defesa contra tarbomb e contra caminhos que tentam escapar do destino.
+- **`gzip` para compatibilidade, `zstd` para o dia a dia, `xz` para arquivar por muito tempo.** O `gzip` apaga o original por padrão; use `-k`.
+- **`zcat`, `zgrep` e `zless` operam direto no comprimido**, e existem equivalentes para `bz2`, `xz` e `zst`.
+- **A criptografia do `zip -e` é quebrada.** Use `7z` com AES-256 e `-mhe=on`, ou GPG sobre o pacote já pronto.
+- **O `-` como nome de arquivo torna o `tar` composável**, e é o que permite copiar árvores pela rede comprimindo no caminho, sem nenhum arquivo temporário.
+- **`-t` testa integridade em todos os compressores**, e `sha256sum` acompanha todo pacote que vai ser transportado.
+</content>

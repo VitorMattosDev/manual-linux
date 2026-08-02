@@ -1,3 +1,526 @@
 # Permissões de arquivo: leitura, escrita e execução {#sec-cap020}
 
-*(em elaboracao)*
+Um colega não consegue ler um arquivo do seu diretório. Você confere e o arquivo está `-rw-rw-r--`: leitura para todo mundo. Mesmo assim, ele recebe:
+
+```text
+cat: /home/kali/relatorio.txt: Permission denied
+```
+
+Você tenta a solução que todo tutorial ruim sugere — `chmod 777` no arquivo — e continua sem funcionar. Porque o problema nunca esteve no arquivo. Está no **diretório**: sem permissão de execução em `/home/kali`, ninguém atravessa aquele caminho, por mais aberto que o arquivo esteja.
+
+Permissões no Linux são simples de descrever e cheias de detalhes que só aparecem no uso. Este capítulo cobre o modelo básico — as três classes, os três bits, o `chmod`, o `chown` e o `umask` — com atenção especial ao que significa cada bit **num diretório**, que é onde mora a maior parte da confusão. Os bits especiais (SUID, SGID, sticky) e as ACLs são do Volume 4.
+
+## Ler a saída do `ls -l`
+
+```bash
+ls -l relatorio.txt
+```
+
+```text
+-rw-r--r-- 1 kali kali 2913 ago  1 09:14 relatorio.txt
+```
+
+A primeira coluna carrega dez caracteres, e @fig-modo-ls decompõe cada um.
+
+::: {#fig-modo-ls}
+```{.tikz}
+%%| filename: decodificacao-da-coluna-de-modo-do-ls
+%%| alt: Cadeia de dez caracteres do ls -l decomposta em tipo e tres grupos de tres bits com o valor octal de cada grupo
+\begin{tikzpicture}[
+    ch/.style={rounded corners=2pt,font=\small\ttfamily,minimum width=0.62cm,minimum height=0.7cm,thick},
+    tp/.style={ch,draw=manualgray,fill=manualgray!12},
+    us/.style={ch,draw=manualblue,fill=manualblue!14},
+    gr/.style={ch,draw=manualgreen,fill=manualgreen!16},
+    ot/.style={ch,draw=manualyellow,fill=manualyellow!24},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    br/.style={manualgray,thick}
+  ]
+  \node[tp] (t)  at (0,0)    {-};
+  \node[us] (u1) at (0.72,0) {r};
+  \node[us] (u2) at (1.34,0) {w};
+  \node[us] (u3) at (1.96,0) {x};
+  \node[gr] (g1) at (2.75,0) {r};
+  \node[gr] (g2) at (3.37,0) {-};
+  \node[gr] (g3) at (3.99,0) {x};
+  \node[ot] (o1) at (4.78,0) {r};
+  \node[ot] (o2) at (5.40,0) {-};
+  \node[ot] (o3) at (6.02,0) {-};
+
+  \node[nt] at (0,0.75) {tipo};
+  \node[nt,manualblue] at (1.34,0.85) {\textbf{dono}};
+  \node[nt,manualgreen] at (3.37,0.85) {\textbf{grupo}};
+  \node[nt,manualyellow!65!black] at (5.40,0.85) {\textbf{outros}};
+
+  \draw[br] (0.4,-0.5) -- (0.4,-0.7) -- (2.28,-0.7) -- (2.28,-0.5);
+  \draw[br] (2.43,-0.5) -- (2.43,-0.7) -- (4.31,-0.7) -- (4.31,-0.5);
+  \draw[br] (4.46,-0.5) -- (4.46,-0.7) -- (6.34,-0.7) -- (6.34,-0.5);
+  \node[nt,manualblue,font=\small\bfseries] at (1.34,-1.05) {7};
+  \node[nt,manualgreen,font=\small\bfseries] at (3.37,-1.05) {5};
+  \node[nt,manualyellow!65!black,font=\small\bfseries] at (5.40,-1.05) {4};
+  \node[nt,font=\small\bfseries] at (7.2,-1.05) {= 754};
+
+  \node[nt,align=left,text width=4.2cm] at (9.9,0.45) {\texttt{r}=4 \quad \texttt{w}=2 \quad \texttt{x}=1\\o valor de cada grupo é a soma dos bits acesos};
+  \node[nt,align=left,text width=4.4cm] at (10.4,-1.5) {O tipo (\texttt{-}, \texttt{d}, \texttt{l}, \texttt{c}, \texttt{b}, \texttt{p}, \texttt{s}) não é permissão: é o tipo do inode.};
+
+  \node[nt,align=left,text width=12.0cm] at (4.6,-2.5) {\textbf{Em arquivo:} \texttt{r} lê o conteúdo, \texttt{w} altera o conteúdo, \texttt{x} executa como programa.\\\textbf{Em diretório:} \texttt{r} lista os nomes, \texttt{w} cria, apaga e renomeia entradas, \texttt{x} atravessa e acessa o que está dentro.};
+\end{tikzpicture}
+```
+Os dez caracteres do modo: um de tipo e três grupos de três bits, cada grupo somando para um dígito octal.
+:::
+
+Os números vêm de potências de dois: `r` vale 4, `w` vale 2, `x` vale 1. Um grupo com `rwx` soma 7; com `r-x`, 5; com `r--`, 4. Daí a notação `754`, `644`, `755` que aparece em toda documentação.
+
+Para ver o modo já traduzido:
+
+```bash
+stat -c '%a %A %U %G %n' relatorio.txt
+# 644 -rw-r--r-- kali kali relatorio.txt
+```
+
+## A regra que quase ninguém aprende: só uma classe se aplica
+
+Este é o ponto que produz os erros mais desconcertantes. O kernel **não** combina permissões das três classes. Ele escolhe **uma** e para. @fig-decisao-permissao mostra a decisão.
+
+::: {#fig-decisao-permissao}
+```{.tikz}
+%%| filename: decisao-de-permissao-dono-grupo-outros
+%%| alt: Fluxo de decisao do kernel verificando se o processo e o dono depois se pertence ao grupo e por fim aplicando os bits de outros
+\begin{tikzpicture}[
+    q/.style={draw=manualgray,fill=manualgray!10,rounded corners=3pt,font=\scriptsize,text width=3.0cm,align=center,minimum height=0.8cm,thick},
+    a/.style={draw=manualblue,fill=manualblue!13,rounded corners=3pt,font=\scriptsize,text width=2.7cm,align=center,minimum height=0.75cm,thick},
+    b/.style={draw=manualgreen,fill=manualgreen!15,rounded corners=3pt,font=\scriptsize,text width=2.7cm,align=center,minimum height=0.75cm,thick},
+    c/.style={draw=manualyellow,fill=manualyellow!22,rounded corners=3pt,font=\scriptsize,text width=2.7cm,align=center,minimum height=0.75cm,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray}
+  ]
+  \node[q] (q1) at (0,0)    {o UID do processo é o dono?};
+  \node[q] (q2) at (0,-1.7) {algum GID do processo é o grupo?};
+  \node[c] (c3) at (0,-3.4) {aplica os bits de \textbf{outros}};
+
+  \node[a] (a1) at (4.6,0)    {aplica os bits do \textbf{dono}};
+  \node[b] (b1) at (4.6,-1.7) {aplica os bits do \textbf{grupo}};
+
+  \draw[fl] (q1) -- node[nt,left,xshift=-2pt]{não} (q2);
+  \draw[fl] (q2) -- node[nt,left,xshift=-2pt]{não} (c3);
+  \draw[fl] (q1) -- node[nt,above]{sim} (a1);
+  \draw[fl] (q2) -- node[nt,above]{sim} (b1);
+
+  \node[nt,align=left,text width=6.0cm] at (10.0,-0.5) {\textbf{A decisão para na primeira correspondência.} Os bits das outras classes são simplesmente ignorados.};
+  \node[nt,align=left,text width=6.0cm] at (10.0,-2.6) {Por isso \texttt{-{}-{}-{}-{}-{}-rwx} nega o dono e libera o resto do mundo: sendo dono, ele nunca chega aos bits de \emph{outros}.};
+  \node[nt,align=left,text width=6.0cm] at (10.0,-4.3) {O usuário \texttt{root} não passa por este fluxo: ignora \texttt{r} e \texttt{w} sempre, e executa desde que \emph{algum} bit \texttt{x} esteja aceso.};
+\end{tikzpicture}
+```
+O kernel escolhe uma única classe — a primeira que casa — e aplica só os bits dela.
+:::
+
+A consequência mais contraintuitiva:
+
+```bash
+echo teste > curioso.txt
+chmod 007 curioso.txt      # ---------rwx: nada para o dono, tudo para outros
+ls -l curioso.txt
+cat curioso.txt            # Permission denied — para VOCE, que e o dono
+```
+
+Você é o dono, os bits do dono são todos zero, e a decisão termina ali. Qualquer outro usuário da máquina lê, escreve e executa; você, não. (O dono continua podendo rodar `chmod` de volta, porque **mudar permissão** é prerrogativa do dono, não uma permissão do arquivo.)
+
+## `chmod`: as duas notações
+
+### Simbólica
+
+```bash
+chmod u+x script.sh          # acrescenta execucao para o dono
+chmod g-w arquivo            # remove escrita do grupo
+chmod o= arquivo             # zera TODOS os bits de outros
+chmod a+r arquivo            # a = all: dono, grupo e outros
+chmod u=rw,go=r arquivo      # define exatamente, varias clausulas
+chmod +x script.sh           # sem classe: respeita o umask
+chmod -R u+rwX,go-w pasta/   # X maiusculo: so em diretorio ou no que ja e executavel
+```
+
+O `X` maiúsculo merece destaque. Num `chmod -R +x`, todos os arquivos de dados viram executáveis, o que é errado e perigoso. Com `X`, o bit só é aplicado a diretórios (onde `x` é necessário para atravessar) e a arquivos que já tinham algum `x`. É o jeito correto de consertar permissões de uma árvore inteira.
+
+### Octal
+
+```bash
+chmod 644 arquivo            # rw-r--r--
+chmod 600 ~/.ssh/id_ed25519  # rw------- : obrigatorio para chave privada
+chmod 755 script.sh          # rwxr-xr-x
+chmod 700 ~/privado          # rwx------
+chmod 640 config.conf        # rw-r----- : dono escreve, grupo le
+```
+
+| Octal | Símbolo | Uso típico |
+|:---:|:---:|---|
+| `644` | `rw-r--r--` | arquivo comum: documento, configuração pública |
+| `600` | `rw-------` | segredo: chave privada, `.netrc`, token |
+| `755` | `rwxr-xr-x` | script, binário, diretório de uso geral |
+| `700` | `rwx------` | diretório privado, `~/.ssh`, `~/.gnupg` |
+| `640` | `rw-r-----` | configuração legível só pelo grupo do serviço |
+| `666` | `rw-rw-rw-` | **evitar**: qualquer usuário altera |
+| `777` | `rwxrwxrwx` | **nunca**: qualquer usuário altera e executa |
+
+: Modos octais mais frequentes e o que cada um significa {#tbl-modos-octais}
+
+A diferença entre as notações é de intenção: a simbólica **ajusta** o que existe; a octal **define** tudo de uma vez. Num script que precisa garantir o estado final, a octal é mais segura; num ajuste pontual, a simbólica evita quebrar o que já estava certo.
+
+::: {.callout-warning}
+## `chmod 777` não é solução de nada
+
+Toda vez que `777` "resolveu" um problema, o problema real era outro — dono errado, grupo errado, ou falta de `x` num diretório do caminho. E o custo é alto: qualquer usuário ou processo da máquina passa a poder **alterar** e **executar** aquele arquivo.
+
+Em `/var/www` isso significa que uma falha em qualquer aplicação web permite escrever código executável no diretório servido. É o passo que transforma uma vulnerabilidade pequena em comprometimento completo.
+
+Diagnóstico correto: `ls -ld` em **cada** diretório do caminho, ou `namei -l` no caminho inteiro (@sec-cap016), e `id` para conferir grupos.
+:::
+
+## Permissões em diretório: o que realmente significam
+
+Aqui está a maior fonte de confusão, e ela é resolvida lembrando que um diretório é uma tabela de nomes (@sec-cap015):
+
+| Bit | Em arquivo | Em diretório |
+|:---:|---|---|
+| `r` | ler o conteúdo | **listar os nomes** das entradas |
+| `w` | alterar o conteúdo | **criar, apagar e renomear** entradas |
+| `x` | executar como programa | **atravessar**: acessar o que está dentro pelo nome |
+
+: O mesmo bit significa coisas diferentes em arquivo e em diretório {#tbl-bits-diretorio}
+
+Quatro consequências que aparecem no dia a dia:
+
+**`r` sem `x` é quase inútil.** Você vê os nomes e não consegue abrir nada, nem rodar `ls -l` (que precisa consultar o inode de cada entrada). O `ls` mostra os nomes e "?" em todas as outras colunas.
+
+**`x` sem `r` é útil e é usado de propósito.** Você não pode listar o diretório, mas acessa qualquer caminho cujo nome já conheça. É como uma porta sem placa: quem sabe o número, entra. `/home` frequentemente é assim, e servidores web usam esse modo para diretórios que não devem ser navegáveis.
+
+**Apagar um arquivo depende do diretório, não do arquivo.** Apagar é remover uma linha da tabela — operação de escrita **no diretório**. Um arquivo `444` (somente leitura para todos) dentro de um diretório onde você tem `w` pode ser apagado por você sem nenhum aviso. O contrário também vale: você pode ter `rw` num arquivo e ser incapaz de apagá-lo.
+
+**É por isso que existe o sticky bit.** Em `/tmp`, todo mundo precisa de `w` para criar arquivos — o que, pela regra acima, permitiria apagar os arquivos dos outros. O sticky bit (`t` no final: `drwxrwxrwt`) restringe a remoção ao dono do arquivo. Volume 4 detalha ele e os outros bits especiais.
+
+```bash
+ls -ld /tmp
+# drwxrwxrwt 20 root root 4096 ago  1 09:14 /tmp
+```
+
+## `chown` e `chgrp`: mudar dono e grupo
+
+```bash
+sudo chown kali arquivo              # muda o dono
+sudo chown kali:sudo arquivo         # dono e grupo
+sudo chown :sudo arquivo             # so o grupo
+chgrp sudo arquivo                   # idem, comando dedicado
+sudo chown -R kali:kali pasta/       # recursivo
+sudo chown --reference=modelo alvo   # copia o dono e o grupo de outro arquivo
+```
+
+Duas regras do modelo Unix clássico:
+
+- **Só o `root` muda o dono de um arquivo.** Se um usuário comum pudesse doar arquivos, ele poderia burlar cotas de disco e criar arquivos SUID em nome de terceiros.
+- **Um usuário pode mudar o grupo** de um arquivo que possui, desde que ele mesmo pertença ao grupo de destino.
+
+Sobre a interação com links simbólicos, vale repetir o alerta de @sec-cap016: `chown -R` **não** segue links por padrão (bom), mas `chown -RL` segue (perigoso), e `chown -Rh` altera o próprio link.
+
+Para descobrir seus grupos:
+
+```bash
+id
+id -Gn
+groups
+```
+
+Uma pegadinha frequente: acabou de ser adicionado a um grupo e o acesso continua negado. Os grupos são carregados no **login**; é preciso encerrar a sessão e entrar de novo (ou usar `newgrp grupo` como paliativo naquele shell).
+
+## `umask`: as permissões que os arquivos novos recebem
+
+Um arquivo criado não nasce com o modo que o programa pede — nasce com esse modo **menos** o que o `umask` retira.
+
+```bash
+umask               # 0022 no padrao do Debian/Kali
+umask -S            # u=rwx,g=rx,o=rx
+umask 077           # so o dono ve o que eu criar daqui em diante
+umask 027           # dono tudo, grupo le, outros nada
+```
+
+A conta é uma subtração de bits sobre uma base fixa:
+
+- arquivos comuns partem de **666** (nunca `x` — o kernel não dá execução automaticamente);
+- diretórios partem de **777**.
+
+| `umask` | Arquivo novo | Diretório novo | Perfil |
+|:---:|:---:|:---:|---|
+| `022` | `644` | `755` | padrão: todos leem |
+| `027` | `640` | `750` | grupo lê, outros nada |
+| `077` | `600` | `700` | estritamente privado |
+| `002` | `664` | `775` | trabalho colaborativo em grupo |
+
+: Valores comuns de `umask` e o que resulta deles {#tbl-umask}
+
+O `umask` vale para o shell atual e para os processos que ele inicia. Para torná-lo permanente, entra no `~/.bashrc` ou `~/.zshrc` — assunto do Volume 15. Para todo o sistema, em `/etc/login.defs` e nos módulos do PAM, tema do Volume 4.
+
+Um detalhe importante: `umask` **não** altera nada que já existe. Ele só afeta a criação.
+
+## Testar permissão sem tentar a operação
+
+Em script, testar antes é melhor que falhar depois:
+
+```bash
+[ -r arquivo ] && echo "posso ler"
+[ -w arquivo ] && echo "posso escrever"
+[ -x arquivo ] && echo "posso executar"
+[ -O arquivo ] && echo "sou o dono"
+[ -G arquivo ] && echo "meu grupo bate com o do arquivo"
+
+test -x /usr/bin/nmap; echo $?
+```
+
+Os testes usam os **IDs efetivos** do processo, e por isso respondem exatamente o que o kernel responderia. Condicionais e códigos de saída são o tema dos capítulos 055 e 056.
+
+## 🐉 No Kali
+
+- **O SSH recusa chave privada com permissão frouxa.** `~/.ssh` precisa ser `700` e `id_ed25519` precisa ser `600`. Com qualquer coisa mais aberta, o cliente aborta com `UNPROTECTED PRIVATE KEY FILE` e não tenta a conexão. É uma verificação do próprio OpenSSH, não do kernel — e ela existe porque uma chave legível por outros é uma chave comprometida.
+- **Script baixado precisa de `chmod +x`, e de leitura antes.** O fluxo correto para qualquer script de terceiros: `file`, depois `less` para ler o que ele faz, depois `chmod +x`, e só então executar. Um `curl ... | bash` pula os três passos de uma vez.
+- **Caça a arquivos graváveis por todos é inspeção legítima do próprio sistema.** `find / -xdev -type f -perm /o+w -not -path '/proc/*' 2>/dev/null` lista o que qualquer usuário pode alterar; `find / -xdev -type d -perm -0002 ! -perm -1000 2>/dev/null` lista diretórios graváveis por todos **sem** sticky bit — combinação que permite substituir arquivos alheios. Em máquina de terceiros, isso só com autorização escrita: acesso não autorizado a sistema informático é crime no Brasil (Lei 12.737/2012).
+- **Diretório de engajamento pede `umask 077`.** Coleta de teste de intrusão contém credencial, captura de tráfego e dado de cliente. `umask 077` no início da sessão garante que nada nasça legível por outros usuários da máquina; `chmod -R go= ~/engajamentos` conserta o que já existe.
+- **`/tmp` tem sticky bit, e você depende dele.** `ls -ld /tmp` mostra `drwxrwxrwt`. Sem o `t`, qualquer usuário poderia apagar os arquivos temporários de qualquer outro — inclusive de serviços privilegiados. Ainda assim, `mktemp` continua sendo a forma correta de criar arquivo temporário em script.
+- **`chmod -R 777` num diretório servido pela web é a ponte entre uma falha e o comprometimento.** Se o processo do servidor puder escrever no diretório que ele serve, qualquer upload mal validado vira execução remota. `755` para diretórios e `644` para arquivos, com dono separado do usuário do servidor, é o arranjo mínimo.
+- **Use `chmod -R u+rwX,go-rwX`, nunca `chmod -R 777` para "consertar".** O `X` maiúsculo dá execução só onde faz sentido — diretórios e o que já era executável — e evita transformar cada PDF e cada wordlist num executável.
+- **`getcap` complementa o `ls -l`.** Programas modernos do Kali usam *capabilities* em vez de SUID: `dumpcap`, por exemplo, tem `cap_net_raw` sem ser SUID. Um binário aparentemente inofensivo no `ls -l` pode ter privilégio via capability — `getcap -r /usr/bin 2>/dev/null` revela. O assunto é do Volume 14.
+
+> **Nota sobre a família RHEL.** Os bits `rwx` são POSIX [@posix2018] e idênticos. Duas diferenças de contexto: (1) o RHEL usa por padrão *user private groups* — cada usuário tem um grupo próprio de mesmo nome —, o que torna `umask 002` seguro para trabalho colaborativo, prática comum lá e incomum no Debian; (2) o SELinux acrescenta uma camada **acima** das permissões: mesmo com `777`, um acesso pode ser negado pelo contexto de segurança. Quando `ls -l` diz que deveria funcionar e não funciona, o próximo passo em RHEL é `ls -lZ` e `ausearch -m avc -ts recent`.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`. Alguns passos usam um segundo usuário; onde ele não existir, o efeito pode ser observado com `sudo -u nobody`.
+
+1. **Leia o modo de um arquivo.**
+
+   ```bash
+   mkdir -p /tmp/lab020 && cd /tmp/lab020
+   echo "conteudo" > arquivo.txt
+   ls -l arquivo.txt
+   stat -c '%a %A %U %G %n' arquivo.txt
+   umask
+   ```
+
+   Esperado: `644` e `-rw-r--r--`, resultado do `umask 022` sobre a base `666`.
+
+2. **Compare as duas notações.**
+
+   ```bash
+   chmod 754 arquivo.txt; stat -c '%a %A' arquivo.txt
+   chmod u=rwx,g=rx,o=r arquivo.txt; stat -c '%a %A' arquivo.txt
+   chmod go-r arquivo.txt; stat -c '%a %A' arquivo.txt
+   chmod 644 arquivo.txt
+   ```
+
+   Esperado: as duas primeiras linhas produzem exatamente o mesmo modo. A octal define, a simbólica ajusta.
+
+3. **Prove que só uma classe se aplica.**
+
+   ```bash
+   echo segredo > curioso.txt
+   chmod 007 curioso.txt
+   ls -l curioso.txt
+   cat curioso.txt
+   sudo -u nobody cat /tmp/lab020/curioso.txt
+   chmod 644 curioso.txt
+   ```
+
+   Esperado: **você**, o dono, recebe `Permission denied`; o `nobody` lê sem problema. A decisão parou na classe do dono.
+
+4. **Torne um script executável.**
+
+   ```bash
+   printf '%s\n' '#!/bin/bash' 'echo "o script rodou"' > script.sh
+   ls -l script.sh
+   ./script.sh
+   chmod +x script.sh
+   ls -l script.sh
+   ./script.sh
+   bash script.sh
+   ```
+
+   Esperado: `Permission denied` antes do `chmod`. Repare que `bash script.sh` funciona mesmo sem o bit `x` — porque quem é executado é o `bash`, e ele só precisa de `r` no script.
+
+5. **Veja `r` sem `x` num diretório.**
+
+   ```bash
+   mkdir -p pasta && echo dado > pasta/dentro.txt
+   chmod 644 pasta          # r, sem x
+   ls pasta
+   ls -l pasta
+   cat pasta/dentro.txt
+   cd pasta
+   chmod 755 pasta
+   ```
+
+   Esperado: os **nomes** aparecem, mas `ls -l`, `cat` e `cd` falham. Sem `x` não se atravessa o diretório.
+
+6. **Veja `x` sem `r`.**
+
+   ```bash
+   chmod 711 pasta          # x, sem r
+   ls pasta
+   cat pasta/dentro.txt
+   chmod 755 pasta
+   ```
+
+   Esperado: a listagem é negada, mas o acesso pelo nome exato funciona. É a "porta sem placa" usada de propósito em vários lugares do sistema.
+
+7. **Descubra que apagar depende do diretório.**
+
+   ```bash
+   echo "protegido" > pasta/somente-leitura.txt
+   chmod 444 pasta/somente-leitura.txt
+   ls -l pasta/somente-leitura.txt
+   rm pasta/somente-leitura.txt
+   ```
+
+   Esperado: o `rm` pergunta, e ao confirmar apaga — mesmo o arquivo sendo `444`. A permissão que valeu foi o `w` no diretório `pasta`.
+
+8. **Confirme o inverso.**
+
+   ```bash
+   mkdir -p travado && echo dado > travado/arq.txt
+   chmod 555 travado          # sem w no diretorio
+   ls -l travado/arq.txt      # o arquivo continua rw para o dono
+   echo "mais texto" >> travado/arq.txt
+   rm travado/arq.txt
+   chmod 755 travado
+   ```
+
+   Esperado: você **escreve** no arquivo e não consegue **apagá-lo**. Conteúdo e nome estão em lugares diferentes, como visto em @sec-cap015.
+
+9. **Reproduza o problema da abertura do capítulo.**
+
+   ```bash
+   mkdir -p caminho/fundo
+   echo "todo mundo deveria ler" > caminho/fundo/publico.txt
+   chmod 644 caminho/fundo/publico.txt
+   chmod 700 caminho
+   sudo -u nobody cat /tmp/lab020/caminho/fundo/publico.txt
+   namei -l /tmp/lab020/caminho/fundo/publico.txt
+   chmod 755 caminho
+   sudo -u nobody cat /tmp/lab020/caminho/fundo/publico.txt
+   ```
+
+   Esperado: negado com o arquivo aberto, liberado depois de consertar o **diretório**. O `namei -l` aponta o culpado sem adivinhação.
+
+10. **Use `X` maiúsculo em vez de `+x` recursivo.**
+
+    ```bash
+    mkdir -p arvore/sub && echo dado > arvore/sub/dados.txt
+    printf '#!/bin/bash\necho ok\n' > arvore/roda.sh && chmod +x arvore/roda.sh
+    chmod -R a+x arvore; find arvore -printf '%m %p\n'
+    chmod -R go-x arvore; chmod -R u+rwX,go-w arvore
+    find arvore -printf '%m %p\n'
+    ```
+
+    Esperado: com `a+x`, o arquivo de dados virou executável; com `u+rwX`, só os diretórios e o script que já era executável mantêm o bit.
+
+11. **Veja o `umask` mudando o que nasce.**
+
+    ```bash
+    umask 022; touch a022.txt; mkdir d022
+    umask 077; touch a077.txt; mkdir d077
+    umask 002; touch a002.txt; mkdir d002
+    umask 022
+    stat -c '%a %n' a022.txt a077.txt a002.txt d022 d077 d002
+    ```
+
+    Esperado: `644/755`, `600/700`, `664/775`. E note que nenhum arquivo nasceu com `x`: a base de arquivos é `666`.
+
+12. **Confirme que o `umask` não muda o passado.**
+
+    ```bash
+    umask 077
+    stat -c '%a %n' a022.txt
+    umask 022
+    ```
+
+    Esperado: `a022.txt` continua `644`. O `umask` só age na criação.
+
+13. **Troque dono e grupo.**
+
+    ```bash
+    id
+    id -Gn
+    echo teste > propriedade.txt
+    sudo chown root propriedade.txt
+    ls -l propriedade.txt
+    echo "tentando escrever" >> propriedade.txt
+    sudo chown "$USER:$USER" propriedade.txt
+    echo "agora vai" >> propriedade.txt
+    cat propriedade.txt
+    ```
+
+    Esperado: escrita negada enquanto o dono era `root`, liberada depois. Repare que só o `sudo` conseguiu mudar o dono.
+
+14. **Copie permissões de um modelo.**
+
+    ```bash
+    chmod 640 modelo.conf 2>/dev/null || { echo x > modelo.conf; chmod 640 modelo.conf; }
+    touch alvo.conf
+    stat -c '%a %n' modelo.conf alvo.conf
+    chmod --reference=modelo.conf alvo.conf
+    stat -c '%a %n' modelo.conf alvo.conf
+    ```
+
+    Esperado: os dois com `640`. Útil para replicar o modo de um arquivo de configuração conhecido.
+
+15. **Observe o sticky bit em `/tmp`.**
+
+    ```bash
+    ls -ld /tmp
+    stat -c '%a %A %n' /tmp
+    find /tmp -maxdepth 1 -type d -perm -1000 2>/dev/null | head
+    ```
+
+    Esperado: `drwxrwxrwt` e modo `1777`. O `1` na frente é o sticky bit, detalhado no Volume 4.
+
+16. **Faça uma varredura de permissões frouxas no seu próprio sistema.**
+
+    ```bash
+    find /tmp/lab020 -type f -perm /o+w
+    sudo find /etc -xdev -type f -perm /o+w 2>/dev/null | head
+    sudo find / -xdev -type d -perm -0002 ! -perm -1000 2>/dev/null | head
+    ```
+
+    Esperado: nada ou muito pouco num sistema saudável. Qualquer arquivo de `/etc` gravável por todos é um achado que merece investigação.
+
+17. **Teste permissão em script.**
+
+    ```bash
+    for f in arquivo.txt script.sh curioso.txt; do
+      printf '%s: ' "$f"
+      [ -r "$f" ] && printf 'r'
+      [ -w "$f" ] && printf 'w'
+      [ -x "$f" ] && printf 'x'
+      [ -O "$f" ] && printf ' (sou dono)'
+      echo
+    done
+    ```
+
+    Esperado: a linha de cada arquivo reflete exatamente o que o `ls -l` mostra para a sua classe.
+
+18. **Limpe.**
+
+    ```bash
+    cd /tmp
+    chmod -R u+rwX /tmp/lab020
+    rm -rf /tmp/lab020
+    ```
+
+    O `chmod` antes do `rm` evita o erro em diretórios que ficaram sem `w` durante o laboratório.
+
+## Resumo
+
+- **Dez caracteres no `ls -l`**: um de tipo e três grupos de `rwx`, para dono, grupo e outros. `r`=4, `w`=2, `x`=1, somados por grupo dão a notação octal.
+- **Só uma classe se aplica**, a primeira que casa: dono, senão grupo, senão outros. Por isso `chmod 007` nega o dono e libera o mundo — os bits das outras classes são ignorados, não somados.
+- **A notação simbólica ajusta, a octal define.** Em script que precisa garantir o estado final, use octal; em ajuste pontual, simbólica.
+- **Em diretório os bits significam outra coisa**: `r` lista nomes, `w` cria e apaga entradas, `x` atravessa. `r` sem `x` é quase inútil; `x` sem `r` é útil e intencional.
+- **Apagar um arquivo é permissão sobre o diretório**, não sobre o arquivo — consequência direta de o nome morar na tabela do diretório. O sticky bit existe para corrigir isso em `/tmp`.
+- **`chmod 777` nunca é a solução.** O problema real costuma ser dono errado ou falta de `x` num diretório do caminho; `namei -l` e `id` diagnosticam em segundos.
+- **`chmod -R u+rwX,go-w`** é a forma correta de consertar uma árvore: o `X` maiúsculo evita tornar arquivos de dados executáveis.
+- **Só o `root` muda o dono**; um usuário muda o grupo apenas para grupos aos quais pertence, e grupos novos só valem depois de novo login.
+- **`umask` subtrai da base `666` para arquivos e `777` para diretórios**, afeta apenas o que for criado dali em diante, e `077` é o valor certo para diretório com material sensível.
+</content>
