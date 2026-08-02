@@ -1,3 +1,450 @@
 # LVM: volumes lógicos flexíveis {#sec-cap048}
 
-*(em elaboracao)*
+A partição `/var` de um servidor está com 95\% de uso e precisa de mais 200 GB. O disco tem espaço livre de sobra — mas o espaço livre está **depois** da partição `/home`, e `/var` está antes dela. Para crescer `/var` seria preciso mover `/home` inteira para o fim do disco, uma operação que leva horas, exige o sistema desligado e que, se for interrompida, perde as duas partições.
+
+O problema não é falta de espaço. É que uma partição é uma faixa **contígua** de setores, definida por um começo e um fim, e crescer significa empurrar o vizinho. Essa rigidez é herança de uma época em que o disco era uma unidade física indivisível.
+
+O LVM — *Logical Volume Manager* — desfaz essa amarra inserindo uma camada de indireção entre o disco e o sistema de arquivos. Com ele, aumentar `/var` em 200 GB é um comando, executado com o sistema no ar, e o espaço pode vir de qualquer lugar: do fim do disco, do meio, ou de um disco totalmente diferente que acabou de ser instalado.
+
+## As três camadas
+
+O LVM organiza o armazenamento em três níveis, e entender essa pilha é entender o resto do capítulo:
+
+::: {#fig-camadas-lvm}
+```{.tikz}
+%%| filename: as-tres-camadas-do-lvm
+%%| alt: Pilha do LVM com dois discos formando volumes fisicos, um grupo de volumes agregando os dois e tres volumes logicos por cima, um deles atravessando os dois discos
+\begin{tikzpicture}[
+    bx/.style={draw,thick,align=center,font=\scriptsize,inner sep=3pt},
+    dk/.style={bx,draw=manualgray,fill=manualgray!12,minimum height=0.95cm},
+    pv/.style={bx,draw=manualblue,fill=manualblue!13,minimum height=0.95cm},
+    vg/.style={bx,draw=manualyellow,fill=manualyellow!18,minimum height=0.95cm},
+    lv/.style={bx,draw=manualgreen,fill=manualgreen!14,minimum height=0.95cm},
+    lb/.style={font=\scriptsize,manualgray,align=left},
+    ti/.style={font=\scriptsize\bfseries,align=right},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,anchor=east,manualgreen] at (-0.25,4.25) {volumes\\lógicos (LV)};
+  \node[lv,minimum width=3.4cm] at (1.8,4.25) {\texttt{raiz}\\20 GiB};
+  \node[lv,minimum width=2.6cm] at (4.85,4.25) {\texttt{troca}\\4 GiB};
+  \node[lv,minimum width=6.6cm] at (9.45,4.25) {\texttt{dados} --- 60 GiB\\\emph{atravessa os dois discos}};
+
+  \node[ti,anchor=east,manualyellow!60!black] at (-0.25,2.75) {grupo de\\volumes (VG)};
+  \node[vg,minimum width=12.7cm] at (6.4,2.75) {\texttt{vg0} --- um único reservatório de \emph{extents} de 4 MiB};
+
+  \node[ti,anchor=east,manualblue] at (-0.25,1.25) {volumes\\físicos (PV)};
+  \node[pv,minimum width=6.2cm] at (3.15,1.25) {\texttt{/dev/sda2}};
+  \node[pv,minimum width=6.2cm] at (9.65,1.25) {\texttt{/dev/sdb1}};
+
+  \node[ti,anchor=east,manualgray] at (-0.25,-0.15) {discos};
+  \node[dk,minimum width=6.2cm] at (3.15,-0.15) {disco 1 --- 50 GiB};
+  \node[dk,minimum width=6.2cm] at (9.65,-0.15) {disco 2 --- 50 GiB};
+
+  \node[nt,text width=14.2cm] at (6.4,-2.1) {A camada que faz o trabalho é a do meio. O grupo de volumes fatia todo o espaço em \emph{extents} de tamanho fixo (4 MiB por padrão) e passa a tratá-los como um reservatório único, sem exigir que sejam contíguos nem que estejam no mesmo disco. Crescer um volume lógico é apenas atribuir-lhe mais \emph{extents} --- não importa de onde venham. É por isso que \texttt{dados} pode ocupar 60 GiB sem que exista nenhum disco de 60 GiB na máquina.};
+\end{tikzpicture}
+```
+As três camadas do LVM: discos viram PVs, PVs formam um VG, o VG serve LVs.
+:::
+
+- **PV** (*physical volume*): um disco inteiro ou uma partição preparada para o LVM. O `pvcreate` grava um rótulo e os metadados no início dele.
+- **VG** (*volume group*): a agregação de um ou mais PVs num único reservatório de espaço.
+- **LV** (*logical volume*): a fatia servida ao usuário. É um dispositivo de bloco (@sec-cap045) como qualquer outro, e é nele que se roda o `mkfs` do @sec-cap047.
+
+A unidade de contabilidade é o ***extent***: o VG divide todo o espaço em blocos de tamanho fixo, 4 MiB por padrão, e um LV é simplesmente uma lista de *extents*. Como a lista não precisa ser contígua, o problema do cenário de abertura desaparece — não existe "vizinho a empurrar".
+
+O preço dessa flexibilidade é uma camada a mais para diagnosticar e um risco novo: **perder o VG derruba todos os LVs dele**, inclusive os que estão em discos saudáveis. O LVM não é redundância; isso é assunto do @sec-cap049.
+
+## Criando a pilha
+
+Os comandos seguem as três camadas, de baixo para cima. Cada nível tem um trio previsível: `create`, `display` e `s` (o resumo curto).
+
+```bash
+# 1. os volumes fisicos
+sudo pvcreate /dev/sdb1 /dev/sdc1
+sudo pvs                                  # resumo em uma linha por PV
+sudo pvdisplay /dev/sdb1                  # detalhado
+
+# 2. o grupo de volumes
+sudo vgcreate vg0 /dev/sdb1 /dev/sdc1
+sudo vgs
+sudo vgdisplay vg0
+
+# 3. os volumes logicos
+sudo lvcreate -L 20G -n raiz vg0          # tamanho absoluto
+sudo lvcreate -l 100%FREE -n dados vg0    # todo o espaco restante
+sudo lvs
+sudo lvdisplay vg0/dados
+```
+
+A distinção entre `-L` e `-l` é a que mais confunde no começo:
+
+| Opção | Unidade | Exemplos |
+|---|---|---|
+| `-L` (maiúsculo) | tamanho absoluto | `-L 20G`, `-L 500M`, `-L +10G` (aumenta) |
+| `-l` (minúsculo) | número de *extents* ou porcentagem | `-l 100%FREE`, `-l +50%FREE`, `-l 5120` |
+
+: `-L` contra `-l` nos comandos do LVM {#tbl-L-minusculo}
+
+`100%FREE` significa "todo o espaço livre do VG"; `100%VG`, "todo o espaço do VG". Confundir os dois é o erro clássico ao criar o segundo LV.
+
+Criado o LV, ele aparece como dispositivo de bloco em dois caminhos equivalentes, e o `lsblk` mostra a pilha inteira:
+
+```bash
+ls -l /dev/vg0/dados /dev/mapper/vg0-dados
+sudo mkfs.ext4 -L dados /dev/vg0/dados
+sudo mount /dev/vg0/dados /mnt/dados
+lsblk
+```
+
+O `/dev/mapper/vg0-dados` é o nome real, criado pelo *device mapper* do kernel; `/dev/vg0/dados` é um link simbólico de conveniência. Os dois servem em `fstab` e em qualquer comando — e ambos são estáveis, ao contrário dos nomes `sdX` do @sec-cap045, porque derivam dos nomes que você escolheu.
+
+## Crescer: o que o LVM veio resolver
+
+Este é o caso de uso que justifica toda a complexidade. Aumentar um volume lógico com o sistema de arquivos montado e em uso:
+
+```bash
+sudo lvextend -L +200G -r /dev/vg0/dados      # +200 GiB
+sudo lvextend -l +100%FREE -r /dev/vg0/dados  # tudo que sobrou no VG
+df -h /mnt/dados
+```
+
+A opção **`-r`** (`--resizefs`) é a mais importante do capítulo: ela faz o LVM chamar o `resize2fs` ou o `xfs_growfs` logo depois de estender o volume, na ordem certa, automaticamente. Sem ela, o LV cresce e o sistema de arquivos continua do tamanho antigo — o `df` não muda e a impressão é de que o comando não funcionou.
+
+É o mesmo problema de duas camadas da @fig-ordem-redimensionamento no @sec-cap046, com a diferença de que aqui existe uma opção que coordena as duas.
+
+E quando o VG inteiro está cheio, acrescenta-se um disco:
+
+```bash
+sudo pvcreate /dev/sdd1
+sudo vgextend vg0 /dev/sdd1                   # o VG cresce
+sudo vgs                                      # confirme o VFree
+sudo lvextend -l +100%FREE -r /dev/vg0/dados  # o LV usa o espaco novo
+```
+
+Quatro comandos, sistema no ar, sem reiniciar e sem mover partição alguma. É a resposta ao cenário de abertura.
+
+::: {.callout-warning}
+## Reduzir continua sendo perigoso, mesmo com LVM
+
+```bash
+sudo umount /mnt/dados
+sudo e2fsck -f /dev/vg0/dados
+sudo lvreduce -L 50G -r /dev/vg0/dados
+```
+
+O `-r` também coordena a redução na ordem correta — sistema de arquivos primeiro, volume depois —, mas as ressalvas do @sec-cap047 continuam valendo integralmente: exige desmontagem, exige `e2fsck -f` antes e exige backup restaurável.
+
+E há um limite absoluto: **XFS não reduz**. O `lvreduce -r` num volume XFS falha, e nenhuma opção contorna isso. Em volume XFS, dimensione com folga desde o início ou aceite despejar e recriar.
+
+Sem `-r`, `lvreduce` corta o volume por baixo do sistema de arquivos, o que é perda de dados imediata. O comando avisa e pede confirmação; a resposta certa quando a mensagem surpreende é `n`.
+:::
+
+## Instantâneos
+
+O LVM cria instantâneos por cópia-na-escrita, mas com um modelo diferente do Btrfs (@sec-cap047): o instantâneo tem **tamanho fixo, declarado na criação**, e nele são guardados os blocos do original **antes** de cada alteração.
+
+```bash
+sudo lvcreate -L 5G -s -n dados-snap /dev/vg0/dados
+sudo mkdir -p /mnt/snap && sudo mount -o ro /dev/vg0/dados-snap /mnt/snap
+sudo lvs -o +origin,data_percent
+```
+
+O uso clássico é o backup consistente: criar o instantâneo leva um segundo, congela uma visão coerente do volume naquele instante, e o backup roda a partir dele enquanto a aplicação continua escrevendo no original.
+
+```bash
+sudo lvcreate -L 5G -s -n backup-tmp /dev/vg0/dados
+sudo mount -o ro /dev/vg0/backup-tmp /mnt/snap
+sudo tar czf /backup/dados.tar.gz -C /mnt/snap .
+sudo umount /mnt/snap
+sudo lvremove -y /dev/vg0/backup-tmp
+```
+
+::: {.callout-important}
+## Instantâneo LVM que enche é instantâneo perdido
+
+O espaço reservado guarda os blocos alterados desde a criação. Se o volume original receber mais escrita do que o instantâneo comporta, ele **é invalidado** — some, sem aviso prévio e sem chance de recuperação, e o backup em curso a partir dele falha no meio.
+
+```bash
+sudo lvs -o lv_name,data_percent,lv_attr      # acompanhe data_percent
+```
+
+Dimensione pela taxa de escrita esperada multiplicada pelo tempo de vida do instantâneo, com folga generosa, e não deixe instantâneos LVM esquecidos: além do risco, todo instantâneo ativo **degrada o desempenho de escrita** do volume original, porque cada alteração passa a exigir uma cópia antes. Este é o ponto em que o modelo do Btrfs é claramente superior — lá o instantâneo não tem tamanho a dimensionar e não caduca.
+:::
+
+O `lvconvert --merge` reverte o volume ao estado do instantâneo, o que faz do par instantâneo/merge uma rede de segurança para atualizações arriscadas:
+
+```bash
+sudo lvcreate -L 5G -s -n antes-upgrade /dev/vg0/raiz
+# ... a atualizacao corre mal ...
+sudo lvconvert --merge /dev/vg0/antes-upgrade   # aplica no proximo boot
+```
+
+## `pvmove`: esvaziar um disco com o sistema no ar
+
+O SMART (@sec-cap045) começou a reportar setores realocados num dos discos do VG. Ele ainda funciona, mas vai falhar. Com LVM, tirar os dados dele não exige janela de manutenção:
+
+::: {#fig-pvmove}
+```{.tikz}
+%%| filename: migracao-de-dados-com-pvmove
+%%| alt: Sequencia de migracao com pvmove: adicionar disco novo ao grupo, mover os extents do disco defeituoso e remove-lo do grupo
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.5cm,minimum height=1.45cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    bad/.style={bx,draw=manualred,fill=manualred!12},
+    nw/.style={bx,draw=manualblue,fill=manualblue!13},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={very thick,-{Stealth[length=5pt]}}
+  ]
+  \node[bad] (a) at (0.0,1.4)  {\textbf{1.} disco 2 falhando\\[2pt]\emph{extents} em uso\\SMART alertando};
+  \node[nw]  (b) at (4.6,1.4)  {\textbf{2.} disco 3 entra\\[2pt]\texttt{pvcreate}\\\texttt{vgextend}};
+  \node[ok]  (c) at (9.2,1.4)  {\textbf{3.} dados migram\\[2pt]\texttt{pvmove /dev/sdc1}\\\emph{sistema no ar}};
+  \node[bad] (d) at (13.8,1.4) {\textbf{4.} disco 2 sai\\[2pt]\texttt{vgreduce}\\\texttt{pvremove}};
+
+  \draw[fl,manualgray] (a) -- (b);
+  \draw[fl,manualgray] (b) -- (c);
+  \draw[fl,manualgray] (c) -- (d);
+
+  \node[nt,text width=14.2cm] at (6.6,-0.9) {O \texttt{pvmove} copia \emph{extent} por \emph{extent} e atualiza os metadados a cada um, de modo que uma interrupção no meio --- inclusive uma queda de energia --- deixa a operação num estado consistente e retomável com \texttt{pvmove -{}-abort} ou simplesmente \texttt{pvmove} sem argumento. Os sistemas de arquivos permanecem montados e as aplicações continuam escrevendo durante toda a migração; o que se percebe é apenas a lentidão da cópia em curso.};
+\end{tikzpicture}
+```
+Substituindo um disco defeituoso sem desligar o sistema.
+:::
+
+```bash
+sudo pvcreate /dev/sdd1
+sudo vgextend vg0 /dev/sdd1
+sudo pvmove -i 10 /dev/sdc1              # -i 10: relatorio a cada 10s
+sudo pvs                                 # sdc1 deve mostrar 0 em uso
+sudo vgreduce vg0 /dev/sdc1
+sudo pvremove /dev/sdc1
+```
+
+O `pvmove` também aceita um destino específico (`pvmove /dev/sdc1 /dev/sdd1`) e pode mover um único LV (`pvmove -n dados /dev/sdc1`). É lento, porque copia tudo, mas é interrompível e retomável.
+
+## Provisionamento fino
+
+Um *thin pool* permite criar volumes cuja soma dos tamanhos declarados **excede** o espaço real, alocando de fato só o que é escrito:
+
+```bash
+sudo lvcreate -L 80G --thinpool pool0 vg0
+sudo lvcreate -V 50G --thin -n cliente-a vg0/pool0
+sudo lvcreate -V 50G --thin -n cliente-b vg0/pool0    # 100G declarados em 80G
+sudo lvs -o lv_name,lv_size,data_percent,metadata_percent
+```
+
+É a base de laboratórios com muitas máquinas virtuais parecidas e de instantâneos que não caducam — instantâneo de volume fino não tem tamanho fixo nem invalida.
+
+::: {.callout-warning}
+## *Thin pool* cheio corrompe os volumes que dependem dele
+
+Se o reservatório esgotar, as escritas param e os sistemas de arquivos em cima entram em erro de E/S, com corrupção provável. Não é um risco teórico: é o modo de falha esperado de quem provisiona além do que tem e não monitora.
+
+Duas medidas, ambas obrigatórias em uso sério: acompanhar `data_percent` e `metadata_percent` com alerta, e configurar `thin_pool_autoextend_threshold` em `/etc/lvm/lvm.conf` para que o reservatório cresça sozinho antes de encher. O `metadata_percent` merece atenção própria — o espaço de metadados esgota antes do de dados com frequência maior do que se espera.
+:::
+
+## Diagnóstico e recuperação
+
+```bash
+sudo pvs -o +pv_used,pv_free              # quanto de cada PV esta em uso
+sudo vgs -o +vg_free,vg_extent_size
+sudo lvs -o +devices,lv_attr,seg_type     # em quais PVs cada LV esta
+sudo lvdisplay -m /dev/vg0/dados          # o mapeamento de extents
+sudo vgchange -ay                         # ativa todos os LVs do VG
+sudo vgchange -an vg0                     # desativa (antes de mexer no disco)
+```
+
+Quando um VG não aparece após trocar discos de lugar ou mover para outra máquina:
+
+```bash
+sudo pvscan --cache                       # forca nova varredura
+sudo vgscan
+sudo vgchange -ay
+sudo vgs -o +vg_missing_pv_count          # falta algum PV?
+```
+
+E o recurso que salva de erro de operação — o LVM mantém, sozinho, um histórico de todas as versões dos metadados:
+
+```bash
+ls /etc/lvm/archive/                      # cada alteracao gera um arquivo
+ls /etc/lvm/backup/                       # o estado atual
+sudo vgcfgrestore --list vg0              # lista os pontos disponiveis
+sudo vgcfgrestore -f /etc/lvm/archive/vg0_00007-XXXX.vg vg0
+```
+
+Um `lvremove` no volume errado se desfaz com `vgcfgrestore`, **desde que nada tenha sido escrito por cima** — os metadados voltam e o LV reaparece com seus dados. É a rede de segurança mais subestimada do LVM, e o motivo para incluir `/etc/lvm/` em qualquer backup de configuração do sistema.
+
+::: {.callout-note}
+## A pilha inteira, na ordem de montagem e de desmontagem
+
+Montar, de baixo para cima: disco → `pvcreate` → `vgcreate` → `lvcreate` → `mkfs` → `mount`.
+
+Desmontar, de cima para baixo: `umount` → `lvremove` → `vgremove` → `pvremove`.
+
+Tentar pular etapas na desmontagem produz o `Device or resource busy` do @sec-cap046. Quando um disco com LVM se recusa a ser reparticionado, quase sempre falta um `vgchange -an` — o `partprobe` não consegue nada enquanto o *device mapper* mantiver os volumes ativos.
+:::
+
+## 🐉 No Kali
+
+- **O instalador oferece "LVM criptografado" e é a opção certa para máquina de trabalho.** Ela empilha LUKS por baixo e LVM por cima, o que dá criptografia em repouso e flexibilidade de redimensionamento ao mesmo tempo. A ordem importa e é sempre essa — LUKS embaixo, LVM em cima —, porque assim uma única senha abre tudo e todos os volumes ficam protegidos. O arranjo completo é o assunto do @sec-cap050.
+- **Num rolling, `/var` cresce sem avisar, e é aí que o LVM paga o investimento.** O cache do APT, os pacotes baixados e os logs de ferramentas de laboratório enchem `/var` em ritmo imprevisível. Com LVM, `lvextend -l +100%FREE -r` resolve em segundos e sem reiniciar; sem LVM, a alternativa é reparticionar com o sistema desligado.
+- **Instantâneo antes de `apt full-upgrade` é hábito barato.** Num sistema rolling, uma atualização pode quebrar driver de vídeo ou ambiente gráfico. Um `lvcreate -s` na raiz antes da atualização custa segundos e permite reverter com `lvconvert --merge` — mas **dimensione o instantâneo pelo tamanho da atualização**, porque um `full-upgrade` grande enche um instantâneo pequeno e o invalida no pior momento.
+- **Deixe espaço livre no VG de propósito.** O erro mais comum de quem começa é criar o volume raiz com `-l 100%FREE` na instalação. Isso entrega toda a flexibilidade que o LVM oferece de volta ao nada: sem espaço livre no VG não há como criar instantâneo nem estender nenhum volume. Reserve de 10 a 20\% do VG sem alocar.
+- **Laboratório de ferramentas se beneficia de volumes finos.** Cada exercício destrutivo ganha seu volume lógico fino, com instantâneo antes e reversão depois — vários ambientes independentes que só consomem o espaço realmente escrito. É a mesma ideia da VM descartável, num nível mais barato.
+- **Perícia: o `pvscan` automático é um risco a controlar.** Ao conectar uma mídia suspeita que contenha metadados LVM, o `lvmetad`/`udev` pode ativar os volumes automaticamente e montá-los, o que altera a evidência. O procedimento é bloquear escrita antes (`blockdev --setro`), examinar a partir de imagem com `losetup -rP`, e usar `vgchange -an` para desativar qualquer coisa que tenha subido sozinha. Um filtro em `/etc/lvm/lvm.conf` restringindo os dispositivos varridos é a proteção estrutural numa estação de análise.
+
+> **Nota sobre a família RHEL.** Ali o LVM não é opcional na prática: RHEL, Rocky e AlmaLinux instalam sobre LVM por padrão, com um VG chamado `rhel` ou `rocky` contendo `root` e `swap`. Os comandos são idênticos, mas o sistema de arquivos padrão é XFS, o que torna a metade da redução deste capítulo inaplicável — `lvreduce -r` falha, e a única saída é `xfsdump`/`xfsrestore`. Em compensação, `xfs_growfs` cresce montado sem nenhuma ressalva, e `lvextend -r` é a operação de rotina. O Stratis, apresentado como camada de mais alto nível sobre LVM e XFS, existe na família mas não tem equivalente no Debian, e o LVM cru continua sendo o caminho portável entre as duas.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — três arquivos-imagem via `losetup` fazem o papel de três discos, e o passo 12 remove tudo. Confirme no passo 1 quais dispositivos *loop* foram criados.
+
+1. **Crie três discos falsos.**
+
+   ```bash
+   sudo apt install -y lvm2
+   mkdir -p ~/lab-lvm && cd ~/lab-lvm
+   for n in 1 2 3; do truncate -s 1G disco$n.img; sudo losetup -fP --show disco$n.img; done
+   lsblk | grep loop
+   ```
+
+   Esperado: `/dev/loop0`, `/dev/loop1` e `/dev/loop2`, de 1 GiB cada. Se os números forem outros, ajuste os comandos seguintes.
+
+2. **Monte a pilha de baixo para cima.**
+
+   ```bash
+   sudo pvcreate /dev/loop0 /dev/loop1
+   sudo pvs
+   sudo vgcreate vglab /dev/loop0 /dev/loop1
+   sudo vgs
+   sudo vgdisplay vglab | grep -iE "PE Size|Total PE|Free  PE"
+   ```
+
+   Esperado: um VG de aproximadamente 2 GiB formado por dois discos de 1 GiB, com *extents* de 4 MiB. O reservatório único da @fig-camadas-lvm.
+
+3. **Crie um volume lógico maior que qualquer disco individual.**
+
+   ```bash
+   sudo lvcreate -L 1500M -n dados vglab
+   sudo lvs -o +devices
+   sudo lvdisplay -m /dev/vglab/dados | tail -12
+   ```
+
+   Esperado: um LV de 1,5 GiB, com o mapeamento mostrando que ele ocupa *extents* nos **dois** discos. Nenhum disco de 1,5 GiB existe na máquina — este é o ponto central do LVM.
+
+4. **Formate, monte e grave dados.**
+
+   ```bash
+   sudo mkfs.ext4 -q -L dados /dev/vglab/dados
+   sudo mkdir -p /mnt/lvm && sudo mount /dev/vglab/dados /mnt/lvm
+   sudo dd if=/dev/urandom of=/mnt/lvm/original.bin bs=1M count=100 status=none
+   sudo md5sum /mnt/lvm/original.bin | tee /tmp/soma-original.txt
+   df -h /mnt/lvm
+   ```
+
+   Esperado: volume montado com cerca de 1,5 GiB e o arquivo gravado. Guarde a soma MD5 — ela prova, no passo 8, que a migração não corrompeu nada.
+
+5. **Compare os dois caminhos do dispositivo.**
+
+   ```bash
+   ls -l /dev/vglab/dados /dev/mapper/vglab-dados
+   lsblk /dev/loop0 /dev/loop1
+   ```
+
+   Esperado: `/dev/vglab/dados` é um link simbólico para `/dev/mapper/vglab-dados`, e o `lsblk` mostra a pilha completa disco → LVM → ponto de montagem.
+
+6. **Cresça o volume com o sistema de arquivos montado.**
+
+   ```bash
+   df -h /mnt/lvm
+   sudo lvextend -l +100%FREE -r /dev/vglab/dados
+   df -h /mnt/lvm
+   cat /mnt/lvm/original.bin > /dev/null && echo "arquivo intacto"
+   ```
+
+   Esperado: o volume passa a ocupar quase todo o VG e o `df` reflete a mudança **na hora**, sem desmontar. O `-r` fez o `resize2fs` automaticamente.
+
+7. **Repita sem o `-r` para ver a diferença.**
+
+   ```bash
+   sudo vgextend vglab /dev/loop2
+   sudo lvextend -L +500M /dev/vglab/dados     # SEM -r
+   sudo lvs; df -h /mnt/lvm
+   sudo resize2fs /dev/vglab/dados
+   df -h /mnt/lvm
+   ```
+
+   Esperado: após o `lvextend` sem `-r`, o `lvs` mostra o volume maior mas o `df` **não muda** — o sistema de arquivos ficou para trás. O `resize2fs` manual conclui o trabalho. É exatamente o que o `-r` automatiza.
+
+8. **Migre os dados para fora de um disco com o sistema no ar.**
+
+   ```bash
+   sudo pvs -o +pv_used
+   sudo pvmove -i 5 /dev/loop0
+   sudo pvs -o +pv_used
+   sudo md5sum /mnt/lvm/original.bin
+   cat /tmp/soma-original.txt
+   ```
+
+   Esperado: o `loop0` termina com zero em uso, o volume continuou montado durante toda a operação, e a soma MD5 é idêntica à do passo 4. É o procedimento da @fig-pvmove.
+
+9. **Remova o disco esvaziado do grupo.**
+
+   ```bash
+   sudo vgreduce vglab /dev/loop0
+   sudo pvremove /dev/loop0
+   sudo vgs; sudo pvs
+   df -h /mnt/lvm
+   ```
+
+   Esperado: o VG passa a ter dois PVs, o volume continua montado e íntegro. Um disco foi retirado de produção sem nenhuma interrupção.
+
+10. **Crie um instantâneo e observe-o encher.**
+
+    ```bash
+    sudo lvcreate -L 100M -s -n instantaneo /dev/vglab/dados
+    sudo lvs -o lv_name,lv_size,origin,data_percent
+    sudo dd if=/dev/urandom of=/mnt/lvm/enche.bin bs=1M count=150 status=none
+    sync
+    sudo lvs -o lv_name,lv_size,origin,data_percent,lv_attr
+    ```
+
+    Esperado: o `data_percent` do instantâneo sobe rapidamente e o atributo passa a começar com `I` de *Invalid* quando estoura os 100 MiB. Este é o modo de falha descrito na seção de instantâneos — e é por isso que se dimensiona com folga.
+
+11. **Recupere metadados com `vgcfgrestore`.**
+
+    ```bash
+    sudo lvremove -y /dev/vglab/instantaneo
+    sudo lvcreate -L 200M -n descartavel vglab
+    sudo vgcfgrestore --list vglab | tail -12
+    sudo lvremove -y /dev/vglab/descartavel
+    ls /etc/lvm/archive/ | tail -5
+    ```
+
+    Esperado: uma lista de pontos de restauração, um para cada alteração feita nos passos anteriores. Se o `lvremove` tivesse sido no volume errado, `vgcfgrestore -f <arquivo> vglab` traria o volume de volta.
+
+12. **Desmonte o laboratório inteiro, de cima para baixo.**
+
+    ```bash
+    sudo umount /mnt/lvm
+    sudo vgchange -an vglab
+    sudo vgremove -y vglab
+    sudo pvremove -y /dev/loop1 /dev/loop2
+    sudo losetup -D
+    sudo rmdir /mnt/lvm; cd ~ && rm -rf ~/lab-lvm /tmp/soma-original.txt
+    lsblk | grep loop; sudo vgs
+    ```
+
+    Esperado: nenhum dispositivo *loop*, nenhum VG. A ordem de desmontagem é a inversa da montagem — pular etapas produz `Device or resource busy`.
+
+## Resumo
+
+- **O LVM insere uma camada de indireção entre o disco e o sistema de arquivos**, em três níveis: PV (disco ou partição preparada), VG (o reservatório agregado) e LV (a fatia servida). Um LV é um dispositivo de bloco comum e recebe `mkfs` como qualquer partição.
+- **A unidade de contabilidade é o *extent*, de 4 MiB por padrão.** Como um LV é apenas uma lista de *extents* que não precisa ser contígua, o problema de "crescer empurrando o vizinho" deixa de existir — e um volume pode ser maior que qualquer disco da máquina.
+- **`-r` é a opção mais importante do capítulo.** `lvextend -r` e `lvreduce -r` coordenam volume e sistema de arquivos na ordem certa. Sem ela, o LV cresce e o `df` não muda, porque o sistema de arquivos ficou para trás.
+- **`-L` é tamanho absoluto, `-l` é *extents* ou porcentagem.** `-l 100%FREE` usa o espaço livre do VG; `-l 100%VG`, o espaço total. Confundir os dois é o erro clássico ao criar o segundo volume.
+- **`pvmove` esvazia um disco com o sistema no ar**, *extent* por *extent*, de forma interrompível e retomável. Com `vgextend` antes e `vgreduce` depois, um disco em falha sai de produção sem janela de manutenção.
+- **Instantâneo LVM tem tamanho fixo e caduca.** Se o original receber mais escrita do que o instantâneo comporta, ele é invalidado sem aviso — e todo instantâneo ativo degrada a escrita no volume original. Acompanhar `data_percent` não é opcional.
+- **`vgcfgrestore` desfaz erro de operação.** O LVM arquiva cada versão dos metadados em `/etc/lvm/archive/`, e um `lvremove` equivocado se reverte a partir dali, desde que nada tenha sido escrito por cima.
+- **Não aloque 100\% do VG na instalação.** Sem espaço livre não há instantâneo nem extensão — toda a flexibilidade do LVM depende de sobrar espaço não alocado, e de 10 a 20\% reservados são um bom padrão.
+- **LVM não é redundância.** Perder um PV derruba todos os LVs que tocam nele, inclusive os que ocupam discos saudáveis. Tolerância a falha de disco é assunto do @sec-cap049.

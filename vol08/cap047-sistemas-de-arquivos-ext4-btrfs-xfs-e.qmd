@@ -1,3 +1,442 @@
 # Sistemas de arquivos: ext4, Btrfs, XFS e formatação {#sec-cap047}
 
-*(em elaboracao)*
+Faltou energia no meio de uma cópia grande. A máquina volta, o `systemd` roda uma verificação de poucos segundos e o sistema sobe normalmente — nenhum arquivo perdido, nenhuma árvore de diretórios corrompida. No mesmo apagão, o arquivo que estava sendo copiado ficou com 40 MB dos 900 MB esperados, e um documento salvo trinta segundos antes voltou vazio, com o tamanho certo e o conteúdo todo em zeros.
+
+Os dois resultados vêm do mesmo mecanismo, e entendê-lo é entender o que um sistema de arquivos moderno promete: **o *journal* protege a estrutura, não o conteúdo.** O sistema de arquivos garantiu que sua própria contabilidade — quais blocos pertencem a qual arquivo — ficasse coerente. Não prometeu, e por padrão nem tenta, que os dados dentro daqueles blocos tenham chegado ao disco.
+
+Uma partição, sozinha, é um espaço bruto: o @sec-cap046 entregou uma região de disco com começo e fim declarados e nada dentro. Este capítulo é sobre o que se coloca ali — a estrutura que transforma blocos numerados em arquivos com nome, dono, data e conteúdo.
+
+## O que um sistema de arquivos guarda
+
+Formatar é escrever, numa partição vazia, a contabilidade que dá sentido ao resto. Todo sistema de arquivos da família Unix organiza essa contabilidade em quatro tipos de estrutura:
+
+::: {#fig-anatomia-ext4}
+```{.tikz}
+%%| filename: anatomia-de-um-sistema-de-arquivos
+%%| alt: Layout de um sistema de arquivos ext4 mostrando superbloco, descritores de grupo, mapas de bits, tabela de inodes, blocos de dados e o journal
+\begin{tikzpicture}[
+    bx/.style={draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum height=1.15cm},
+    sb/.style={bx,draw=manualred,fill=manualred!12},
+    gd/.style={bx,draw=manualyellow,fill=manualyellow!18},
+    it/.style={bx,draw=manualblue,fill=manualblue!13},
+    db/.style={bx,draw=manualgray,fill=manualgray!10},
+    jr/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    ti/.style={font=\scriptsize\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,anchor=west] at (0,2.5) {Um grupo de blocos do ext4 --- o padrão se repete ao longo da partição};
+
+  \node[sb,minimum width=1.9cm] (s)  at (0.95,1.35) {super-\\bloco};
+  \node[gd,minimum width=1.9cm] (g)  at (2.95,1.35) {descritores\\de grupo};
+  \node[it,minimum width=1.4cm] (b1) at (4.65,1.35) {mapa\\blocos};
+  \node[it,minimum width=1.4cm] (b2) at (6.15,1.35) {mapa\\inodes};
+  \node[it,minimum width=2.1cm] (inod) at (7.95,1.35) {tabela de\\\textbf{inodes}};
+  \node[db,minimum width=4.0cm] (dd) at (11.1,1.35) {blocos de \textbf{dados}};
+
+  \node[jr,minimum width=4.0cm] (jj) at (2.05,-0.85) {\textbf{journal}\\(região reservada)};
+  \node[lb,anchor=west,text width=8.6cm,align=left] at (4.35,-0.85) {Registra a \emph{intenção} de cada alteração de metadados antes de aplicá-la. Após uma queda, o kernel relê o journal e refaz ou descarta as operações incompletas --- em segundos, sem varrer o disco inteiro.};
+
+  \node[lb,anchor=north,text width=2.1cm] at (0.95,0.65) {onde tudo\\começa};
+  \node[lb,anchor=north,text width=2.3cm] at (7.95,0.65) {dono, permissões,\\datas, ponteiros};
+  \node[lb,anchor=north,text width=2.3cm] at (11.1,0.65) {o conteúdo\\dos arquivos};
+
+  \node[nt,text width=14.2cm] at (6.6,-3.0) {O \textbf{superbloco} guarda o tamanho do sistema de arquivos, a contagem de inodes, o rótulo, o UUID e o estado da última desmontagem --- perdê-lo torna o volume ilegível, e é por isso que o ext4 mantém cópias espalhadas pela partição. A \textbf{tabela de inodes} é dimensionada na formatação e não cresce depois: um volume pode ficar sem inodes com o disco pela metade, e o sintoma é ``\texttt{No space left on device}'' com o \texttt{df -h} mostrando espaço livre. O diagnóstico é \texttt{df -i}.};
+\end{tikzpicture}
+```
+As estruturas de um sistema de arquivos ext4 dentro de uma partição.
+:::
+
+O **inode** é a peça central, e já apareceu no @sec-cap015: ele guarda tudo sobre um arquivo — dono, grupo, permissões, datas, tamanho e a lista de blocos onde o conteúdo está — **menos o nome**. O nome vive no diretório, que é apenas uma tabela associando nomes a números de inode. É essa separação que torna possível o *hard link* do @sec-cap016.
+
+```bash
+df -h /            # espaco em blocos
+df -i /            # espaco em INODES — a outra forma de encher um disco
+```
+
+Um servidor de correio ou um cache com milhões de arquivos minúsculos esgota os inodes muito antes dos blocos. Quando `df -h` mostra 60\% livre e o sistema recusa criar arquivos, `df -i` é o comando que explica.
+
+## O que o *journal* protege — e o que não protege
+
+O cenário de abertura tem explicação exata. O *journal* registra a intenção de alterar **metadados** antes de alterá-los. Se a energia cai no meio, o kernel relê o registro e completa ou descarta a operação. O que não estava no registro — os dados do arquivo — não tem essa garantia.
+
+O ext4 oferece três modos, e a diferença entre eles é justamente o quanto de dado entra no *journal*:
+
+| Modo | O que vai para o *journal* | Efeito |
+|---|---|---|
+| `data=ordered` | metadados; os dados são **gravados antes** dos metadados que os referenciam | padrão; impede que um arquivo aponte para lixo |
+| `data=writeback` | apenas metadados, sem ordenação | mais rápido; após queda, um arquivo pode conter blocos antigos de outro arquivo |
+| `data=journal` | metadados **e** dados | mais seguro e bem mais lento; toda escrita acontece duas vezes |
+
+: Modos de *journaling* do ext4 {#tbl-modos-journal}
+
+O padrão `data=ordered` é o equilíbrio certo para praticamente todo uso: garante que nenhum arquivo apareça apontando para blocos de dados de outro, mas não garante que a última escrita tenha chegado. O arquivo vazio do cenário de abertura é isso — o `open`/`truncate` foi registrado, o `write` não chegou.
+
+::: {.callout-note}
+## Aquele arquivo de zeros não é bug — é o custo da alocação atrasada
+
+O ext4 usa *delayed allocation*: uma escrita fica em memória por até alguns segundos antes de ir ao disco, para que o kernel escolha uma boa disposição de blocos. Isso melhora bastante o desempenho e amplia a janela em que uma queda perde dados recentes.
+
+Um programa que **precisa** de garantia usa `fsync()` depois de escrever — é o que bancos de dados fazem, e é por isso que eles são lentos em disco sem cache com bateria. Do lado do shell, o equivalente é `sync`, e a garantia vale para o que já foi escrito, não para o que ainda está sendo.
+:::
+
+## ext4: o padrão que resolve quase tudo
+
+O ext4 é o sistema de arquivos padrão do Debian, do Ubuntu e do Kali. É maduro, previsível, bem compreendido pelas ferramentas de recuperação e rápido o suficiente para qualquer carga que não seja extrema.
+
+Suas características de projeto:
+
+- **Extents.** Em vez de listar bloco a bloco, o ext4 registra intervalos contíguos (`início` + `comprimento`). Um arquivo de 1 GiB contíguo cabe em poucos descritores, contra centenas de milhares de ponteiros no ext3.
+- **Alocação atrasada e pré-alocação**, que reduzem a fragmentação sem exigir desfragmentador.
+- **Limites** de 1 EiB por sistema de arquivos e 16 TiB por arquivo, com blocos de 4 KiB — muito além do que se encontra na prática.
+- **Blocos reservados**: por padrão, 5\% da partição são reservados ao `root`. Não é desperdício — é o que impede que um sistema com disco cheio fique impossível de administrar, já que processos privilegiados ainda conseguem escrever. Em disco de dados, onde isso não importa, os 5\% de um volume de 4 TB são 200 GB desperdiçados, e vale reduzir.
+
+```bash
+sudo mkfs.ext4 -L dados /dev/loop0p1
+sudo mkfs.ext4 -L dados -m 1 /dev/loop0p1        # reserva 1% em vez de 5%
+sudo mkfs.ext4 -T news /dev/loop0p1              # muitos arquivos pequenos: mais inodes
+sudo mkfs.ext4 -T largefile4 /dev/loop0p1        # poucos arquivos grandes: menos inodes
+sudo mkfs.ext4 -n /dev/loop0p1                   # SIMULA, nao formata
+```
+
+O `-n` é o `--dry-run` do `mkfs`: mostra exatamente o que seria feito, incluindo onde ficariam as cópias do superbloco, sem escrever nada. Vale como conferência final antes de formatar um dispositivo cujo nome se quer ter certeza.
+
+## XFS: paralelismo e volumes grandes
+
+O XFS vem do mundo dos servidores e é o padrão da família RHEL. Divide o volume em **grupos de alocação** independentes, cada um com sua própria contabilidade, e é isso que lhe dá escala: várias operações de escrita em grupos diferentes acontecem em paralelo, sem disputar as mesmas estruturas.
+
+```bash
+sudo mkfs.xfs -L dados /dev/loop0p1
+sudo mkfs.xfs -f /dev/loop0p1                    # -f sobrescreve assinatura existente
+sudo xfs_info /mnt/dados                         # geometria do volume
+sudo xfs_growfs /mnt/dados                       # cresce, com o volume MONTADO
+```
+
+Onde ele brilha: volumes de dezenas de terabytes, arquivos grandes, muitas escritas concorrentes. Onde ele decepciona: **não encolhe**. Não existe `xfs_shrink`, e não é omissão temporária — a estrutura de grupos de alocação não permite. Reduzir um volume XFS significa `xfsdump`, recriar e `xfsrestore`.
+
+O detalhe operacional que surpreende: o `xfs_growfs` opera no **ponto de montagem**, não no dispositivo, e exige o volume montado. É o oposto da intuição de quem vem do `resize2fs`.
+
+## Btrfs: cópia-na-escrita, instantâneos e somas de verificação
+
+O Btrfs muda o modelo. Em vez de sobrescrever um bloco, ele **escreve o novo conteúdo em outro lugar** e depois atualiza os ponteiros — *copy-on-write*. Dessa decisão saem quase todos os seus recursos.
+
+::: {#fig-cow-btrfs}
+```{.tikz}
+%%| filename: copia-na-escrita-e-instantaneos
+%%| alt: Comparacao entre sobrescrita tradicional e copia-na-escrita, mostrando como um instantaneo compartilha blocos inalterados
+\begin{tikzpicture}[
+    bl/.style={draw,thick,align=center,font=\scriptsize,inner sep=2pt,minimum width=1.15cm,minimum height=0.72cm},
+    ol/.style={bl,draw=manualgray,fill=manualgray!12},
+    nv/.style={bl,draw=manualgreen,fill=manualgreen!16},
+    rf/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.0cm,minimum height=0.6cm},
+    ra/.style={rf,draw=manualblue,fill=manualblue!13},
+    rb/.style={rf,draw=manualred,fill=manualred!12},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    ti/.style={font=\scriptsize\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,manualgray] at (2.3,3.3) {SOBRESCRITA (ext4, XFS)};
+  \node[ol] at (0.6,2.4) {A};
+  \node[ol] at (1.85,2.4) {B};
+  \node[ol] at (3.1,2.4) {C};
+  \node[lb,anchor=north,text width=4.2cm] at (2.3,1.85) {alterar B grava \textbf{em cima} de B:\\o conteúdo anterior deixa de existir};
+
+  \node[ti,manualgreen] at (9.4,3.3) {CÓPIA-NA-ESCRITA (Btrfs)};
+  \node[ol] (a) at (7.1,2.4)  {A};
+  \node[ol] (b) at (8.35,2.4) {B};
+  \node[ol] (c) at (9.6,2.4)  {C};
+  \node[nv] (b2) at (11.5,2.4) {B'};
+
+  \node[ra] (sv) at (7.6,0.05)  {subvolume\\(atual)};
+  \node[rb] (sn) at (11.2,0.05) {instantâneo\\(antes)};
+  \draw[manualblue,thick,-{Stealth[length=4pt]}] (sv) -- (a);
+  \draw[manualblue,thick,-{Stealth[length=4pt]}] (sv) -- (c);
+  \draw[manualblue,thick,-{Stealth[length=4pt]}] (sv) -- (b2);
+  \draw[manualred,thick,dashed,-{Stealth[length=4pt]}] (sn) -- (b);
+
+  \node[nt,text width=14.2cm] at (6.6,-2.1) {Alterar B no Btrfs grava \textbf{em outro lugar} (B') e move o ponteiro do subvolume; o B original continua íntegro no disco, e é para ele que o instantâneo aponta. O instantâneo não copia nada: ele é um segundo conjunto de ponteiros para os blocos que já existem. Criá-lo é instantâneo e ocupa espaço próximo de zero; o consumo só cresce à medida que os dados divergem. É o mesmo princípio do \emph{hard link}, aplicado a árvores inteiras. A contrapartida é a fragmentação: um banco de dados que reescreve blocos internos espalha o arquivo pelo disco, e por isso volumes de banco em Btrfs recebem o atributo \texttt{nodatacow}.};
+\end{tikzpicture}
+```
+Sobrescrita contra cópia-na-escrita, e como um instantâneo compartilha blocos.
+:::
+
+O que isso habilita:
+
+- **Instantâneos** instantâneos e baratos, tanto de leitura quanto graváveis.
+- **Somas de verificação** de dados e metadados: o Btrfs **detecta** corrupção silenciosa, coisa que ext4 e XFS não fazem para dados. Com redundância, ele também corrige.
+- **Subvolumes**: árvores independentes dentro do mesmo volume, montáveis separadamente e com cota própria, sem particionamento fixo.
+- **Compressão transparente** por `zstd`, `lzo` ou `zlib`.
+- **RAID interno** para os níveis 0, 1 e 10.
+
+```bash
+sudo mkfs.btrfs -L dados /dev/loop0p1
+sudo mount -o compress=zstd:3 /dev/loop0p1 /mnt/dados
+sudo btrfs subvolume create /mnt/dados/projetos
+sudo btrfs subvolume snapshot -r /mnt/dados/projetos /mnt/dados/projetos-ontem
+sudo btrfs subvolume list /mnt/dados
+sudo btrfs filesystem usage /mnt/dados
+```
+
+::: {.callout-warning}
+## `df` mente em Btrfs, e o RAID 5/6 não é para produção
+
+Duas ressalvas concretas:
+
+O `df -h` num volume Btrfs mostra números que não correspondem ao espaço realmente disponível, porque não entende blocos compartilhados por instantâneos nem a alocação em pedaços do Btrfs. O comando correto é `btrfs filesystem usage`, que separa espaço alocado, usado e livre de verdade.
+
+E os níveis **RAID 5 e 6 do Btrfs continuam marcados como instáveis** pelos próprios desenvolvedores, com um problema conhecido de *write hole*. Para redundância com paridade, use `mdadm` (@sec-cap049) por baixo, ou fique nos níveis 1 e 10 do Btrfs, que são sólidos.
+:::
+
+## Escolhendo
+
+| Situação | Escolha |
+|---|---|
+| Raiz de uma estação de trabalho, sem requisito especial | **ext4** |
+| Quero instantâneos antes de cada atualização do rolling | **Btrfs** |
+| Volume de dezenas de TB, arquivos grandes, escrita concorrente | **XFS** |
+| Preciso reduzir o volume depois | **ext4** ou Btrfs (XFS não reduz) |
+| Pendrive para trocar arquivos com Windows e macOS | **exFAT** |
+| Partição EFI | **FAT32** — obrigatório, não é escolha |
+| Disco externo só para Linux | **ext4** |
+| Detectar corrupção silenciosa de dados | **Btrfs** ou ZFS |
+
+: Qual sistema de arquivos usar {#tbl-escolha-fs}
+
+Os sistemas de arquivos que não são nativos merecem uma nota. **FAT32** e **exFAT** não têm dono, permissão nem *journal* — a interoperabilidade é o único motivo para usá-los, e a permissão que aparece ao montar vem das opções de montagem, não do disco. **NTFS** é lido e escrito pelo driver `ntfs3` do kernel desde a versão 5.15, com desempenho muito superior ao antigo `ntfs-3g`. E **tmpfs** vive inteiramente em memória: `/tmp`, `/run` e `/dev/shm` costumam ser tmpfs, e tudo neles desaparece no desligamento.
+
+## Formatando na prática
+
+```bash
+lsblk -f /dev/loop0                    # 1. o que ja existe ali?
+sudo wipefs /dev/loop0p1               # 2. assinaturas antigas (so lista)
+sudo mkfs.ext4 -L dados /dev/loop0p1   # 3. formata
+sudo blkid /dev/loop0p1                # 4. confirma UUID e tipo
+```
+
+::: {.callout-important}
+## `mkfs` não pergunta se você tem certeza
+
+`mkfs` no dispositivo errado destrói o conteúdo sem confirmação. A única proteção embutida é a recusa em formatar um dispositivo **montado** — e essa proteção some no instante em que o volume está desmontado, que é justamente a situação de quem está trabalhando nele.
+
+Três hábitos que evitam o acidente: rodar `lsblk -f` imediatamente antes e ler a saída; usar `mkfs.ext4 -n` para simular; e, em disco real, referir-se ao dispositivo por `/dev/disk/by-id/` em vez da letra (@sec-cap045).
+:::
+
+Rotular na formatação vale sempre — o rótulo aparece no `lsblk -f`, serve para montagem por `LABEL=` e responde "que volume é este" sem consultar UUID. Para volumes já formatados:
+
+```bash
+sudo e2label /dev/loop0p1 novo-rotulo      # ext2/3/4
+sudo xfs_admin -L novo-rotulo /dev/loop0p1 # XFS
+sudo btrfs filesystem label /mnt/dados novo-rotulo
+sudo tune2fs -U random /dev/loop0p1        # novo UUID (apos clonar)
+```
+
+O `tune2fs` é o painel de ajustes do ext4 depois da formatação:
+
+```bash
+sudo tune2fs -l /dev/loop0p1               # tudo sobre o superbloco
+sudo tune2fs -m 1 /dev/loop0p1             # reduz a reserva do root para 1%
+sudo tune2fs -c 30 -i 30d /dev/loop0p1     # verificacao a cada 30 montagens ou 30 dias
+```
+
+A linha `Filesystem state: clean` da saída de `-l` é a que diz se o volume foi desmontado corretamente. `not clean` significa que uma verificação está pendente.
+
+## Verificando e reparando
+
+A regra é curta e não tem exceção prática: **nunca verifique um sistema de arquivos montado com permissão de escrita.** O `fsck` altera estruturas que o kernel tem em cache, e o resultado é corrupção garantida.
+
+```bash
+sudo umount /dev/loop0p1                   # OBRIGATORIO antes
+sudo fsck -f /dev/loop0p1                  # despachante: chama o fsck.<tipo>
+sudo e2fsck -f -y /dev/loop0p1             # ext4, respondendo sim a tudo
+sudo xfs_repair /dev/loop0p1               # XFS
+sudo btrfs check /dev/loop0p1              # Btrfs: apenas VERIFICA
+```
+
+O `fsck` genérico apenas identifica o tipo e chama o programa específico. Vale conhecer os códigos de saída, porque scripts dependem deles: `0` sem erro, `1` erros corrigidos, `2` erros corrigidos e reinício necessário, `4` erros **não** corrigidos.
+
+Quando o superbloco principal está danificado, as cópias de segurança salvam o volume:
+
+```bash
+sudo mkfs.ext4 -n /dev/loop0p1             # LISTA onde estao as copias
+sudo e2fsck -b 32768 /dev/loop0p1          # usa a copia daquele bloco
+```
+
+O truque merece destaque: `mkfs.ext4 -n` não formata, apenas calcula e imprime o *layout* que seria criado — e, como o cálculo é determinístico, as posições impressas são exatamente onde as cópias do superbloco estão no volume existente.
+
+Para XFS, `xfs_repair -n` é o modo somente-leitura, que relata sem alterar. E o `btrfs check --repair` é explicitamente documentado como último recurso: pode piorar o dano, e a orientação dos desenvolvedores é tentar antes montar com `-o ro,rescue=all` e copiar os dados para fora.
+
+## Montagem, `noatime` e TRIM
+
+Duas opções de montagem com efeito mensurável, complementando o @sec-cap019:
+
+```bash
+sudo mount -o noatime,compress=zstd /dev/loop0p1 /mnt/dados
+```
+
+O **`relatime`** já é o padrão do kernel e limita a atualização da data de último acesso a uma vez por dia. O `noatime` a elimina, e é ganho real em volume com muitos arquivos pequenos ou em SSD.
+
+Para SSD, o **TRIM** informa ao controlador que blocos deixaram de ser usados:
+
+```bash
+sudo fstrim -av                            # executa agora, em tudo que suporta
+systemctl status fstrim.timer              # o timer semanal
+```
+
+A escolha entre TRIM periódico (o *timer* semanal do @sec-cap043) e contínuo (opção de montagem `discard`) é resolvida: **o periódico é o recomendado**. O `discard` contínuo emite um comando a cada exclusão e, em vários controladores, causa engasgos perceptíveis. O `fstrim.timer` vem habilitado por padrão no Debian e no Kali.
+
+## 🐉 No Kali
+
+- **O padrão do instalador é ext4, e é a escolha certa para a maioria.** Quem usa Kali para trabalho de laboratório ganha mais com previsibilidade e com o ferramental de recuperação maduro do ext4 do que com recursos avançados. A exceção defensável é o Btrfs numa estação de estudo, pelo motivo do próximo item.
+- **Btrfs no rolling é uma apólice de seguro barata.** O Kali é rolling (@sec-cap033), e um `apt full-upgrade` pode quebrar o ambiente gráfico ou um driver. Com a raiz em subvolumes Btrfs, um `btrfs subvolume snapshot` antes da atualização leva segundos, ocupa quase nada e permite voltar ao estado anterior — em vez de reinstalar. Ferramentas como `snapper` e `timeshift` automatizam o ciclo.
+- **Perícia: monte sempre `ro,noatime,noexec,nodev,nosuid`.** Ao examinar uma imagem de disco, a montagem somente leitura preserva as datas de acesso, que são evidência. As demais opções impedem que binários da mídia examinada sejam executados por acidente e que arquivos de dispositivo ou bits SUID (@sec-cap023) presentes na imagem tenham qualquer efeito no sistema analisador. É a diferença entre examinar um artefato e ser infectado por ele.
+- **`ntfs3` mudou o trabalho com discos de Windows.** O driver no kernel substitui o `ntfs-3g` em FUSE com um ganho de desempenho grande, o que importa ao copiar imagens de disco de várias centenas de gigabytes. Ainda assim, a montagem para exame é `-o ro`, e para uma imagem forense de NTFS o caminho é `losetup -rP` sobre a imagem, nunca a mídia original.
+- **exFAT no pendrive de trabalho, ext4 no de persistência.** São papéis diferentes: o pendrive que circula entre máquinas Windows, macOS e Linux precisa de exFAT; a partição de persistência do Kali precisa de ext4, porque guarda permissões, donos e bits especiais que o exFAT simplesmente não representa. Formatar a persistência em exFAT produz um sistema que não sobe (@sec-cap050).
+- **Cuidado com a `/` cheia por causa de captura de tráfego.** Uma sessão longa de `tcpdump` ou de ferramenta de coleta enche a partição raiz rápido, e com o disco cheio o ambiente gráfico não abre e o `apt` falha. Aqui os 5\% reservados ao `root` do ext4 são o que mantém a máquina administrável — mais um motivo para não zerar a reserva na partição do sistema, por mais tentador que seja em disco pequeno.
+
+> **Nota sobre a família RHEL.** O padrão ali é XFS, tanto na raiz quanto nos volumes de dados, e isso muda a rotina em dois pontos concretos. Primeiro, crescimento se faz com `xfs_growfs` no ponto de montagem e com o volume montado, não com `resize2fs` no dispositivo desmontado. Segundo, redução simplesmente não existe: dimensionar volume XFS por baixo com LVM (@sec-cap048) é obrigatório, porque corrigir depois exige `xfsdump`, recriar e `xfsrestore`. O Btrfs foi removido do RHEL a partir da versão 8 e não é opção suportada, embora Fedora e openSUSE o usem como padrão. E o SELinux acrescenta um passo que não existe no Debian: um volume restaurado de backup sem contexto correto faz serviços falharem ao acessá-lo, e a correção é `restorecon -Rv` no ponto de montagem.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — tudo sobre arquivo-imagem via `losetup`, e o passo 12 remove tudo. Confirme no passo 1 qual dispositivo *loop* foi criado.
+
+1. **Monte o disco de laboratório com três partições.**
+
+   ```bash
+   sudo apt install -y btrfs-progs xfsprogs gdisk
+   mkdir -p ~/lab-fs && cd ~/lab-fs
+   truncate -s 3G disco.img
+   sudo losetup -fP --show disco.img
+   sudo sgdisk -o -n 1:0:+900M -n 2:0:+900M -n 3:0:0 /dev/loop0
+   sudo partprobe /dev/loop0 && lsblk /dev/loop0
+   ```
+
+   Esperado: três partições de aproximadamente 900 MiB, 900 MiB e 1,2 GiB.
+
+2. **Formate cada uma com um sistema de arquivos diferente.**
+
+   ```bash
+   sudo mkfs.ext4  -q -L lab-ext4  /dev/loop0p1
+   sudo mkfs.xfs   -q -L lab-xfs   /dev/loop0p2
+   sudo mkfs.btrfs -q -L lab-btrfs /dev/loop0p3
+   lsblk -f /dev/loop0
+   ```
+
+   Esperado: `FSTYPE` preenchido nas três, cada uma com seu rótulo e UUID próprio. Compare com o passo 8 do laboratório do @sec-cap045, onde a coluna estava vazia.
+
+3. **Simule uma formatação antes de executá-la.**
+
+   ```bash
+   sudo mkfs.ext4 -n /dev/loop0p1 | tail -12
+   lsblk -f /dev/loop0p1
+   ```
+
+   Esperado: o `-n` imprime o *layout* e a lista de blocos com cópias do superbloco, e o `lsblk` confirma que **nada mudou** — o volume continua com o rótulo `lab-ext4`. Anote um dos números de bloco de superbloco para o passo 9.
+
+4. **Monte os três e compare o espaço disponível.**
+
+   ```bash
+   sudo mkdir -p /mnt/{e4,xfs,btr}
+   sudo mount /dev/loop0p1 /mnt/e4
+   sudo mount /dev/loop0p2 /mnt/xfs
+   sudo mount /dev/loop0p3 /mnt/btr
+   df -h /mnt/e4 /mnt/xfs /mnt/btr
+   df -i /mnt/e4 /mnt/xfs
+   ```
+
+   Esperado: o ext4 mostra menos espaço livre que os outros para o mesmo tamanho — são os 5\% reservados ao `root` mais os metadados. O `df -i` mostra a contagem fixa de inodes do ext4; no XFS ela é dinâmica.
+
+5. **Reduza a reserva do `root` e veja o espaço aparecer.**
+
+   ```bash
+   sudo tune2fs -m 1 /dev/loop0p1
+   df -h /mnt/e4
+   sudo tune2fs -l /dev/loop0p1 | grep -iE "reserved block count|filesystem state|filesystem UUID"
+   ```
+
+   Esperado: alguns dezenas de MiB a mais disponíveis e `Filesystem state: clean`. Numa partição de 4 TB, essa mesma mudança liberaria cerca de 160 GB.
+
+6. **Crie um subvolume e um instantâneo no Btrfs.**
+
+   ```bash
+   sudo btrfs subvolume create /mnt/btr/projetos
+   sudo dd if=/dev/urandom of=/mnt/btr/projetos/arquivo.bin bs=1M count=200 status=none
+   sudo btrfs filesystem usage /mnt/btr | head -8
+   sudo btrfs subvolume snapshot -r /mnt/btr/projetos /mnt/btr/projetos-antes
+   sudo btrfs filesystem usage /mnt/btr | head -8
+   ```
+
+   Esperado: o instantâneo é criado em fração de segundo e o espaço usado **quase não muda** — ele compartilha os blocos do original, como na @fig-cow-btrfs.
+
+7. **Prove que o instantâneo preserva o estado anterior.**
+
+   ```bash
+   sudo rm /mnt/btr/projetos/arquivo.bin
+   ls -l /mnt/btr/projetos/
+   ls -lh /mnt/btr/projetos-antes/
+   sudo btrfs subvolume list /mnt/btr
+   ```
+
+   Esperado: o arquivo sumiu do subvolume atual e continua íntegro, com 200 MiB, no instantâneo. É esta a apólice de seguro antes de um `apt full-upgrade`.
+
+8. **Compare `df` com `btrfs filesystem usage`.**
+
+   ```bash
+   df -h /mnt/btr
+   sudo btrfs filesystem usage /mnt/btr
+   ```
+
+   Esperado: números diferentes. O `df` não entende blocos compartilhados nem a alocação em pedaços do Btrfs — use sempre o segundo comando neste tipo de volume.
+
+9. **Danifique o superbloco do ext4 e recupere-o.**
+
+   ```bash
+   sudo umount /mnt/e4
+   sudo dd if=/dev/zero of=/dev/loop0p1 bs=1024 seek=1 count=8 status=none
+   sudo mount /dev/loop0p1 /mnt/e4 2>&1 | tail -2
+   sudo e2fsck -b 32768 -y /dev/loop0p1 | tail -5
+   sudo mount /dev/loop0p1 /mnt/e4 && df -h /mnt/e4
+   ```
+
+   Esperado: a montagem falha com o superbloco zerado, o `e2fsck` reconstrói a partir da cópia no bloco 32768 (use o número anotado no passo 3, se diferente) e o volume volta a montar. Este é o motivo de as cópias existirem.
+
+10. **Confirme que `fsck` recusa volume montado.**
+
+    ```bash
+    sudo e2fsck -f /dev/loop0p1 2>&1 | tail -3
+    ```
+
+    Esperado: aviso de que o volume está montado e pergunta se deve continuar. **Responda `n`.** A recusa é a proteção contra a corrupção descrita na seção de verificação.
+
+11. **Teste os limites do XFS.**
+
+    ```bash
+    sudo xfs_info /mnt/xfs | head -5
+    sudo xfs_growfs /mnt/xfs 2>&1 | tail -2
+    sudo umount /mnt/xfs && sudo xfs_repair -n /dev/loop0p2 2>&1 | tail -3
+    ```
+
+    Esperado: o `xfs_growfs` informa que já está no tamanho máximo (a partição não cresceu), e o `xfs_repair -n` relata sem alterar nada. Note que o `growfs` exige o ponto de montagem, e o `repair` exige o dispositivo desmontado.
+
+12. **Desmonte o laboratório.**
+
+    ```bash
+    sudo umount /mnt/e4 /mnt/btr 2>/dev/null
+    sudo losetup -d /dev/loop0
+    sudo rmdir /mnt/e4 /mnt/xfs /mnt/btr
+    cd ~ && rm -rf ~/lab-fs
+    lsblk | grep loop; echo "codigo: $?"
+    ```
+
+    Esperado: nenhum dispositivo *loop* restante e nenhum ponto de montagem sobrando.
+
+## Resumo
+
+- **O *journal* protege metadados, não conteúdo.** Após uma queda, a estrutura do sistema de arquivos fica coerente em segundos, mas a última escrita pode ter se perdido — daí o arquivo de tamanho certo cheio de zeros. Só `fsync()` dá garantia de dado gravado.
+- **Um volume pode ficar sem inodes com o disco pela metade.** A tabela de inodes do ext4 é dimensionada na formatação e não cresce. Quando `df -h` mostra espaço e o sistema recusa criar arquivos, o diagnóstico é `df -i`.
+- **ext4 é o padrão certo para quase tudo**: maduro, previsível e com o melhor ferramental de recuperação. Os 5\% reservados ao `root` não são desperdício na partição do sistema — são o que mantém a máquina administrável com o disco cheio.
+- **XFS escala e não encolhe.** É o padrão da família RHEL, cresce montado com `xfs_growfs` no ponto de montagem, e reduzir exige despejar, recriar e restaurar.
+- **Btrfs troca sobrescrita por cópia-na-escrita**, e daí saem instantâneos quase gratuitos, somas de verificação que detectam corrupção silenciosa, subvolumes e compressão transparente. O preço é fragmentação em carga de banco de dados e um `df` que não diz a verdade — use `btrfs filesystem usage`.
+- **`mkfs` não pede confirmação.** A única proteção embutida é a recusa em formatar volume montado. `lsblk -f` antes, `mkfs.ext4 -n` para simular e `/dev/disk/by-id/` em disco real são os hábitos que evitam o acidente.
+- **`mkfs.ext4 -n` num volume existente imprime onde estão as cópias do superbloco**, e `e2fsck -b <bloco>` recupera a partir de uma delas. É a saída padrão para superbloco danificado.
+- **Nunca rode `fsck` em volume montado com escrita.** O programa altera estruturas que o kernel tem em cache, e o resultado é a corrupção que se queria evitar.
+- **TRIM periódico pelo `fstrim.timer`, não `discard` contínuo.** O timer semanal já vem habilitado no Debian e no Kali e evita os engasgos que a opção de montagem contínua causa em vários controladores.

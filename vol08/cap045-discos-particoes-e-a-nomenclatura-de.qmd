@@ -1,3 +1,420 @@
 # Discos, partições e a nomenclatura de dispositivos {#sec-cap045}
 
-*(em elaboracao)*
+Uma máquina virtual que rodava há meses foi migrada de um hipervisor para outro. Na primeira inicialização depois da migração, o boot para numa tela preta com uma mensagem seca: `Cannot open root device "sda2" or unknown-block(0,0)`. O disco está lá, íntegro, com todos os dados. O que mudou foi o **nome** — o novo hipervisor usa o driver `virtio`, e o que era `/dev/sda2` virou `/dev/vda2`. O `/etc/fstab` e a linha de comando do kernel continuam apontando para um nome que não existe mais.
+
+Esse é o tipo de falha que parece catastrófica e é trivial, desde que se entenda uma coisa: **o nome de um dispositivo de bloco no Linux não é uma propriedade do disco.** Ele é atribuído pelo kernel em tempo de execução, depende do driver que assumiu o controle e da ordem em que o hardware foi detectado. Trocar uma porta SATA de lugar pode renomear dois discos. Este capítulo é sobre como o kernel enxerga o armazenamento, que nomes ele usa, por que esses nomes não são confiáveis e quais identificadores são.
+
+## Dispositivos de bloco: como o kernel enxerga um disco
+
+O Linux não fala com discos, fala com **dispositivos de bloco**. Um dispositivo de bloco é qualquer coisa que aceite leitura e escrita em blocos de tamanho fixo, endereçáveis em qualquer ordem — o oposto de um dispositivo de caractere, que entrega um fluxo sequencial. Um SSD NVMe, um pendrive, um cartão SD, uma partição, um volume lógico do LVM e até um arquivo comum transformado em disco falso pelo `losetup` são, todos, dispositivos de bloco. Para o resto do sistema, eles são intercambiáveis.
+
+Essa uniformidade é o que torna toda a pilha de armazenamento do Linux empilhável. Um RAID (@sec-cap049) é um dispositivo de bloco montado sobre outros dispositivos de bloco; o LVM (@sec-cap048) é outra camada sobre isso; o LUKS (@sec-cap050) é mais uma. Cada camada consome dispositivos de bloco e apresenta um dispositivo de bloco.
+
+```bash
+ls -l /dev/sda /dev/sda1 /dev/null
+```
+
+```text
+brw-rw---- 1 root disk   8,  0 ago  2 09:12 /dev/sda
+brw-rw---- 1 root disk   8,  1 ago  2 09:12 /dev/sda1
+crw-rw-rw- 1 root root   1,  3 ago  2 09:12 /dev/null
+```
+
+O `b` inicial marca o dispositivo de bloco; o `c`, o de caractere — a distinção de tipo de arquivo do @sec-cap015. E onde um arquivo comum mostraria o tamanho, aqui aparecem **dois números**: `8, 0` e `8, 1`. São o *major* e o *minor*. O major identifica o driver responsável (8 é o driver SCSI/SATA genérico, que atende os discos `sd*`); o minor distingue os dispositivos individuais que aquele driver atende. É por esse par que o kernel roteia a operação para o código certo — o nome em `/dev` é conveniência humana.
+
+```bash
+cat /proc/partitions
+lsblk -o NAME,MAJ:MIN,SIZE,TYPE
+```
+
+O `/proc/partitions` é a visão mais crua possível: o que o kernel realmente conhece, sem nenhuma interpretação. Se um disco não aparece ali, o problema não é de partição nem de sistema de arquivos — é de hardware ou de driver, e nenhuma ferramenta de particionamento vai ajudar.
+
+## A anatomia de um nome de dispositivo
+
+Os nomes seguem convenções por família de driver, e cada família tem uma gramática própria:
+
+::: {#fig-nomenclatura-dispositivos}
+```{.tikz}
+%%| filename: anatomia-dos-nomes-de-dispositivo
+%%| alt: Decomposicao dos nomes /dev/sda1 e /dev/nvme0n1p2 em suas partes, com a explicacao de cada segmento
+\begin{tikzpicture}[
+    seg/.style={rounded corners=2pt,thick,align=center,font=\ttfamily\small,inner sep=4pt,minimum height=0.75cm},
+    sa/.style={seg,draw=manualblue,fill=manualblue!12},
+    sb/.style={seg,draw=manualgreen,fill=manualgreen!13},
+    sc/.style={seg,draw=manualred,fill=manualred!12},
+    sd/.style={seg,draw=manualyellow,fill=manualyellow!18},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[lb,anchor=east,font=\scriptsize\bfseries] at (-0.2,2.6) {SATA / SCSI / USB};
+  \node[sa] (p1) at (0.9,2.6) {sd};
+  \node[sb] (p2) at (2.4,2.6) {a};
+  \node[sc] (p3) at (3.9,2.6) {1};
+
+  \node[lb,anchor=north] at (0.9,2.05) {família\\do driver};
+  \node[lb,anchor=north] at (2.4,2.05) {disco\\(a, b, c...)};
+  \node[lb,anchor=north] at (3.9,2.05) {partição\\(1, 2, 3...)};
+
+  \node[lb,anchor=east,font=\scriptsize\bfseries] at (-0.2,0.2) {NVMe};
+  \node[sa] (q1) at (0.9,0.2)  {nvme};
+  \node[sd] (q2) at (3.0,0.2)  {0};
+  \node[sb] (q3) at (5.0,0.2)  {n1};
+  \node[sc] (q4) at (7.0,0.2)  {p2};
+
+  \node[lb,anchor=north] at (0.9,-0.28) {família\\do driver};
+  \node[lb,anchor=north] at (3.0,-0.28) {controladora\\(o chip)};
+  \node[lb,anchor=north] at (5.0,-0.28) {\emph{namespace}\\(o ``disco'')};
+  \node[lb,anchor=north] at (7.0,-0.28) {partição};
+
+  \node[nt,text width=14.2cm] at (6.4,-2.3) {O NVMe tem um nível a mais porque o padrão separa a controladora dos \emph{namespaces} que ela expõe --- um único chip pode apresentar vários ``discos'' independentes. Por isso a partição precisa do prefixo \texttt{p}: sem ele, \texttt{nvme0n11} seria ambíguo entre a partição 1 do \emph{namespace} 1 e o \emph{namespace} 11. A mesma regra vale para \texttt{mmcblk0p1} e \texttt{loop0p1}.};
+\end{tikzpicture}
+```
+Os nomes de dispositivo decompostos: cada segmento responde a uma pergunta diferente.
+:::
+
+A tabela completa das famílias que se encontram na prática:
+
+| Padrão | Família | Exemplo de partição |
+|---|---|---|
+| `/dev/sdX` | SATA, SAS, SCSI, USB, a maioria dos pendrives | `/dev/sdb1` |
+| `/dev/nvmeXnYpZ` | SSD NVMe | `/dev/nvme0n1p2` |
+| `/dev/vdX` | disco paravirtualizado `virtio` (KVM, QEMU, várias nuvens) | `/dev/vda1` |
+| `/dev/xvdX` | disco paravirtualizado Xen (EC2 mais antigo) | `/dev/xvda1` |
+| `/dev/mmcblkXpY` | cartão SD e eMMC (Raspberry Pi) | `/dev/mmcblk0p1` |
+| `/dev/loopX` | arquivo apresentado como disco | `/dev/loop0p1` |
+| `/dev/srX` | unidade óptica | — |
+| `/dev/mapper/nome` | mapeamento do *device mapper*: LVM, LUKS, multipath | — |
+| `/dev/mdX` | RAID por software | `/dev/md0p1` |
+
+: Famílias de nomes de dispositivos de bloco {#tbl-familias-dispositivos}
+
+O `/dev/hdX`, dos discos IDE, sumiu — desde o kernel 2.6.19 os discos IDE são atendidos pelo subsistema `libata` e aparecem como `sd*`. Documentação antiga que menciona `hda` está desatualizada, não errada em outro sentido.
+
+Um detalhe que confunde: **`sd` não significa "SATA disk"**. Vem de *SCSI disk*, e persiste porque o kernel trata SATA, SAS e USB através de uma camada de tradução SCSI. Um pendrive USB vira `sdc` pelo mesmo motivo que um disco SATA vira `sda`: os dois passam pela mesma camada.
+
+## Por que o nome muda
+
+A letra em `sda`, `sdb`, `sdc` é atribuída na ordem em que o kernel **detecta** os discos durante o boot. Essa ordem depende de temporização de barramento, de firmware e de que driver terminou de inicializar primeiro — e não é garantida entre inicializações.
+
+As situações em que o nome muda:
+
+- **Trocar cabos de porta SATA.** O que estava na porta 0 vai para a 2 e as letras se reorganizam.
+- **Adicionar ou remover um disco.** Instalar um segundo SSD pode fazer o disco antigo virar `sdb`.
+- **Deixar um pendrive espetado durante o boot.** Dependendo da velocidade de enumeração do USB, ele pode ganhar `sda`.
+- **Migrar de hipervisor**, como no cenário de abertura: `sda` vira `vda` por mudança de driver.
+- **Iniciar um live USB** — no ambiente live, os discos internos raramente têm as mesmas letras de quando o sistema instalado está rodando. É uma armadilha clássica na hora de reparar um sistema.
+
+::: {.callout-warning}
+## Nunca escreva um nome `/dev/sdX` num arquivo de configuração
+
+`/etc/fstab`, `/etc/crypttab`, a linha de comando do kernel no GRUB e qualquer script que formate ou monte disco: em todos, usar `/dev/sda2` é apostar que a ordem de detecção nunca vai mudar. Quando ela muda, o melhor caso é o sistema não montar um volume; o pior é um `mkfs` que formata o disco errado porque as letras trocaram entre a inspeção e a execução.
+
+Use sempre um identificador persistente — `UUID=` ou `LABEL=` no `fstab`, `/dev/disk/by-id/...` num script. O nome `sdX` serve para inspeção interativa, no momento, com `lsblk` aberto ao lado. Nada além disso.
+:::
+
+## Identificadores persistentes
+
+O `udev` (@sec-cap039) resolve isso criando, para cada dispositivo, um conjunto de links simbólicos estáveis sob `/dev/disk/`, organizados por critério:
+
+```bash
+ls -l /dev/disk/by-uuid/
+ls -l /dev/disk/by-id/
+```
+
+```text
+lrwxrwxrwx 1 root root 10 ago  2 09:12 7a3f9c21-4d6e-4b8a-9f12-c3e5d7a1b904 -> ../../sda2
+lrwxrwxrwx 1 root root 10 ago  2 09:12 ata-Samsung_SSD_870_EVO_1TB_S5Y2NJ0R512345 -> ../../sda
+```
+
+Cada diretório responde a uma pergunta diferente, e escolher o errado gera problemas sutis:
+
+| Diretório | O que identifica | Sobrevive a |
+|---|---|---|
+| `by-uuid` | o **sistema de arquivos** dentro da partição | mover o disco de máquina, trocar de porta |
+| `by-partuuid` | a **partição** na tabela GPT | reformatar o sistema de arquivos |
+| `by-label` | o rótulo dado ao sistema de arquivos | mover o disco; some se o rótulo for alterado |
+| `by-partlabel` | o rótulo da partição na GPT | reformatar |
+| `by-id` | o **hardware**: modelo e número de série | reparticionar, reformatar, trocar de porta |
+| `by-path` | a **posição física**: a porta em que está ligado | trocar o disco por outro na mesma porta |
+
+: Os diretórios de `/dev/disk/` e o que cada um identifica {#tbl-disk-by}
+
+A regra prática: **`by-uuid` para montar sistemas de arquivos** (é o que o instalador escreve no `fstab`), e **`by-id` para operar sobre discos inteiros** em scripts — apagar, particionar, adicionar a um RAID. O `by-uuid` de uma partição desaparece no instante em que ela é reformatada, o que é exatamente o comportamento desejado num `fstab`: melhor falhar a montagem do que montar algo diferente do esperado.
+
+O `by-path` tem um uso específico e legítimo: em servidor com muitas gavetas, ele responde "qual disco está na baia 3", que é a pergunta certa quando alguém precisa trocar um disco fisicamente.
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,UUID,PARTUUID,MOUNTPOINT
+blkid
+sudo blkid /dev/sda2
+```
+
+O `lsblk` é a ferramenta de primeira parada, porque mostra a **hierarquia** — quem está empilhado sobre quem — e não exige privilégio para o essencial. O `blkid` lê os metadados de cada dispositivo e é mais direto quando o que se quer é só o UUID.
+
+::: {.callout-note}
+## UUID de sistema de arquivos não é único por decreto
+
+Um UUID é gerado aleatoriamente na formatação, e a probabilidade de colisão é desprezível — mas **copiar um disco bloco a bloco com `dd` duplica o UUID exatamente**. É o caso mais comum de dois volumes com o mesmo UUID na mesma máquina, e o resultado é montagem imprevisível: o kernel usa o primeiro que encontrar.
+
+Depois de clonar, gere um UUID novo no clone: `tune2fs -U random /dev/sdb2` para ext4, `xfs_admin -U generate /dev/sdb2` para XFS. O mesmo vale para clones de máquina virtual criados por cópia de arquivo de disco.
+:::
+
+## Tabelas de partição: MBR e GPT
+
+Particionar é dividir um disco em regiões independentes. A informação de onde cada região começa e termina fica numa **tabela de partição**, gravada no início do disco. Existem dois formatos em uso, e a diferença entre eles vai muito além do tamanho máximo suportado.
+
+::: {#fig-mbr-vs-gpt}
+```{.tikz}
+%%| filename: layout-mbr-versus-gpt
+%%| alt: Comparacao do layout de disco entre MBR e GPT, mostrando setores iniciais, tabela de particoes e a copia de seguranca no fim do disco na GPT
+\begin{tikzpicture}[
+    bx/.style={draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum height=1.05cm},
+    hd/.style={bx,draw=manualblue,fill=manualblue!14},
+    tb/.style={bx,draw=manualred,fill=manualred!12},
+    dt/.style={bx,draw=manualgray,fill=manualgray!10},
+    bk/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    ti/.style={font=\small\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,manualblue,anchor=west] at (0,3.5) {MBR --- \emph{Master Boot Record} (1983)};
+  \node[hd,minimum width=1.5cm] (m1) at (0.75,2.6) {código\\de boot};
+  \node[tb,minimum width=1.9cm] (m2) at (2.45,2.6) {tabela\\4 entradas};
+  \node[dt,minimum width=9.0cm] (m3) at (7.9,2.6) {dados das partições};
+  \node[lb,anchor=north] at (2.0,1.95) {setor 0 --- 512 bytes, sem cópia de segurança};
+
+  \node[ti,manualgreen,anchor=west] at (0,0.55) {GPT --- \emph{GUID Partition Table} (2000)};
+  \node[hd,minimum width=1.5cm] (g1) at (0.75,-0.35)  {MBR\\protetora};
+  \node[tb,minimum width=1.3cm] (g2) at (2.15,-0.35)  {cabe-\\çalho};
+  \node[tb,minimum width=2.0cm] (g3) at (3.8,-0.35)   {tabela\\128 entradas};
+  \node[dt,minimum width=5.3cm] (g4) at (7.55,-0.35)  {dados das partições};
+  \node[bk,minimum width=2.0cm] (g5) at (11.2,-0.35)  {cópia da\\tabela};
+  \node[bk,minimum width=1.3cm] (g6) at (12.85,-0.35) {cópia do\\cabeç.};
+  \node[lb,anchor=north] at (0.75,-1.0) {setor 0};
+  \node[lb,anchor=north] at (12.85,-1.0) {fim do disco};
+
+  \draw[manualgreen,thick,-{Stealth[length=4pt]}] (g3.south) to[bend right=28] node[lb,below,pos=0.5]{cópia idêntica, verificada por CRC32} (g5.south);
+
+  \node[nt,text width=14.2cm] at (6.6,-3.9) {A MBR protetora no setor 0 da GPT é uma tabela MBR falsa, declarando uma única partição que cobre o disco inteiro. Ela existe para que uma ferramenta antiga que não entende GPT veja um disco ``cheio'' em vez de um disco vazio --- e não o apague por engano. A cópia de segurança no fim do disco é o que permite ao \texttt{gdisk} recuperar uma tabela corrompida sem perder dados.};
+\end{tikzpicture}
+```
+Layout de disco na MBR e na GPT: a redundância é a diferença estrutural.
+:::
+
+O **MBR** guarda a tabela nos primeiros 512 bytes do disco, junto com o código de boot, e tem espaço para exatamente quatro entradas. Suas limitações são estruturais:
+
+- **Máximo de 2 TiB por disco**, porque os endereços de setor são de 32 bits.
+- **Quatro partições primárias.** Para ter mais, uma delas vira *estendida*, um contêiner que abriga partições *lógicas* encadeadas numa lista — solução engenhosa e frágil, em que corromper um elo perde todos os seguintes.
+- **Nenhuma cópia de segurança.** Os 512 bytes iniciais são ponto único de falha para o disco inteiro.
+
+A **GPT** resolve os três problemas: endereços de 64 bits (limite prático na casa dos zettabytes), 128 entradas por padrão, todas equivalentes, e uma cópia integral da tabela no fim do disco, protegida por CRC32. Cada partição ganha um GUID próprio e um rótulo de até 36 caracteres.
+
+```bash
+sudo fdisk -l /dev/sda
+lsblk -o NAME,SIZE,TYPE,PTTYPE,PARTTYPENAME
+```
+
+```text
+Disk /dev/sda: 100 GiB, 107374182400 bytes, 209715200 sectors
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 4096 bytes
+Disklabel type: gpt
+
+Device       Start       End   Sectors  Size Type
+/dev/sda1     2048   1050623   1048576  512M EFI System
+/dev/sda2  1050624 205518847 204468224 97,5G Linux filesystem
+/dev/sda3 205518848 209713151   4194304    2G Linux swap
+```
+
+A linha `Disklabel type` é a que responde "MBR ou GPT" — `gpt` ou `dos` (o nome interno da MBR).
+
+**Regra prática:** GPT em qualquer disco novo, sem hesitar. MBR só quando existe uma exigência concreta de compatibilidade com firmware BIOS antigo que não faz boot em GPT. As duas convivem na mesma máquina — o esquema é por disco, não por sistema.
+
+## Tipo de partição não é sistema de arquivos
+
+Uma confusão que custa horas de diagnóstico. A tabela de partição guarda, para cada entrada, um **código de tipo**: `EF00` para EFI System, `8300` para Linux filesystem, `8200` para swap, `8E00` para LVM, `FD00` para RAID. Esse código é apenas **metadado declarativo**. Ele não formata nada, não é verificado e pode estar completamente errado sem que o sistema deixe de funcionar.
+
+O que realmente determina o conteúdo é a **assinatura mágica** gravada dentro da partição pelo `mkfs` — e é ela que o `blkid` lê:
+
+```bash
+lsblk -o NAME,PARTTYPENAME,FSTYPE
+```
+
+```text
+NAME   PARTTYPENAME      FSTYPE
+sda1   EFI System        vfat
+sda2   Linux filesystem  ext4
+sda3   Linux swap        swap
+```
+
+A coluna `PARTTYPENAME` é a declaração na tabela; a `FSTYPE`, o que existe de fato lá dentro. Numa partição recém-criada e ainda não formatada, `FSTYPE` vem vazio — e é assim que se sabe que falta o passo do @sec-cap047.
+
+Dois códigos de tipo em que o valor **importa** de verdade: `EF00` (a firmware UEFI só procura o carregador em partições marcadas assim) e `8E00`/`FD00`, que fazem o `pvscan` e o `mdadm` reconhecerem candidatos automaticamente na varredura.
+
+## Setores, alinhamento e o que dá lentidão
+
+A linha `Sector size (logical/physical): 512 bytes / 4096 bytes` da saída acima merece atenção. Discos modernos trabalham internamente com setores de 4096 bytes (*Advanced Format*), mas a maioria continua **declarando** setores lógicos de 512 bytes para compatibilidade. É o modo chamado 512e — emulado.
+
+A consequência é concreta: se uma partição começa num setor que não é múltiplo de 8 (8 × 512 = 4096), toda escrita cruza a fronteira de dois setores físicos, e o disco precisa fazer *ler-modificar-escrever* em ambos. A perda de desempenho em escrita chega a ser de várias vezes, e não aparece em nenhum log — só na lentidão.
+
+```bash
+sudo fdisk -l /dev/sda | grep -i sector
+cat /sys/block/sda/queue/physical_block_size
+cat /sys/block/sda/queue/optimal_io_size
+```
+
+Toda ferramenta moderna alinha automaticamente: é por isso que a primeira partição começa no setor **2048** e não no setor 63 dos manuais antigos. 2048 × 512 = 1 MiB, que é múltiplo de qualquer tamanho de bloco físico plausível, inclusive dos blocos de apagamento de SSD. Se uma tabela de partição mostra início em setor ímpar ou em 63, ela foi criada por ferramenta antiga e o alinhamento está errado.
+
+O `parted` avisa explicitamente quando isso acontece — `Partition ... is not properly aligned` — e vale sempre levar o aviso a sério.
+
+## Inspecionando: o kit de diagnóstico
+
+```bash
+lsblk                                          # a hierarquia, sem privilegio
+lsblk -f                                       # com sistema de arquivos e UUID
+lsblk -o NAME,SIZE,ROTA,DISC-MAX,MODEL         # rotacional? suporta TRIM?
+sudo fdisk -l                                  # tabelas de particao de tudo
+sudo parted -l                                 # idem, com nomes mais legiveis
+blkid                                          # UUID e tipo de cada volume
+cat /proc/partitions                           # a visao crua do kernel
+sudo hdparm -I /dev/sda | head -20             # identificacao ATA
+udevadm info --query=all --name=/dev/sda1      # tudo que o udev sabe
+```
+
+A coluna `ROTA` do `lsblk` vale destacar: `1` para disco mecânico, `0` para SSD. É como scripts decidem, por exemplo, se faz sentido habilitar `fstrim`.
+
+Para saúde do disco, o `smartctl` lê os contadores internos que o próprio disco mantém:
+
+```bash
+sudo apt install smartmontools
+sudo smartctl -H /dev/sda                      # veredito rapido
+sudo smartctl -A /dev/sda                      # os contadores
+```
+
+Os atributos que antecipam falha em disco mecânico são `Reallocated_Sector_Ct`, `Current_Pending_Sector` e `Offline_Uncorrectable`: qualquer um deles crescendo com o tempo significa disco em degradação, independentemente de o veredito geral dizer `PASSED`. Em SSD, o atributo a acompanhar é o percentual de vida consumida (`Percentage_Used` no NVMe, via `smartctl -a` ou `nvme-cli`).
+
+## 🐉 No Kali
+
+- **No live USB, a nomenclatura é outra — e essa é a hora de mais cuidado.** Ao inicializar o Kali live para reparar uma máquina, o próprio pendrive costuma aparecer como `sda`, empurrando o disco interno para `sdb`. Quem decorou "meu sistema é o `sda2`" e digita isso num `mkfs` formata o pendrive, ou pior, a partição errada do disco interno. Antes de qualquer operação de escrita num ambiente live: `lsblk -o NAME,SIZE,MODEL,SERIAL` e confirmação pelo **modelo e número de série**, nunca pela letra.
+- **A persistência do live depende de rótulo, não de nome de dispositivo.** A partição de persistência do Kali é encontrada pelo rótulo `persistence`, e é isso que a torna imune à reordenação de dispositivos. É o mesmo princípio dos identificadores persistentes, aplicado num contexto em que a ordem muda a cada máquina em que o pendrive é espetado. O assunto volta em detalhe no @sec-cap050.
+- **Perícia começa por bloquear escrita, não por montar.** Ao examinar uma mídia suspeita, o primeiro passo é `blockdev --setro /dev/sdX`, e o segundo é confirmar com `blockdev --getro`. Uma montagem acidental em modo leitura-e-escrita altera *timestamps* e o *journal* do sistema de arquivos, o que compromete a integridade da evidência. O bloqueador de escrita por hardware é o padrão profissional; o `--setro` é o mínimo aceitável em laboratório.
+- **Cópia forense se faz de disco inteiro, identificado por `by-id`.** O `dd` e o `dcfldd` operam sobre `/dev/disk/by-id/ata-MODELO_SERIAL`, não sobre `/dev/sdb` — o link por hardware garante que a origem é o disco inspecionado, mesmo que a letra tenha mudado entre o `lsblk` e o comando. Registrar o número de série na documentação da cadeia de custódia é parte do procedimento.
+- **O Kali roda em ARM, onde os nomes mudam de novo.** Nas imagens para Raspberry Pi e derivados, o cartão SD é `/dev/mmcblk0` e as partições são `mmcblk0p1` e `mmcblk0p2`. Scripts escritos para `sdX` simplesmente não encontram nada ali, o que é mais um argumento para o `by-uuid`.
+- **Arquivo-imagem antes de tocar em hardware.** Todo o laboratório deste volume é montado sobre `losetup` justamente por isso: um arquivo de 1 GiB apresentado como disco aceita `fdisk`, `mkfs`, `pvcreate`, `mdadm` e `cryptsetup` exatamente como um disco de verdade, e um erro custa um `rm`, não os dados da máquina.
+
+> **Nota sobre a família RHEL.** A nomenclatura de dispositivos é do kernel e é idêntica. O que muda é o padrão de instalação: RHEL, Rocky e AlmaLinux instalam sobre LVM por padrão, então o `lsblk` de uma máquina recém-instalada mostra `/dev/mapper/rhel-root` sobre `sda2`, e não uma partição montada diretamente. As ferramentas também divergem em disponibilidade — `gdisk` e `parted` estão nos repositórios, mas a instalação mínima traz apenas `fdisk` e `lsblk`. E o `blkid` ali costuma exigir `sudo` até para consultas que no Debian saem sem privilégio, porque o cache em `/run/blkid` tem permissões mais restritas.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — tudo acontece dentro de um arquivo-imagem apresentado como disco pelo `losetup`, e o passo 10 remove tudo. Este é o padrão de segurança usado em todo o Volume 8.
+
+1. **Faça o levantamento do armazenamento da máquina.**
+
+   ```bash
+   lsblk
+   lsblk -f
+   cat /proc/partitions
+   ```
+
+   Esperado: a hierarquia de discos e partições, com UUID e ponto de montagem. Identifique qual dispositivo hospeda a raiz — e note que ele aparece nos três comandos com o mesmo nome.
+
+2. **Leia os números major e minor.**
+
+   ```bash
+   ls -l /dev/sda /dev/sda1 2>/dev/null || ls -l /dev/vda /dev/vda1
+   lsblk -o NAME,MAJ:MIN,SIZE,TYPE
+   ```
+
+   Esperado: o `b` de bloco no início das permissões e o par de números no lugar do tamanho. O major é o mesmo para o disco e suas partições — mesmo driver.
+
+3. **Compare os identificadores persistentes.**
+
+   ```bash
+   ls -l /dev/disk/by-uuid/
+   ls -l /dev/disk/by-id/
+   ls -l /dev/disk/by-path/
+   ```
+
+   Esperado: todos são links simbólicos apontando para os mesmos `../../sdaN`. Repare que `by-id` traz modelo e número de série, e `by-path` traz a posição no barramento.
+
+4. **Descubra o que o `fstab` da máquina realmente usa.**
+
+   ```bash
+   cat /etc/fstab
+   findmnt --fstab
+   ```
+
+   Esperado: linhas com `UUID=` e não com `/dev/sda2`. Se houver algum `/dev/sdX` ali, você acabou de encontrar um problema latente na própria máquina.
+
+5. **Crie um disco falso com `losetup`.**
+
+   ```bash
+   mkdir -p ~/lab-disco && cd ~/lab-disco
+   truncate -s 1G disco.img
+   sudo losetup -fP --show disco.img
+   lsblk -o NAME,SIZE,TYPE | grep loop
+   ```
+
+   Esperado: a saída do `losetup` informa o dispositivo criado, tipicamente `/dev/loop0`. A partir daqui ele é um disco de 1 GiB para todos os efeitos. O `-P` faz o kernel reler as partições automaticamente.
+
+6. **Confirme que o disco novo está vazio.**
+
+   ```bash
+   sudo fdisk -l /dev/loop0
+   sudo blkid /dev/loop0; echo "codigo: $?"
+   ```
+
+   Esperado: `Disklabel type` ausente e o `blkid` retornando código diferente de zero — não há tabela de partição nem assinatura de sistema de arquivos. É um disco realmente cru.
+
+7. **Crie uma tabela GPT com duas partições.**
+
+   ```bash
+   sudo apt install -y gdisk
+   sudo sgdisk -o /dev/loop0
+   sudo sgdisk -n 1:0:+300M -t 1:8300 -c 1:"dados" /dev/loop0
+   sudo sgdisk -n 2:0:0     -t 2:8200 -c 2:"troca" /dev/loop0
+   sudo partprobe /dev/loop0
+   lsblk /dev/loop0
+   ```
+
+   Esperado: `loop0p1` e `loop0p2` passam a existir. O `sgdisk` é a versão não interativa do `gdisk`, e o `-o` cria a tabela GPT do zero.
+
+8. **Verifique a distinção entre tipo declarado e conteúdo real.**
+
+   ```bash
+   sudo fdisk -l /dev/loop0
+   lsblk -o NAME,PARTTYPENAME,FSTYPE,PARTLABEL /dev/loop0
+   ```
+
+   Esperado: `PARTTYPENAME` mostra `Linux filesystem` e `Linux swap`, mas `FSTYPE` está **vazio** nas duas. O tipo é só uma declaração — nada foi formatado ainda. Este é o ponto central da seção sobre tipos de partição.
+
+9. **Confirme o alinhamento e a cópia de segurança da GPT.**
+
+   ```bash
+   sudo sgdisk -p /dev/loop0
+   sudo sgdisk -v /dev/loop0
+   sudo partx --show /dev/loop0
+   ```
+
+   Esperado: a primeira partição começa no setor 2048 (1 MiB), e a verificação do `sgdisk -v` reporta `No problems found`, confirmando que cabeçalho principal e cópia de segurança estão íntegros e coerentes.
+
+10. **Desmonte o laboratório.**
+
+    ```bash
+    sudo losetup -d /dev/loop0
+    lsblk | grep loop; echo "codigo: $?"
+    cd ~ && rm -rf ~/lab-disco
+    ```
+
+    Esperado: nenhum dispositivo `loop` restante e o diretório removido. O sistema volta exatamente ao estado do passo 1 — e nenhum disco real foi tocado em momento algum.
+
+## Resumo
+
+- **Tudo que armazena dados no Linux é um dispositivo de bloco**, identificado internamente por um par *major*/*minor*: o major diz qual driver responde, o minor qual dispositivo. Discos, partições, volumes LVM, RAID e arquivos via `losetup` são intercambiáveis para as camadas de cima — é o que permite empilhá-los.
+- **O nome `sda` não é propriedade do disco**, e sim resultado da ordem de detecção no boot. Trocar de porta, adicionar um disco, esquecer um pendrive espetado ou migrar de hipervisor renomeia dispositivos sem aviso.
+- **`/dev/disk/by-uuid` para montar, `/dev/disk/by-id` para operar sobre o disco inteiro.** O primeiro identifica o sistema de arquivos e some quando ele é reformatado; o segundo identifica o hardware por modelo e número de série e sobrevive a qualquer reparticionamento.
+- **Clonar um disco com `dd` duplica o UUID.** Depois de clonar, gerar um novo com `tune2fs -U random` ou `xfs_admin -U generate` — senão a montagem passa a depender de qual volume o kernel encontrar primeiro.
+- **GPT em disco novo, sempre.** A MBR limita a 2 TiB e quatro partições primárias, e mantém a tabela num único setor sem cópia de segurança. A GPT guarda uma segunda cópia no fim do disco, verificada por CRC32.
+- **Código de tipo de partição é declaração, não formatação.** `PARTTYPENAME` mostra o que a tabela declara; `FSTYPE` mostra o que existe de fato. Os dois divergirem é normal; os casos em que o código realmente importa são `EF00` para o boot UEFI e `8E00`/`FD00` para a varredura de LVM e RAID.
+- **Alinhamento em 1 MiB (setor 2048) não é superstição.** Discos com setor físico de 4 KiB perdem desempenho de escrita em várias vezes quando a partição começa fora do alinhamento, e nenhum log registra isso.
+- **Em ambiente live, confirme sempre por modelo e número de série** antes de qualquer operação de escrita. O pendrive que iniciou o sistema frequentemente ocupa o `sda` que o disco interno tinha.

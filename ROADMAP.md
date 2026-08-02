@@ -78,12 +78,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 8 — Armazenamento e Sistemas de Arquivos
 
-- [ ] **cap 045** - Discos, partições e a nomenclatura de dispositivos - `vol08/cap045-discos-particoes-e-a-nomenclatura-de.qmd`
-- [ ] **cap 046** - Particionamento com fdisk, parted e gdisk - `vol08/cap046-particionamento-com-fdisk-parted-e-gdisk.qmd`
-- [ ] **cap 047** - Sistemas de arquivos: ext4, Btrfs, XFS e formatação - `vol08/cap047-sistemas-de-arquivos-ext4-btrfs-xfs-e.qmd`
-- [ ] **cap 048** - LVM: volumes lógicos flexíveis - `vol08/cap048-lvm-volumes-logicos-flexiveis.qmd`
-- [ ] **cap 049** - RAID por software com mdadm - `vol08/cap049-raid-por-software-com-mdadm.qmd`
-- [ ] **cap 050** - Criptografia de disco com LUKS e a persistência no Kali - `vol08/cap050-criptografia-de-disco-com-luks-e-a.qmd`
+- [x] **cap 045** - Discos, partições e a nomenclatura de dispositivos - `vol08/cap045-discos-particoes-e-a-nomenclatura-de.qmd`
+- [x] **cap 046** - Particionamento com fdisk, parted e gdisk - `vol08/cap046-particionamento-com-fdisk-parted-e-gdisk.qmd`
+- [x] **cap 047** - Sistemas de arquivos: ext4, Btrfs, XFS e formatação - `vol08/cap047-sistemas-de-arquivos-ext4-btrfs-xfs-e.qmd`
+- [x] **cap 048** - LVM: volumes lógicos flexíveis - `vol08/cap048-lvm-volumes-logicos-flexiveis.qmd`
+- [x] **cap 049** - RAID por software com mdadm - `vol08/cap049-raid-por-software-com-mdadm.qmd`
+- [x] **cap 050** - Criptografia de disco com LUKS e a persistência no Kali - `vol08/cap050-criptografia-de-disco-com-luks-e-a.qmd`
 
 ## Fase 3 — Shell Scripting
 

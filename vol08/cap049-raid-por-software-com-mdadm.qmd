@@ -1,3 +1,462 @@
 # RAID por software com mdadm {#sec-cap049}
 
-*(em elaboracao)*
+Duas histórias de um mesmo servidor. Na primeira, um disco falha às três da manhã de um sábado; ninguém percebe até segunda-feira, porque o serviço continuou no ar sem uma única requisição perdida. Na segunda, alguém digita `rm -rf` no diretório errado, e os quatro discos do arranjo replicam a exclusão com perfeição instantânea e irreversível.
+
+As duas descrevem o RAID funcionando exatamente como projetado. Ele resolve **falha de hardware de disco** e não resolve mais nada: não protege contra exclusão acidental, contra corrupção por software, contra *ransomware*, contra incêndio no prédio nem contra o administrador. A frase que resume o capítulo inteiro é conhecida e continua sendo ignorada com frequência: **RAID não é backup.** RAID é disponibilidade — a máquina continua servindo enquanto um disco é substituído.
+
+Este capítulo é sobre o RAID por software do Linux, o `md` (*multiple devices*), operado pelo `mdadm`. Ele é, na prática, superior às controladoras RAID baratas embutidas em placa-mãe, e o motivo é simples: um arranjo `md` é lido por qualquer máquina Linux, enquanto um arranjo criado por uma controladora proprietária que queimou pode exigir uma controladora idêntica para ser recuperado.
+
+## Os níveis e o que cada um compra
+
+Um nível de RAID é uma escolha entre três coisas que não podem ser maximizadas ao mesmo tempo: capacidade utilizável, tolerância a falha e desempenho.
+
+::: {#fig-niveis-raid}
+```{.tikz}
+%%| filename: niveis-de-raid
+%%| alt: Distribuicao dos blocos de dados e paridade nos niveis de RAID 0, 1, 5 e 10 ao longo de quatro discos
+\begin{tikzpicture}[
+    dd/.style={draw,thick,align=center,font=\scriptsize,inner sep=2pt,minimum width=1.05cm,minimum height=0.6cm},
+    da/.style={dd,draw=manualblue,fill=manualblue!13},
+    db/.style={dd,draw=manualgreen,fill=manualgreen!14},
+    pp/.style={dd,draw=manualred,fill=manualred!13},
+    ti/.style={font=\scriptsize\bfseries,align=left},
+    lb/.style={font=\scriptsize,manualgray,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % RAID 0
+  \node[ti,manualblue,anchor=west] at (0,3.35) {RAID 0 --- distribuição};
+  \node[da] at (0.6,2.65) {A1}; \node[da] at (1.8,2.65) {A2};
+  \node[da] at (3.0,2.65) {A3}; \node[da] at (4.2,2.65) {A4};
+  \node[lb,anchor=west,text width=4.6cm] at (0.05,1.85) {capacidade total, zero tolerância:\\\textbf{um disco morre, tudo morre}};
+
+  % RAID 1
+  \node[ti,manualgreen,anchor=west] at (7.6,3.35) {RAID 1 --- espelho};
+  \node[db] at (8.2,2.65) {A1}; \node[db] at (9.4,2.65) {A1};
+  \node[db] at (10.6,2.65) {A2}; \node[db] at (11.8,2.65) {A2};
+  \node[lb,anchor=west,text width=4.6cm] at (7.65,1.85) {metade da capacidade,\\sobrevive a um disco de cada par};
+
+  % RAID 5
+  \node[ti,manualred,anchor=west] at (0,0.75) {RAID 5 --- paridade distribuída};
+  \node[da] at (0.6,0.05)  {A1}; \node[da] at (1.8,0.05) {A2};
+  \node[da] at (3.0,0.05)  {A3}; \node[pp] at (4.2,0.05) {Ap};
+  \node[da] at (0.6,-0.6)  {B1}; \node[da] at (1.8,-0.6) {B2};
+  \node[pp] at (3.0,-0.6)  {Bp}; \node[da] at (4.2,-0.6) {B4};
+  \node[lb,anchor=west,text width=4.6cm] at (0.05,-1.45) {perde a capacidade de 1 disco,\\sobrevive a \textbf{um} disco};
+
+  % RAID 10
+  \node[ti,manualgreen,anchor=west] at (7.6,0.75) {RAID 10 --- espelho + distribuição};
+  \node[db] at (8.2,0.05)  {A1}; \node[db] at (9.4,0.05) {A1};
+  \node[da] at (10.6,0.05) {A2}; \node[da] at (11.8,0.05) {A2};
+  \node[db] at (8.2,-0.6)  {A3}; \node[db] at (9.4,-0.6) {A3};
+  \node[da] at (10.6,-0.6) {A4}; \node[da] at (11.8,-0.6) {A4};
+  \node[lb,anchor=west,text width=4.6cm] at (7.65,-1.45) {metade da capacidade, rápido,\\reconstrução simples e curta};
+
+  \node[nt,text width=14.2cm] at (6.5,-3.1) {\texttt{Ap} e \texttt{Bp} são blocos de \textbf{paridade}: o ou-exclusivo dos blocos de dados da mesma faixa. Perdido um disco, cada bloco ausente é recalculado a partir dos demais --- é por isso que o RAID 5 tolera uma falha gastando apenas um disco. O preço é a leitura de \emph{todos} os discos restantes durante a reconstrução, que é justamente quando um segundo disco tende a falhar.};
+\end{tikzpicture}
+```
+Como os dados se distribuem nos principais níveis de RAID.
+:::
+
+| Nível | Discos mínimos | Capacidade utilizável | Tolera | Uso típico |
+|---|---|---|---|---|
+| **0** | 2 | 100\% | nenhuma falha | dados descartáveis, cache, *scratch* |
+| **1** | 2 | 50\% | 1 disco por par | raiz, `/boot`, arranjos pequenos |
+| **5** | 3 | `(n-1)/n` | 1 disco | volumes de dados de custo contido |
+| **6** | 4 | `(n-2)/n` | 2 discos | arranjos grandes de discos grandes |
+| **10** | 4 | 50\% | 1 por espelho | bancos de dados, escrita intensa |
+
+: Níveis de RAID e o que cada um oferece {#tbl-niveis-raid}
+
+O **RAID 0 não é RAID** no sentido de redundância: o `R` de *redundant* não se aplica. Ele soma capacidade e desempenho e **multiplica** o risco — com quatro discos, a probabilidade de perder tudo é quatro vezes a de um disco só. Existe para dados que podem ser recriados.
+
+::: {.callout-warning}
+## RAID 5 com discos grandes é uma aposta pior do que parece
+
+Durante a reconstrução de um RAID 5, **todos** os discos restantes são lidos de ponta a ponta. Dois problemas se somam nesse momento:
+
+O primeiro é estatístico. Discos SATA de consumo declaram uma taxa de erro irrecuperável de leitura na ordem de um setor a cada 10^14^ bits — cerca de 12 TB lidos. Num arranjo de quatro discos de 8 TB, a reconstrução lê 24 TB, e a chance de encontrar um erro ilegível no meio do processo deixa de ser desprezível. Quando isso acontece num RAID 5 já degradado, não há redundância para corrigir.
+
+O segundo é físico. Discos comprados juntos, do mesmo lote, que trabalharam sob a mesma carga e temperatura, tendem a falhar em janelas próximas — e a reconstrução impõe dias de leitura contínua a todos eles simultaneamente.
+
+**Para discos acima de 2 TB, use RAID 6 ou RAID 10.** O RAID 6 tolera duas falhas e sobrevive a uma segunda perda durante a reconstrução; o RAID 10 reconstrói lendo apenas o disco espelhado, em horas em vez de dias, sem tocar no resto do arranjo.
+:::
+
+## Criando um arranjo
+
+```bash
+sudo apt install -y mdadm
+sudo mdadm --create /dev/md0 --level=5 --raid-devices=3 \
+    /dev/sdb1 /dev/sdc1 /dev/sdd1
+cat /proc/mdstat
+```
+
+```text
+Personalities : [raid6] [raid5] [raid4]
+md0 : active raid5 sdd1[3] sdc1[1] sdb1[0]
+      2094080 blocks super 1.2 level 5, 512k chunk, algorithm 2 [3/3] [UUU]
+      [==>..................]  resync = 12.4% (130048/1047040) finish=1.1min
+```
+
+A linha que importa é `[3/3] [UUU]`: três dispositivos de três presentes, todos `U` de *up*. Um `[3/2] [UU_]` significa arranjo degradado — funcionando, sem redundância, aguardando substituição.
+
+O arranjo é utilizável **durante** a sincronização inicial, apenas mais lento. E, sendo um dispositivo de bloco como qualquer outro, o que vem depois é o de sempre:
+
+```bash
+sudo mkfs.ext4 -L arranjo /dev/md0
+sudo mount /dev/md0 /mnt/dados
+```
+
+Ou, empilhando com o capítulo anterior: `pvcreate /dev/md0`, `vgcreate`, e o LVM (@sec-cap048) por cima do RAID. **Essa é a ordem correta** — RAID embaixo, LVM em cima —, porque assim o LVM enxerga um único dispositivo já redundante, e a perda de um disco é resolvida na camada de baixo, invisível para os volumes lógicos.
+
+::: {.callout-important}
+## O passo esquecido que faz o arranjo sumir no próximo boot
+
+Criar o arranjo não basta. Ele precisa estar registrado em `/etc/mdadm/mdadm.conf` **e** essa configuração precisa entrar no `initramfs`, senão o sistema inicia sem montar o arranjo — e se ele contiver a raiz, o sistema não inicia de forma alguma.
+
+```bash
+sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
+sudo update-initramfs -u
+```
+
+Este é, de longe, o erro mais comum de quem monta o primeiro arranjo: tudo funciona perfeitamente até o primeiro reinício, e então o `/dev/md0` vira `/dev/md127` ou simplesmente não aparece. O nome estranho é o sintoma clássico de arranjo montado por varredura automática, sem configuração — o kernel encontrou os discos e improvisou um nome.
+:::
+
+## Inspecionar: os três comandos
+
+```bash
+cat /proc/mdstat                        # visao rapida de todos os arranjos
+sudo mdadm --detail /dev/md0            # tudo sobre UM arranjo
+sudo mdadm --examine /dev/sdb1          # o superbloco DENTRO de um disco
+```
+
+A distinção entre `--detail` e `--examine` resolve boa parte dos diagnósticos: o primeiro pergunta ao kernel sobre um arranjo montado; o segundo lê os metadados gravados em um disco individual e funciona mesmo com o arranjo desmontado ou incompleto. Quando um arranjo não sobe, `--examine` em cada disco mostra qual deles tem o superbloco divergente.
+
+```bash
+sudo mdadm --detail /dev/md0 | grep -iE "state|active devices|failed|spare"
+```
+
+```text
+          State : clean, degraded, recovering
+ Active Devices : 2
+Working Devices : 3
+ Failed Devices : 1
+```
+
+Os estados que aparecem em `State`:
+
+| Estado | Significado |
+|---|---|
+| `clean` | tudo sincronizado e sem escrita pendente |
+| `active` | operando com escritas em curso |
+| `degraded` | faltando disco; **funcionando sem redundância** |
+| `recovering` | reconstruindo sobre um disco novo |
+| `resyncing` | verificando a consistência entre os membros |
+| `inactive` | não montado; membros insuficientes |
+
+: Estados de um arranjo `md` {#tbl-estados-md}
+
+O estado `degraded` merece o destaque: o arranjo funciona, a aplicação não percebe nada, e **é exatamente por isso que ele é perigoso**. Sem monitoramento ativo, um arranjo degradado passa semanas assim até o segundo disco falhar. O monitoramento é o assunto de duas seções adiante.
+
+## Falha, substituição e reconstrução
+
+O ciclo de vida de uma falha, do alerta à normalidade:
+
+::: {#fig-ciclo-falha-raid}
+```{.tikz}
+%%| filename: ciclo-de-falha-de-um-arranjo
+%%| alt: Maquina de estados de um arranjo RAID passando de integro para degradado, reconstruindo e de volta a integro, com o caminho de perda total
+\begin{tikzpicture}[
+    st/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.1cm,minimum height=1.5cm},
+    ok/.style={st,draw=manualgreen,fill=manualgreen!13},
+    dg/.style={st,draw=manualyellow,fill=manualyellow!18},
+    rb/.style={st,draw=manualblue,fill=manualblue!13},
+    ls/.style={st,draw=manualred,fill=manualred!12},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[ok] (a) at (0,1.6)    {\textbf{clean}\\\texttt{[UUU]}\\redundância cheia};
+  \node[dg] (b) at (5.2,1.6)  {\textbf{degraded}\\\texttt{[UU\_]}\\\emph{sem redundância}};
+  \node[rb] (c) at (10.4,1.6) {\textbf{recovering}\\reconstruindo\\sobre o disco novo};
+  \node[ls] (d) at (5.2,-1.5) {\textbf{perda total}\\segundo disco\\falha antes do fim};
+
+  \draw[fl,manualred]   (a) -- node[lb,above,pos=0.5]{disco falha} (b);
+  \draw[fl,manualblue]  (b) -- node[lb,above,pos=0.5]{\texttt{-{}-add} disco novo} (c);
+  \draw[fl,manualgreen] (c) to[bend right=38] node[lb,above,pos=0.5,sloped]{sincronização conclui} (a);
+  \draw[fl,manualred,dashed] (b) -- node[lb,right,pos=0.5,xshift=3pt]{a janela de risco} (d);
+
+  \node[nt,text width=14.2cm] at (6.5,-3.3) {O tempo entre a falha e o fim da reconstrução é a janela em que o arranjo não tolera mais nada. Encurtá-la é o objetivo de todas as boas práticas do capítulo: manter um disco reserva (\emph{spare}) que entra sozinho, monitorar por correio para não descobrir a falha dias depois, e escolher RAID 10 ou 6 quando os discos são grandes o bastante para que a reconstrução leve dias.};
+\end{tikzpicture}
+```
+O ciclo de vida de uma falha de disco num arranjo redundante.
+:::
+
+Na prática, com o `mdadm`:
+
+```bash
+sudo mdadm --manage /dev/md0 --fail /dev/sdc1      # marca como falho
+sudo mdadm --manage /dev/md0 --remove /dev/sdc1    # retira do arranjo
+# ... troca fisica do disco ...
+sudo mdadm --manage /dev/md0 --add /dev/sdc1       # entra e comeca a reconstruir
+watch -n 5 cat /proc/mdstat                        # acompanha
+```
+
+O `--fail` manual parece contraintuitivo — por que marcar como falho um disco que já falhou? Porque é assim que se **testa** o procedimento sem esperar uma falha real, e porque um disco que o SMART aponta como em degradação deve ser retirado antes de morrer, de forma controlada.
+
+Um **disco reserva** elimina a espera humana:
+
+```bash
+sudo mdadm --manage /dev/md0 --add-spare /dev/sde1
+sudo mdadm --detail /dev/md0 | grep -i spare
+```
+
+O reserva fica ocioso e entra automaticamente no lugar do primeiro disco que falhar, começando a reconstrução em segundos em vez de horas ou dias. Num arranjo que importa, é o melhor investimento por disco gasto.
+
+A velocidade de reconstrução é ajustável, e o padrão é conservador para não sufocar a aplicação:
+
+```bash
+cat /proc/sys/dev/raid/speed_limit_min
+echo 50000 | sudo tee /proc/sys/dev/raid/speed_limit_min    # KB/s, ate o reboot
+```
+
+## Verificação periódica: o *scrub*
+
+Um bloco pode se corromper em silêncio num disco que nunca é lido. A falha só aparece quando ele é necessário — tipicamente durante uma reconstrução, no pior momento possível. A prevenção é ler o arranjo inteiro periodicamente e conferir a consistência:
+
+```bash
+echo check | sudo tee /sys/block/md0/md/sync_action     # le e CONTA divergencias
+cat /sys/block/md0/md/mismatch_cnt                      # quantas encontrou
+echo repair | sudo tee /sys/block/md0/md/sync_action    # le e CORRIGE
+```
+
+No Debian e no Kali isso já roda sozinho: o pacote `mdadm` instala um `cron` mensal (`/etc/cron.d/mdadm`) que dispara o `check` no primeiro domingo do mês. Vale confirmar que ele está lá e que os resultados são vistos por alguém.
+
+Um `mismatch_cnt` diferente de zero em RAID 1 ou 10 indica divergência real entre espelhos e merece investigação. Em RAID 5 e 6, valores pequenos podem vir de escritas em andamento no momento da verificação e nem sempre são problema.
+
+## Monitoramento: a parte que costuma faltar
+
+Um arranjo degradado que ninguém percebe é um arranjo sem redundância. O `mdadm` traz um monitor próprio, que no Debian e no Kali roda como serviço (@sec-cap041):
+
+```bash
+systemctl status mdmonitor.service
+sudo mdadm --monitor --scan --test --oneshot        # testa o envio agora
+```
+
+A configuração fica no mesmo arquivo do arranjo:
+
+```bash
+sudo grep -i mailaddr /etc/mdadm/mdadm.conf
+```
+
+```text
+MAILADDR admin@exemplo.local
+```
+
+Sem um endereço de correio configurado e funcionando, o monitor não avisa ninguém. Em estação de trabalho, onde não há servidor de correio, uma alternativa prática é a diretiva `PROGRAM` no `mdadm.conf`, apontando para um script que emite uma notificação de área de trabalho ou escreve no journal (@sec-cap042).
+
+Uma verificação simples, adequada a script de monitoramento:
+
+```bash
+grep -q "_" /proc/mdstat && echo "ARRANJO DEGRADADO" || echo "arranjos ok"
+```
+
+O caractere `_` no lugar de um `U` é a marca de membro ausente, e essa linha única cobre o essencial.
+
+## Crescer e desmontar um arranjo
+
+O `md` permite acrescentar discos a um arranjo existente e migrar entre níveis, com o arranjo no ar:
+
+```bash
+sudo mdadm --add /dev/md0 /dev/sdf1
+sudo mdadm --grow /dev/md0 --raid-devices=4         # redistribui os dados
+sudo resize2fs /dev/md0                             # o sistema de arquivos depois
+```
+
+::: {.callout-warning}
+## `--grow` reescreve o arranjo inteiro — faça backup antes
+
+A migração redistribui todos os blocos entre os discos e leva horas ou dias. Uma interrupção no meio é recuperável, mas exige o arquivo de *backup-file* que o `mdadm` pede ao mudar de nível ou reduzir. **Faça backup real antes** de qualquer `--grow`: é a operação com mais partes móveis do capítulo.
+:::
+
+Para desfazer um arranjo por completo — necessário antes de reutilizar os discos:
+
+```bash
+sudo umount /mnt/dados
+sudo mdadm --stop /dev/md0
+sudo mdadm --zero-superblock /dev/sdb1 /dev/sdc1 /dev/sdd1
+```
+
+O `--zero-superblock` é o passo que se esquece. Sem ele, os discos continuam carregando metadados de RAID, e o kernel volta a montar um arranjo fantasma no próximo boot — reaparecendo como `/dev/md127` e impedindo que os discos sejam usados para outra coisa.
+
+::: {.callout-note}
+## "Fake RAID" da placa-mãe: prefira o `md`
+
+O RAID oferecido pela BIOS/UEFI de placas-mãe de consumo não tem processador nem cache com bateria: o trabalho é feito pelo driver, no processador principal, exatamente como no `md`. A diferença é que os metadados estão num formato proprietário.
+
+Isso importa quando a placa-mãe queima. Um arranjo `md` é remontado em qualquer máquina Linux com um `mdadm --assemble --scan`; um arranjo de *fake RAID* pode exigir uma controladora do mesmo fabricante e modelo. O `dmraid` e o próprio `mdadm` leem vários desses formatos, mas a garantia é menor.
+
+Controladora RAID de verdade — com processador dedicado e cache protegido por bateria — é outra categoria e tem seu lugar em servidor. O conselho vale para o RAID "grátis" da placa-mãe: desligue no *setup* e use o `md`.
+:::
+
+## 🐉 No Kali
+
+- **RAID numa estação Kali é caso de nicho, e o nicho é armazenamento de evidência.** A instalação típica não pede RAID. O uso legítimo aparece em uma estação de análise forense, onde imagens de disco de centenas de gigabytes precisam de espaço e de tolerância a falha — perder a imagem de uma mídia examinada pode significar perder a evidência, já que reimagear nem sempre é possível.
+- **RAID 10 ali, não RAID 5.** Numa estação de análise, imagens grandes significam discos grandes e reconstruções longas, exatamente o cenário em que o RAID 5 é fraco. O RAID 10 reconstrói lendo só o disco espelhado, mantém o desempenho de escrita durante o processo — o que importa ao gravar uma imagem de 4 TB — e não sofre do problema de erro irrecuperável durante a reconstrução.
+- **Perícia: o `mdadm --assemble` automático é um risco a controlar.** Discos de uma máquina apreendida podem trazer superblocos `md`, e uma montagem automática altera a evidência ao escrever metadados de sincronização. Antes de conectar: bloqueio de escrita (`blockdev --setro`), exame por imagem com `losetup -rP`, e `mdadm --examine` — que apenas **lê** — para descobrir a geometria do arranjo antes de qualquer tentativa de montagem.
+- **Reconstruir um arranjo a partir de imagens é procedimento forense real.** Com as imagens dos discos originais em arquivos, `losetup -rP` para cada uma e `mdadm --assemble --readonly` sobre os dispositivos *loop* remonta o arranjo somente leitura, sem tocar nas mídias apreendidas. O `--examine` de cada membro fornece o nível, a ordem dos discos e o tamanho do bloco, que são os dados necessários para montar o arranjo na ordem correta.
+- **`/proc/mdstat` no `.bashrc` de uma máquina com RAID.** Um `grep -q "_" /proc/mdstat` no perfil do shell, imprimindo um alerta quando algo está degradado, é a forma mais barata de garantir que ninguém opere por semanas sem redundância numa estação que não tem servidor de correio configurado.
+- **Não confunda com a persistência do live.** Persistência de pendrive (@sec-cap050) é outra coisa: não há redundância ali, e um pendrive que falha leva tudo junto. Quem carrega trabalho em pendrive Kali precisa de backup de verdade, não de RAID — que, aliás, não se aplica ao caso.
+
+> **Nota sobre a família RHEL.** O `mdadm` é idêntico, incluindo os arquivos em `/proc` e `/sys`. As diferenças são de entorno: a configuração fica em `/etc/mdadm.conf` (sem o subdiretório `mdadm/` do Debian), a regeneração do *initramfs* é `dracut -f` em vez de `update-initramfs -u`, e a verificação periódica não vem por `cron` — o pacote instala `raid-check` acionado por *timer* do systemd, configurável em `/etc/sysconfig/raid-check`. O instalador Anaconda oferece RAID por software diretamente no particionamento guiado, algo que o instalador do Debian também faz, mas com menos destaque. E a combinação padrão ali é `md` embaixo e LVM em cima, a mesma ordem recomendada neste capítulo.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — quatro arquivos-imagem via `losetup` fazem o papel de quatro discos, e o passo 12 remove tudo. Confirme no passo 1 quais dispositivos *loop* foram criados e ajuste os comandos se os números forem outros.
+
+1. **Crie quatro discos falsos.**
+
+   ```bash
+   sudo apt install -y mdadm
+   mkdir -p ~/lab-raid && cd ~/lab-raid
+   for n in 1 2 3 4; do truncate -s 512M disco$n.img; sudo losetup -fP --show disco$n.img; done
+   lsblk | grep loop
+   ```
+
+   Esperado: `/dev/loop0` a `/dev/loop3`, de 512 MiB cada.
+
+2. **Crie um RAID 5 com três discos.**
+
+   ```bash
+   sudo mdadm --create /dev/md0 --level=5 --raid-devices=3 \
+       /dev/loop0 /dev/loop1 /dev/loop2
+   cat /proc/mdstat
+   sudo mdadm --detail /dev/md0 | head -20
+   ```
+
+   Esperado: o arranjo é criado e começa a sincronizar. A capacidade é de aproximadamente 1 GiB — dois discos de dados mais um de paridade, como na @fig-niveis-raid. Aguarde `[3/3] [UUU]`.
+
+3. **Formate, monte e grave dados com soma de verificação.**
+
+   ```bash
+   sudo mkfs.ext4 -q -L arranjo /dev/md0
+   sudo mkdir -p /mnt/raid && sudo mount /dev/md0 /mnt/raid
+   sudo dd if=/dev/urandom of=/mnt/raid/dados.bin bs=1M count=200 status=none
+   sudo md5sum /mnt/raid/dados.bin | sudo tee /mnt/raid/soma.txt
+   df -h /mnt/raid
+   ```
+
+   Esperado: cerca de 1 GiB disponível e o arquivo gravado. A soma MD5 é a prova de que a redundância funcionou, nos passos 5 e 7.
+
+4. **Registre o arranjo na configuração.**
+
+   ```bash
+   sudo mdadm --detail --scan
+   sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
+   sudo grep -i array /etc/mdadm/mdadm.conf | tail -2
+   ```
+
+   Esperado: uma linha `ARRAY /dev/md0 metadata=1.2 UUID=...`. É este o passo que impede o arranjo de virar `/dev/md127` no próximo boot — num sistema real, `update-initramfs -u` viria em seguida.
+
+5. **Simule a falha de um disco com o arranjo em uso.**
+
+   ```bash
+   sudo mdadm --manage /dev/md0 --fail /dev/loop1
+   cat /proc/mdstat
+   sudo mdadm --detail /dev/md0 | grep -iE "state|failed"
+   md5sum /mnt/raid/dados.bin; cat /mnt/raid/soma.txt
+   ```
+
+   Esperado: `[3/2] [U_U]`, estado `degraded`, e **a soma MD5 continua idêntica**. O arranjo perdeu a redundância e não perdeu um único byte — é exatamente para isso que ele existe.
+
+6. **Retire o disco falho e confirme o estado.**
+
+   ```bash
+   sudo mdadm --manage /dev/md0 --remove /dev/loop1
+   sudo mdadm --detail /dev/md0 | grep -iE "state|active devices|working"
+   echo "teste em modo degradado" | sudo tee /mnt/raid/novo.txt
+   ```
+
+   Esperado: o arranjo continua montado e **aceitando escrita** em modo degradado. Este é o estado perigoso da @fig-ciclo-falha-raid: tudo funciona, e nada mais protege.
+
+7. **Adicione um disco novo e acompanhe a reconstrução.**
+
+   ```bash
+   sudo mdadm --manage /dev/md0 --add /dev/loop3
+   cat /proc/mdstat
+   sleep 20; cat /proc/mdstat
+   sudo mdadm --detail /dev/md0 | grep -iE "state|rebuild"
+   md5sum /mnt/raid/dados.bin; cat /mnt/raid/soma.txt
+   ```
+
+   Esperado: a reconstrução começa sozinha, o `/proc/mdstat` mostra a barra de progresso e, ao final, `[3/3] [UUU]`. A soma MD5 permanece a mesma — o ciclo completo da @fig-ciclo-falha-raid, do começo ao fim.
+
+8. **Compare `--detail` com `--examine`.**
+
+   ```bash
+   sudo mdadm --detail /dev/md0 | head -12
+   sudo mdadm --examine /dev/loop0 | head -14
+   sudo mdadm --examine /dev/loop1 | head -6
+   ```
+
+   Esperado: o `--detail` fala do arranjo; o `--examine` lê o superbloco de cada disco. O `loop1`, removido no passo 6, ainda carrega metadados antigos — e é por isso que o `--zero-superblock` existe.
+
+9. **Rode uma verificação de consistência.**
+
+   ```bash
+   echo check | sudo tee /sys/block/md0/md/sync_action
+   sleep 15; cat /proc/mdstat
+   cat /sys/block/md0/md/mismatch_cnt
+   ls /etc/cron.d/mdadm
+   ```
+
+   Esperado: a verificação percorre o arranjo e o `mismatch_cnt` fica em `0`. O arquivo de `cron` confirma que o Debian já agenda isso mensalmente.
+
+10. **Acrescente um disco reserva e teste o monitor.**
+
+    ```bash
+    sudo mdadm --manage /dev/md0 --add-spare /dev/loop1 2>/dev/null || \
+      { sudo mdadm --zero-superblock /dev/loop1; sudo mdadm --manage /dev/md0 --add-spare /dev/loop1; }
+    sudo mdadm --detail /dev/md0 | grep -iE "spare|state"
+    sudo mdadm --monitor --scan --test --oneshot
+    systemctl status mdmonitor.service --no-pager | head -5
+    ```
+
+    Esperado: o reserva aparece como `spare` e o teste do monitor executa. Numa falha real, esse disco entraria sozinho, encurtando a janela de risco a segundos.
+
+11. **Verifique a checagem rápida de script.**
+
+    ```bash
+    grep -q "_" /proc/mdstat && echo "ARRANJO DEGRADADO" || echo "arranjos ok"
+    sudo mdadm --manage /dev/md0 --fail /dev/loop0
+    grep -q "_" /proc/mdstat && echo "ARRANJO DEGRADADO" || echo "arranjos ok"
+    sleep 20; cat /proc/mdstat
+    ```
+
+    Esperado: `arranjos ok`, depois `ARRANJO DEGRADADO` — e então o disco reserva do passo 10 assume sozinho e a reconstrução começa sem nenhuma intervenção.
+
+12. **Desmonte o laboratório inteiro.**
+
+    ```bash
+    sudo umount /mnt/raid
+    sudo mdadm --stop /dev/md0
+    sudo mdadm --zero-superblock /dev/loop0 /dev/loop1 /dev/loop2 /dev/loop3
+    sudo sed -i '/ARRAY \/dev\/md0/d' /etc/mdadm/mdadm.conf
+    sudo losetup -D
+    sudo rmdir /mnt/raid; cd ~ && rm -rf ~/lab-raid
+    cat /proc/mdstat; lsblk | grep loop; echo "codigo: $?"
+    ```
+
+    Esperado: nenhum arranjo em `/proc/mdstat`, nenhum dispositivo *loop*, e a linha de teste removida do `mdadm.conf`. Sem o `--zero-superblock`, um arranjo fantasma reapareceria no próximo boot.
+
+## Resumo
+
+- **RAID não é backup.** Ele resolve falha de hardware de disco e mais nada: exclusão acidental, corrupção por software e *ransomware* são replicados fielmente para todos os membros do arranjo.
+- **RAID 0 não tem redundância** — soma capacidade e multiplica o risco. Serve para dados que podem ser recriados, e o `R` de *redundant* simplesmente não se aplica a ele.
+- **Acima de 2 TB por disco, RAID 6 ou RAID 10, não RAID 5.** A reconstrução de um RAID 5 lê todos os discos restantes de ponta a ponta, e a chance de um erro irrecuperável de leitura no meio do processo deixa de ser desprezível — justamente quando não há mais redundância para corrigir.
+- **`[3/3] [UUU]` em `/proc/mdstat` é o estado saudável.** Um `_` no lugar de um `U` indica membro ausente, e `grep -q "_" /proc/mdstat` é a verificação de uma linha que cabe em qualquer script de monitoramento.
+- **Registrar o arranjo em `mdadm.conf` e rodar `update-initramfs -u` não é opcional.** Sem isso, tudo funciona até o primeiro reinício, e então o arranjo vira `/dev/md127` ou não sobe — e, se contiver a raiz, o sistema não inicia.
+- **`--detail` pergunta ao kernel sobre o arranjo; `--examine` lê o superbloco de um disco.** O segundo funciona com o arranjo parado ou incompleto e é a ferramenta de diagnóstico quando nada monta.
+- **Arranjo degradado funciona normalmente, e é isso que o torna perigoso.** Sem monitoramento por correio ou equivalente, ele passa semanas sem redundância até o segundo disco falhar. Um disco reserva reduz a janela de risco de dias para segundos.
+- **O *scrub* mensal previne a surpresa na hora errada**, lendo o arranjo inteiro e conferindo consistência antes que um bloco corrompido seja descoberto durante uma reconstrução. No Debian e no Kali ele já vem agendado por `cron`.
+- **RAID embaixo, LVM em cima.** Assim o LVM enxerga um dispositivo já redundante e a falha de disco é resolvida na camada de baixo, sem afetar os volumes lógicos.
+- **`--zero-superblock` ao desfazer um arranjo.** Sem ele, os discos guardam metadados de RAID e o kernel remonta um arranjo fantasma no próximo boot.

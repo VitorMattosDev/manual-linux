@@ -1,3 +1,464 @@
 # Criptografia de disco com LUKS e a persistência no Kali {#sec-cap050}
 
-*(em elaboracao)*
+Um notebook é esquecido num táxi. Ele tem senha de usuário forte, tela bloqueada, permissões de arquivo corretas e `sudo` exigindo senha. Quem o encontrar precisa de cinco minutos e de um pendrive com qualquer distribuição live para ler todos os arquivos do disco: basta iniciar pelo pendrive, montar a partição e copiar o que quiser. Nenhuma senha é pedida em momento algum.
+
+Isso não é uma falha do Linux. É a consequência exata de como as permissões funcionam: elas são verificadas pelo **kernel que está rodando**, contra o **usuário autenticado naquela sessão**. Iniciar outro kernel, como `root`, sem passar pela autenticação daquele sistema, remove toda a verificação. Os bits de permissão do @sec-cap020 continuam gravados nos inodes, e o novo kernel simplesmente os ignora, porque `root` os ignora.
+
+A única defesa contra acesso físico ao disco é que os dados nele **não façam sentido** sem uma chave. É disso que trata este capítulo.
+
+## dm-crypt e LUKS: dois níveis
+
+O Linux cifra volumes com o **dm-crypt**, um alvo do *device mapper* — o mesmo mecanismo que serve o LVM (@sec-cap048). Ele apresenta um dispositivo de bloco virtual que, a cada leitura, decifra o que vem do dispositivo real, e a cada escrita cifra o que vai para ele. Tudo que fica acima dessa camada — sistema de arquivos, LVM, RAID — não sabe que existe criptografia.
+
+O **LUKS** (*Linux Unified Key Setup*) é um **formato de cabeçalho** por cima do dm-crypt. Ele padroniza onde ficam os parâmetros do algoritmo, o sal e as chaves, de modo que qualquer sistema Linux consiga abrir o volume sem que o usuário precise lembrar qual cifra usou. É por isso que se usa LUKS e não dm-crypt puro: sem cabeçalho, um parâmetro esquecido torna o volume ilegível para sempre.
+
+## O modelo de duas chaves
+
+A parte que precisa ser entendida antes de qualquer comando é por que existem **duas** chaves, e não uma:
+
+::: {#fig-luks-slots}
+```{.tikz}
+%%| filename: modelo-de-chaves-do-luks
+%%| alt: Modelo de chaves do LUKS com varias senhas em slots distintos, cada uma decifrando a mesma chave mestra que por sua vez cifra os dados do volume
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt},
+    ps/.style={bx,draw=manualblue,fill=manualblue!13,text width=2.9cm,minimum height=1.0cm},
+    sl/.style={bx,draw=manualyellow,fill=manualyellow!18,text width=2.9cm,minimum height=1.0cm},
+    mk/.style={bx,draw=manualred,fill=manualred!13,text width=3.4cm,minimum height=1.3cm},
+    dt/.style={bx,draw=manualgray,fill=manualgray!11,text width=3.4cm,minimum height=1.3cm},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[ps] (p0) at (0,2.5)   {senha do usuário};
+  \node[ps] (p1) at (0,1.0)   {senha de recuperação};
+  \node[ps] (p2) at (0,-0.5)  {arquivo de chave\\(pendrive, TPM)};
+
+  \node[sl] (s0) at (4.2,2.5)  {\emph{slot} 0\\chave mestra cifrada};
+  \node[sl] (s1) at (4.2,1.0)  {\emph{slot} 1\\chave mestra cifrada};
+  \node[sl] (s2) at (4.2,-0.5) {\emph{slot} 2\\chave mestra cifrada};
+
+  \node[mk] (m) at (8.9,1.0)  {\textbf{chave mestra}\\gerada aleatoriamente\\na formatação};
+  \node[dt] (d) at (13.0,1.0) {\textbf{dados}\\do volume};
+
+  \draw[fl,manualblue] (p0) -- node[lb,above,font=\tiny]{PBKDF} (s0);
+  \draw[fl,manualblue] (p1) -- node[lb,above,font=\tiny]{PBKDF} (s1);
+  \draw[fl,manualblue] (p2) -- node[lb,above,font=\tiny]{PBKDF} (s2);
+  \draw[fl,manualyellow] (s0) -- (m);
+  \draw[fl,manualyellow] (s1) -- (m);
+  \draw[fl,manualyellow] (s2) -- (m);
+  \draw[fl,manualred] (m) -- node[lb,above]{AES-XTS} (d);
+
+  \node[nt,text width=14.2cm] at (6.5,-2.6) {A chave que realmente cifra os dados é a \textbf{mestra}, e ela nunca é digitada nem escolhida por ninguém: é gerada aleatoriamente na formatação. Cada senha apenas decifra uma \emph{cópia} dela guardada num \emph{slot}. Daí decorre tudo: trocar a senha reescreve um \emph{slot} de poucos kilobytes em vez de recifrar o disco inteiro; várias pessoas podem ter senhas distintas para o mesmo volume; e \textbf{apagar o cabeçalho destrói todas as cópias da chave mestra de uma vez}, tornando os dados irrecuperáveis mesmo com a senha certa.};
+\end{tikzpicture}
+```
+O modelo de *slots* do LUKS: senhas distintas abrindo a mesma chave mestra.
+:::
+
+O LUKS1 oferece 8 *slots*; o LUKS2, 32. Cada senha passa por uma função de derivação lenta de propósito — PBKDF2 no LUKS1, **Argon2id** no LUKS2 —, que torna a tentativa exaustiva de senhas cara em tempo e, no caso do Argon2id, também em memória. É o que transforma uma senha humana em algo caro de atacar.
+
+::: {.callout-important}
+## Perder o cabeçalho é perder os dados — faça backup dele
+
+O cabeçalho LUKS ocupa poucos megabytes no início do volume e contém **todas** as cópias cifradas da chave mestra. Um `dd` equivocado nos primeiros blocos, uma tabela de partição reescrita com deslocamento diferente ou um `wipefs -a` acidental destroem esses megabytes — e nenhuma senha do mundo abre o volume depois disso. Não existe recuperação.
+
+```bash
+sudo cryptsetup luksHeaderBackup /dev/sda3 --header-backup-file ~/cabecalho-sda3.img
+```
+
+Guarde o arquivo **fora do disco que ele protege** e trate-o como material sensível: quem tiver o cabeçalho e uma das senhas abre o volume. Um cabeçalho antigo restaurado também **revive senhas já removidas**, o que é a contrapartida a considerar.
+:::
+
+## Criando e abrindo um volume
+
+::: {.callout-warning}
+## `luksFormat` destrói o conteúdo do dispositivo
+
+O comando abaixo apaga irreversivelmente o que estiver no dispositivo indicado. Ele pede confirmação digitando `YES` em maiúsculas — leia o nome do dispositivo na pergunta antes de responder. Todo o laboratório deste capítulo roda sobre arquivo-imagem via `losetup`, e é assim que se pratica.
+:::
+
+```bash
+sudo cryptsetup luksFormat /dev/loop0
+sudo cryptsetup luksDump /dev/loop0
+```
+
+```text
+LUKS header information
+Version:        2
+Epoch:          3
+Metadata area:  16384 [bytes]
+Keyslots:
+  0: luks2
+        Key:        512 bits
+        Cipher:     aes-xts-plain64
+        PBKDF:      argon2id
+        Time cost:  4
+        Memory:     1048576
+```
+
+Abrir o volume cria o dispositivo mapeado, e é a partir dele que tudo o mais acontece:
+
+```bash
+sudo cryptsetup open /dev/loop0 cofre        # pede a senha
+ls -l /dev/mapper/cofre
+sudo mkfs.ext4 -L cofre /dev/mapper/cofre
+sudo mount /dev/mapper/cofre /mnt/cofre
+```
+
+Repare na assimetria fundamental: o `mkfs` e o `mount` operam em `/dev/mapper/cofre`, **nunca** em `/dev/loop0`. O dispositivo original contém apenas dados cifrados; formatá-lo diretamente destruiria o cabeçalho LUKS.
+
+Fechar é o inverso, e a ordem importa:
+
+```bash
+sudo umount /mnt/cofre
+sudo cryptsetup close cofre
+sudo cryptsetup isLuks /dev/loop0 && echo "e um volume LUKS"
+```
+
+## Gerenciando senhas
+
+```bash
+sudo cryptsetup luksAddKey /dev/loop0                 # acrescenta uma senha
+sudo cryptsetup luksChangeKey /dev/loop0              # troca uma existente
+sudo cryptsetup luksRemoveKey /dev/loop0              # remove por senha
+sudo cryptsetup luksKillSlot /dev/loop0 2             # remove por numero de slot
+sudo cryptsetup luksDump /dev/loop0 | grep -A2 Keyslots
+```
+
+Um arquivo de chave substitui a digitação e é o que permite abrir volumes secundários automaticamente no boot:
+
+```bash
+sudo dd if=/dev/urandom of=/root/chave-dados.bin bs=512 count=8
+sudo chmod 400 /root/chave-dados.bin
+sudo cryptsetup luksAddKey /dev/loop0 /root/chave-dados.bin
+sudo cryptsetup open /dev/loop0 cofre --key-file /root/chave-dados.bin
+```
+
+O arranjo usual numa máquina com vários volumes: a raiz é aberta por senha digitada no boot, e os volumes de dados são abertos automaticamente por arquivos de chave guardados na raiz já decifrada. Um arquivo de chave numa partição **não** cifrada é o equivalente a deixar a chave na fechadura.
+
+::: {.callout-warning}
+## `luksAddKey` exige provar que você já tem acesso
+
+Acrescentar uma senha pede uma senha existente — sem isso, qualquer um com acesso ao dispositivo acrescentaria a própria. A consequência prática é que **não há recuperação de senha esquecida**: se todos os *slots* forem perdidos, o volume acabou.
+
+Antes de qualquer operação que mexa em *slots*, confirme que existe outra senha funcionando e que o backup do cabeçalho está feito. Remover o último *slot* é permitido e é definitivo.
+:::
+
+## A pilha de uma instalação cifrada
+
+A instalação "LVM criptografado" do Debian e do Kali produz um arranjo específico, e a ordem das camadas é deliberada:
+
+::: {#fig-pilha-cifrada}
+```{.tikz}
+%%| filename: pilha-de-uma-instalacao-cifrada
+%%| alt: Camadas de uma instalacao com LUKS e LVM, do disco fisico ate os volumes logicos, mostrando a EFI e a boot fora da area cifrada
+\begin{tikzpicture}[
+    bx/.style={draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum height=0.95cm},
+    pl/.style={bx,draw=manualgray,fill=manualgray!11},
+    cl/.style={bx,draw=manualred,fill=manualred!12},
+    lv/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    vg/.style={bx,draw=manualyellow,fill=manualyellow!18},
+    ti/.style={font=\scriptsize\bfseries,align=right},
+    lb/.style={font=\scriptsize,manualgray,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,anchor=east,manualgreen] at (-0.25,4.3) {volumes\\lógicos};
+  \node[lv,minimum width=3.4cm] at (6.5,4.3)  {\texttt{raiz} (ext4)};
+  \node[lv,minimum width=2.5cm] at (9.55,4.3) {\texttt{troca}};
+  \node[lv,minimum width=2.2cm] at (12.1,4.3) {\texttt{lar}};
+
+  \node[ti,anchor=east,manualyellow!60!black] at (-0.25,3.0) {LVM};
+  \node[vg,minimum width=8.6cm] at (9.0,3.0) {grupo de volumes \texttt{vg0}};
+
+  \node[ti,anchor=east,manualred] at (-0.25,1.7) {LUKS};
+  \node[cl,minimum width=8.6cm] at (9.0,1.7) {\texttt{/dev/mapper/sda3\_crypt}\\tudo acima daqui é cifrado};
+
+  \node[ti,anchor=east,manualgray] at (-0.25,0.4) {partições};
+  \node[pl,minimum width=2.0cm] at (1.0,0.4) {EFI\\(FAT32)};
+  \node[pl,minimum width=2.2cm] at (3.2,0.4) {\texttt{/boot}\\\emph{em claro}};
+  \node[pl,minimum width=8.6cm] at (9.0,0.4) {\texttt{/dev/sda3} --- contêiner LUKS};
+
+  \node[ti,anchor=east,manualgray] at (-0.25,-0.9) {disco};
+  \node[pl,minimum width=13.3cm] at (6.65,-0.9) {\texttt{/dev/sda}};
+
+  \node[nt,text width=14.2cm] at (6.45,-2.9) {A EFI e a \texttt{/boot} ficam \textbf{fora} da área cifrada por necessidade: alguém precisa carregar o kernel e o \emph{initramfs} que vão pedir a senha, e esse alguém não tem como decifrar nada ainda. A consequência de segurança é real --- quem tem acesso físico repetido pode alterar o \emph{initramfs} para capturar a senha. A defesa é o \emph{Secure Boot} com chaves próprias ou o selamento da chave num TPM, que detecta a alteração do que foi carregado.};
+\end{tikzpicture}
+```
+As camadas de uma instalação com LUKS e LVM, e o que fica fora da criptografia.
+:::
+
+**LUKS embaixo, LVM em cima.** Assim uma única senha abre um único contêiner e todos os volumes lógicos dentro dele ficam protegidos. A ordem inversa — LVM embaixo, LUKS em cada volume lógico — exigiria uma senha por volume e cifraria os metadados do LVM separadamente, sem ganho algum.
+
+Quando há RAID no arranjo, a ordem completa é **RAID → LUKS → LVM**: a redundância na base (@sec-cap049), a criptografia sobre o dispositivo já redundante, e a flexibilidade por cima.
+
+## Abrindo no boot: `crypttab`
+
+O `/etc/crypttab` é para volumes cifrados o que o `/etc/fstab` é para sistemas de arquivos, e é lido antes dele:
+
+```bash
+cat /etc/crypttab
+```
+
+```text
+# nome_alvo  dispositivo_origem              arquivo_de_chave  opcoes
+sda3_crypt   UUID=8f2e1c04-9a7b-4d3e-...     none              luks,discard
+dados_crypt  UUID=c41d7e92-3b8a-4f16-...     /root/chave.bin   luks,nofail
+```
+
+As quatro colunas são: o nome que aparecerá em `/dev/mapper/`, o dispositivo de origem — **sempre por UUID**, pelas razões do @sec-cap045 —, o arquivo de chave (`none` para pedir a senha) e as opções.
+
+As opções que valem conhecer: `luks` declara o formato; `nofail` evita que o boot pare se o volume não estiver presente, essencial para disco externo; `discard` habilita TRIM no volume cifrado; `tries=3` limita as tentativas de senha.
+
+```bash
+sudo blkid /dev/sda3                     # pegue o UUID do CONTEINER
+sudo update-initramfs -u                 # obrigatorio apos editar crypttab
+```
+
+::: {.callout-warning}
+## O UUID do `crypttab` não é o UUID do `fstab`
+
+Um volume cifrado tem **dois** UUIDs: o do contêiner LUKS, que vai no `crypttab`, e o do sistema de arquivos lá dentro, que vai no `fstab`. Trocá-los produz um boot que trava esperando um dispositivo que nunca aparece.
+
+```bash
+sudo blkid /dev/sda3              # UUID do conteiner  -> crypttab
+sudo blkid /dev/mapper/sda3_crypt # UUID do sistema de arquivos -> fstab
+```
+
+E `update-initramfs -u` depois de qualquer alteração no `crypttab` não é opcional: quem pede a senha da raiz é o *initramfs*, e ele carrega uma cópia própria do arquivo.
+:::
+
+Sobre `discard` em volume cifrado, há um custo de privacidade que vale declarar: o TRIM revela ao dispositivo — e a quem o examinar — **quais blocos estão em uso**, expondo o padrão de ocupação e o tamanho aproximado dos dados. Em SSD, a maioria aceita esse custo pelo ganho de desempenho e longevidade; num volume cujo simples tamanho de conteúdo seja sensível, a opção é omitir `discard`.
+
+## Desempenho
+
+```bash
+cryptsetup benchmark
+grep -o -m1 aes /proc/cpuinfo | head -1        # o processador tem AES-NI?
+sudo cryptsetup status cofre
+```
+
+Com AES-NI — presente em praticamente todo processador desde 2011 — o `aes-xts` alcança vários gigabytes por segundo, muito acima do que um SSD SATA entrega. Na prática, **a criptografia deixa de ser o gargalo**, e o argumento de desempenho contra cifrar o disco de uma máquina moderna não se sustenta. Em ARM sem aceleração, o quadro muda, e o `benchmark` mostra se `xchacha20` sai melhor que `aes-xts` naquele hardware.
+
+## A persistência do Kali
+
+Um Kali live não guarda nada: tudo vive em memória e desaparece no desligamento. A **persistência** acrescenta uma partição ao pendrive onde as alterações são gravadas — e, cifrada, ela resolve o problema de carregar ferramentas e dados num dispositivo fácil de perder.
+
+O mecanismo é simples: o *initramfs* do live procura, entre os dispositivos presentes, uma partição com o rótulo `persistence` contendo um arquivo `persistence.conf`. Encontrando, sobrepõe seu conteúdo ao sistema live.
+
+```bash
+# No pendrive ja gravado com a imagem do Kali; CONFIRA o dispositivo antes.
+# As duas primeiras particoes sao da imagem — a terceira e criada agora.
+sudo sgdisk -n 3:0:0 -t 3:8300 -c 3:persistence /dev/sdX
+sudo cryptsetup luksFormat /dev/sdX3
+sudo cryptsetup open /dev/sdX3 kali-persistencia
+sudo mkfs.ext4 -L persistence /dev/mapper/kali-persistencia
+sudo mkdir -p /mnt/persistencia
+sudo mount /dev/mapper/kali-persistencia /mnt/persistencia
+echo "/ union" | sudo tee /mnt/persistencia/persistence.conf
+sudo umount /mnt/persistencia
+sudo cryptsetup close kali-persistencia
+```
+
+A linha `/ union` diz para sobrepor a raiz inteira. Na inicialização, escolhe-se a opção de menu com persistência cifrada, e o sistema pede a senha antes de subir.
+
+Dois pontos práticos: o rótulo `persistence` do **sistema de arquivos** é o que o Kali procura, e por isso a persistência funciona mesmo com o pendrive recebendo letras diferentes em cada máquina (@sec-cap045). E o sistema de arquivos precisa ser ext4 — exFAT ou FAT32 não representam donos, permissões nem bits especiais (@sec-cap023), e o sistema não sobe.
+
+::: {.callout-note}
+## As chaves *nuke* do Kali: o que são e o limite legal
+
+O Kali distribui um `cryptsetup` com o *patch* `nuke-keys`, que permite cadastrar uma senha especial: digitada no boot, ela **apaga todos os *slots*** do cabeçalho em vez de abrir o volume, tornando os dados permanentemente ilegíveis.
+
+```bash
+sudo cryptsetup luksAddNuke /dev/sdX3
+```
+
+O caso de uso legítimo é o profissional que viaja com dados de cliente sob acordo de confidencialidade e precisa garantir que um dispositivo perdido ou apreendido irregularmente não exponha terceiros. Quem usa o recurso deve manter **backup do cabeçalho em local seguro e separado** — sem ele, disparar a chave *nuke* é definitivo, inclusive para o dono.
+
+O limite precisa ser dito com clareza: destruir dados para impedir uma investigação legalmente autorizada configura crime no Brasil, e apresentá-los adulterados ou destruídos em processo judicial agrava a situação de quem o faz. O recurso protege confidencialidade contra acesso não autorizado; não é instrumento para obstruir autoridade agindo dentro da lei.
+:::
+
+## Recuperação e diagnóstico
+
+```bash
+sudo cryptsetup luksDump /dev/sda3                  # slots ocupados e parametros
+sudo cryptsetup luksHeaderBackup /dev/sda3 --header-backup-file ~/hdr.img
+sudo cryptsetup luksHeaderRestore /dev/sda3 --header-backup-file ~/hdr.img
+sudo cryptsetup --test-passphrase open /dev/sda3    # testa sem abrir
+sudo cryptsetup status cofre                        # cifra e tamanho em uso
+sudo dmsetup ls --tree                              # a pilha inteira
+```
+
+O `--test-passphrase` é útil ao verificar qual das senhas guardadas ainda funciona, sem criar mapeamento nem montar nada.
+
+Duas mensagens de erro que confundem:
+
+- **`No key available with this passphrase`** — senha errada, ou o *slot* dela foi removido. Se todas as senhas conhecidas falham num volume que abria, suspeite de cabeçalho sobrescrito e restaure o backup.
+- **`Device /dev/sda3 is not a valid LUKS device`** — o cabeçalho não foi encontrado. Pode ser o dispositivo errado (é comum apontar para a partição vizinha), ou cabeçalho destruído.
+
+Um volume LUKS2 pode ser convertido para usar Argon2id se foi criado com parâmetros antigos, e é possível recifrar o volume inteiro sem perder dados, com o sistema no ar:
+
+```bash
+sudo cryptsetup luksConvertKey --pbkdf argon2id /dev/sda3
+sudo cryptsetup reencrypt /dev/sda3                 # troca a chave mestra
+```
+
+O `reencrypt` é retomável após interrupção, mas é a operação mais longa e mais arriscada do capítulo — backup completo antes, sem exceção.
+
+## 🐉 No Kali
+
+- **Criptografia de disco não é opcional num equipamento de trabalho.** Uma máquina Kali carrega ferramentas, anotações, credenciais de teste, capturas de tráfego e dados de cliente. Perder o notebook sem criptografia significa expor terceiros que confiaram naquele acordo — e, dependendo do que houver ali, é incidente a comunicar. A opção "LVM criptografado" do instalador resolve isso no momento da instalação e é a escolha correta por padrão.
+- **Persistência cifrada é o padrão para pendrive.** Um pendrive Kali é fácil de perder e circula por lugares que não são seus. A persistência sem criptografia entrega tudo a quem o encontrar; com LUKS, entrega ruído. O custo é digitar uma senha a mais no boot.
+- **A `/boot` em claro é a superfície de ataque que sobra.** O arranjo da @fig-pilha-cifrada deixa `/boot` e a EFI legíveis e graváveis por quem tem acesso físico, e um *initramfs* alterado pode capturar a senha na próxima digitação — o ataque da "camareira maligna". Em máquina que fica sozinha em hotel ou em coworking, as defesas são o *Secure Boot* com chaves próprias, o selamento no TPM via `systemd-cryptenroll --tpm2-device=auto`, ou simplesmente levar a máquina junto.
+- **Perícia: LUKS muda o que é possível, e isso vale nos dois sentidos.** Ao examinar uma mídia cifrada, não há caminho analítico sem a chave — a abordagem passa a ser memória volátil, onde a chave mestra reside enquanto o volume está aberto. Daí a regra de ouro da apreensão: **uma máquina ligada com volume aberto não deve ser desligada** antes da captura de memória, porque desligar destrói a única cópia acessível da chave.
+- **Chave em pendrive separado, para o laboratório.** Guardar o arquivo de chave num pendrive pequeno que fica fisicamente separado da máquina transforma a criptografia em algo próximo de dois fatores: o disco sozinho não abre, e o pendrive sozinho não serve. Para volumes de dados de laboratório é um arranjo prático e barato.
+- **Teste a restauração do cabeçalho antes de precisar dela.** Fazer `luksHeaderBackup` é fácil e dá falsa sensação de segurança; o que confirma o backup é restaurá-lo num volume de teste, como no passo 10 do laboratório. Um backup de cabeçalho nunca testado é uma hipótese, e a hora de descobrir que a hipótese era falsa é a pior possível.
+
+> **Nota sobre a família RHEL.** O `cryptsetup` e o LUKS são idênticos, e o `crypttab` tem o mesmo formato. As diferenças estão em volta: a regeneração do *initramfs* é `dracut -f` em vez de `update-initramfs -u`, e o Anaconda oferece a caixa "Encrypt my data" diretamente no particionamento, produzindo o mesmo arranjo LUKS embaixo e LVM em cima. A família traz ainda o **NBDE** (*Network-Bound Disk Encryption*) com Clevis e Tang, que permite a um servidor abrir o disco sozinho no boot desde que esteja na rede confiável — resolvendo o problema de datacenter em que ninguém pode digitar senha a cada reinício. Clevis existe empacotado no Debian, mas a integração ali é menos polida. E o `cryptsetup` do Kali carrega o *patch* de chaves *nuke*, que não está presente em nenhuma distribuição da família RHEL.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — tudo sobre arquivo-imagem via `losetup`, e o passo 12 remove tudo. Use uma senha simples e descartável (`laboratorio`, por exemplo); ela não protege nada aqui.
+
+1. **Monte o disco de laboratório.**
+
+   ```bash
+   sudo apt install -y cryptsetup
+   mkdir -p ~/lab-luks && cd ~/lab-luks
+   truncate -s 1G disco.img
+   sudo losetup -fP --show disco.img
+   cryptsetup benchmark | head -12
+   ```
+
+   Esperado: o dispositivo *loop* criado e a tabela de desempenho. Compare `aes-xts` com `xchacha20` — em processador com AES-NI o primeiro ganha com folga.
+
+2. **Cifre o dispositivo.**
+
+   ```bash
+   sudo cryptsetup luksFormat /dev/loop0
+   sudo cryptsetup luksDump /dev/loop0 | head -20
+   sudo cryptsetup isLuks /dev/loop0 && echo "e LUKS"
+   ```
+
+   Confirme com `YES` em maiúsculas e defina a senha. Esperado: cabeçalho LUKS2 com `aes-xts-plain64` e `argon2id`, com o *slot* 0 ocupado.
+
+3. **Abra, formate e grave dados.**
+
+   ```bash
+   sudo cryptsetup open /dev/loop0 cofre
+   ls -l /dev/mapper/cofre
+   sudo mkfs.ext4 -q -L cofre /dev/mapper/cofre
+   sudo mkdir -p /mnt/cofre && sudo mount /dev/mapper/cofre /mnt/cofre
+   echo "segredo do laboratorio" | sudo tee /mnt/cofre/segredo.txt
+   df -h /mnt/cofre
+   ```
+
+   Esperado: o volume monta normalmente. Note que o `mkfs` foi em `/dev/mapper/cofre`, nunca em `/dev/loop0`.
+
+4. **Prove que os dados no disco estão cifrados.**
+
+   ```bash
+   sudo grep -c "segredo do laboratorio" /mnt/cofre/segredo.txt
+   sudo grep -a -c "segredo do laboratorio" ~/lab-luks/disco.img; echo "codigo: $?"
+   sudo strings ~/lab-luks/disco.img | grep -i luks | head -3
+   ```
+
+   Esperado: o texto é encontrado através do ponto de montagem e **não** é encontrado no arquivo-imagem cru. A única coisa legível ali é a assinatura `LUKS` do cabeçalho.
+
+5. **Veja os dois UUIDs distintos.**
+
+   ```bash
+   sudo blkid /dev/loop0
+   sudo blkid /dev/mapper/cofre
+   ```
+
+   Esperado: UUIDs diferentes. O primeiro é do contêiner e vai no `crypttab`; o segundo é do sistema de arquivos e vai no `fstab`. Trocá-los é a causa clássica de boot travado.
+
+6. **Faça o backup do cabeçalho.**
+
+   ```bash
+   sudo cryptsetup luksHeaderBackup /dev/loop0 --header-backup-file ~/cabecalho.img
+   ls -lh ~/cabecalho.img
+   sudo chmod 600 ~/cabecalho.img
+   ```
+
+   Esperado: um arquivo de alguns megabytes. Ele contém as cópias cifradas da chave mestra — trate-o como material sensível.
+
+7. **Acrescente uma segunda senha e um arquivo de chave.**
+
+   ```bash
+   sudo cryptsetup luksAddKey /dev/loop0
+   sudo dd if=/dev/urandom of=~/chave.bin bs=512 count=4 status=none
+   chmod 400 ~/chave.bin
+   sudo cryptsetup luksAddKey /dev/loop0 ~/chave.bin
+   sudo cryptsetup luksDump /dev/loop0 | grep -E "^  [0-9]+:"
+   ```
+
+   Esperado: três *slots* ocupados — a senha original, a segunda senha e o arquivo de chave. Todos abrem a **mesma** chave mestra, como na @fig-luks-slots.
+
+8. **Abra o volume com o arquivo de chave, sem digitar nada.**
+
+   ```bash
+   sudo umount /mnt/cofre && sudo cryptsetup close cofre
+   sudo cryptsetup open /dev/loop0 cofre --key-file ~/chave.bin
+   sudo mount /dev/mapper/cofre /mnt/cofre && cat /mnt/cofre/segredo.txt
+   ```
+
+   Esperado: o volume abre sem interação. É assim que volumes secundários sobem sozinhos no boot.
+
+9. **Teste senhas sem abrir o volume.**
+
+   ```bash
+   sudo cryptsetup --test-passphrase open /dev/loop0 && echo "senha valida"
+   sudo cryptsetup luksKillSlot /dev/loop0 1
+   sudo cryptsetup luksDump /dev/loop0 | grep -E "^  [0-9]+:"
+   ```
+
+   Esperado: o `--test-passphrase` valida sem criar mapeamento, e o *slot* 1 desaparece da listagem. A senha daquele *slot* deixou de funcionar; as outras continuam.
+
+10. **Destrua o cabeçalho e restaure-o do backup.**
+
+    ```bash
+    sudo umount /mnt/cofre && sudo cryptsetup close cofre
+    sudo dd if=/dev/zero of=/dev/loop0 bs=1M count=4 status=none
+    sudo cryptsetup isLuks /dev/loop0; echo "codigo: $?"
+    sudo cryptsetup open /dev/loop0 cofre 2>&1 | tail -2
+    sudo cryptsetup luksHeaderRestore /dev/loop0 --header-backup-file ~/cabecalho.img
+    sudo cryptsetup open /dev/loop0 cofre
+    sudo mount /dev/mapper/cofre /mnt/cofre && cat /mnt/cofre/segredo.txt
+    ```
+
+    Esperado: com o cabeçalho zerado o volume vira "not a valid LUKS device" e nenhuma senha o abre; após a restauração, tudo volta e o arquivo está intacto. **Este é o passo mais importante do laboratório** — sem o backup do passo 6, os dados teriam acabado ali.
+
+11. **Observe o efeito colateral da restauração.**
+
+    ```bash
+    sudo cryptsetup luksDump /dev/loop0 | grep -E "^  [0-9]+:"
+    ```
+
+    Esperado: o *slot* 1, morto no passo 9, **está de volta** — o cabeçalho restaurado é o do passo 6, anterior à remoção. Um backup de cabeçalho revive senhas removidas depois dele, e essa é a contrapartida a considerar ao guardá-lo.
+
+12. **Desmonte o laboratório.**
+
+    ```bash
+    sudo umount /mnt/cofre
+    sudo cryptsetup close cofre
+    sudo losetup -D
+    sudo rmdir /mnt/cofre
+    cd ~ && rm -rf ~/lab-luks ~/cabecalho.img ~/chave.bin
+    lsblk | grep loop; ls /dev/mapper/
+    ```
+
+    Esperado: nenhum dispositivo *loop*, nenhum mapeamento além do `control`. Nenhum disco real foi tocado em momento algum.
+
+## Resumo
+
+- **Permissão de arquivo não protege contra acesso físico.** Elas são verificadas pelo kernel em execução contra o usuário autenticado; iniciar outro sistema como `root` as ignora por completo. A única defesa é que os dados não façam sentido sem a chave.
+- **LUKS é um cabeçalho padronizado sobre o dm-crypt.** Ele guarda cifra, sal e chaves, de modo que qualquer Linux abra o volume sem que se precise lembrar dos parâmetros usados.
+- **A chave que cifra os dados é a mestra, gerada aleatoriamente e nunca digitada.** Cada senha apenas decifra uma cópia dela num *slot* — por isso trocar a senha é instantâneo e várias pessoas podem ter senhas distintas para o mesmo volume.
+- **Perder o cabeçalho é perder os dados, definitivamente.** `luksHeaderBackup` guardado fora do disco protegido é obrigatório, e restaurar um cabeçalho antigo **revive senhas removidas** depois dele.
+- **Opere sempre em `/dev/mapper/<nome>`, nunca no dispositivo cru.** Formatar o dispositivo original destrói o cabeçalho LUKS e, com ele, todas as cópias da chave mestra.
+- **Um volume cifrado tem dois UUIDs**: o do contêiner, que vai no `crypttab`, e o do sistema de arquivos, que vai no `fstab`. Trocá-los trava o boot esperando um dispositivo inexistente, e `update-initramfs -u` após editar o `crypttab` não é opcional.
+- **A ordem das camadas é RAID → LUKS → LVM.** Uma senha abre um contêiner e protege todos os volumes lógicos; a ordem inversa exigiria uma senha por volume sem nenhum ganho.
+- **`/boot` e a EFI ficam fora da criptografia por necessidade**, e são a superfície de ataque que resta a quem tem acesso físico repetido. As defesas são *Secure Boot* com chaves próprias ou selamento da chave num TPM.
+- **Com AES-NI, a criptografia não é o gargalo.** O `cryptsetup benchmark` entrega vários gigabytes por segundo, acima do que um SSD SATA sustenta — o argumento de desempenho contra cifrar não se sustenta em hardware moderno.
+- **A persistência do Kali é encontrada pelo rótulo `persistence`**, o que a torna imune à reordenação de dispositivos, e precisa ser ext4 — exFAT e FAT32 não representam donos nem permissões, e o sistema não sobe.

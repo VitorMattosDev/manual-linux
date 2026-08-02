@@ -1,3 +1,523 @@
 # Particionamento com fdisk, parted e gdisk {#sec-cap046}
 
-*(em elaboracao)*
+O disco de um servidor de laboratório chegou a 98\% de uso em `/var`. Há um segundo disco de 500 GB instalado e nunca usado, e a tarefa parece simples: criar uma partição nele, formatar e montar em `/var/log`. Vinte minutos depois, o `fdisk` recusa terminar com `Re-reading the partition table failed: Device or resource busy`, o `lsblk` não mostra a partição nova, e o `mkfs` reclama que o dispositivo não existe.
+
+Nada disso é erro. É o funcionamento normal de um sistema em que **a tabela de partição em disco e a visão que o kernel tem dela são duas coisas diferentes**, e onde escrever na primeira não atualiza automaticamente a segunda. Este capítulo é sobre as ferramentas que editam tabelas de partição, sobre quando cada uma é a certa, e principalmente sobre o que acontece entre pressionar `w` e a partição de fato existir para o resto do sistema.
+
+::: {.callout-important}
+## Todo comando deste capítulo pode destruir dados
+
+`fdisk`, `gdisk`, `parted`, `sgdisk`, `sfdisk` e `wipefs` reescrevem a tabela de partição do disco. Apagar uma entrada de partição não apaga os dados dentro dela, mas torna a partição invisível — e, na prática, perdida para quem não sabe recuperá-la.
+
+**Todo o laboratório deste capítulo roda sobre arquivo-imagem via `losetup`**, e é assim que o leitor deve praticar. Antes de qualquer operação num disco real: confira o dispositivo por modelo e número de série (@sec-cap045), tenha backup restaurável e salve a tabela atual com `sfdisk --dump`, como mostrado adiante.
+:::
+
+## As ferramentas e a divisão de trabalho
+
+Cinco programas fazem trabalho sobreposto, e a escolha entre eles é menos sobre gosto do que sobre a tarefa:
+
+::: {#fig-ferramentas-particionamento}
+```{.tikz}
+%%| filename: escolha-da-ferramenta-de-particionamento
+%%| alt: Mapa das ferramentas de particionamento separando as interativas das programaveis, com a tarefa tipica de cada uma
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.3cm,minimum height=1.7cm},
+    ia/.style={bx,draw=manualblue,fill=manualblue!12},
+    pg/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    rc/.style={bx,draw=manualyellow,fill=manualyellow!18},
+    ti/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ti,manualblue] at (2.0,3.05) {INTERATIVAS};
+  \node[ti,manualgreen] at (8.1,3.05) {PROGRAMÁVEIS};
+  \node[ti,manualyellow!60!black] at (12.4,3.05) {RECUPERAÇÃO};
+
+  \node[ia] (fd) at (0.0,1.6)  {\texttt{fdisk}\\[2pt]MBR e GPT\\o padrão do dia a dia};
+  \node[ia] (gd) at (4.0,1.6)  {\texttt{gdisk}\\[2pt]só GPT\\converte MBR $\rightarrow$ GPT};
+  \node[ia] (cf) at (0.0,-0.7) {\texttt{cfdisk}\\[2pt]interface de menus\\boa para aprender};
+  \node[ia] (pa) at (4.0,-0.7) {\texttt{parted}\\[2pt]interativo e por linha\\redimensiona};
+
+  \node[pg] (sg) at (8.1,1.6)  {\texttt{sgdisk}\\[2pt]o \texttt{gdisk} sem menu\\ideal em script};
+  \node[pg] (sf) at (8.1,-0.7) {\texttt{sfdisk}\\[2pt]\texttt{-{}-dump} e restauração\\o backup da tabela};
+
+  \node[rc] (tf) at (12.4,1.6)  {\texttt{testdisk}\\[2pt]reconstrói tabela\\perdida};
+  \node[rc] (wf) at (12.4,-0.7) {\texttt{wipefs}\\[2pt]lista e remove\\assinaturas};
+
+  \node[nt,text width=14.2cm] at (6.4,-3.2) {A separação que importa é a da coluna do meio: ferramenta interativa pede confirmação e perdoa engano até o \texttt{w}; ferramenta programável executa na hora, sem perguntar. Um \texttt{sgdisk -{}-zap-all} digitado no dispositivo errado não tem passo de confirmação --- é por isso que script de particionamento se testa em \texttt{losetup} antes de ver hardware.};
+\end{tikzpicture}
+```
+As ferramentas de particionamento e a tarefa típica de cada uma.
+:::
+
+Na prática, a rotina se resolve com três: **`fdisk`** para editar à mão, **`sfdisk --dump`** para salvar a tabela antes de mexer, e **`partprobe`** para fazer o kernel enxergar o resultado.
+
+## O momento `w`: nada acontece até você mandar
+
+A propriedade mais importante do `fdisk`, do `gdisk` e do `cfdisk` é que eles trabalham numa **cópia em memória** da tabela de partição. Criar, apagar e redimensionar entradas não toca o disco. Só o comando `w` (*write*) grava, e só o `q` (*quit*) sai descartando tudo.
+
+```bash
+sudo fdisk /dev/loop0
+```
+
+```text
+Welcome to fdisk (util-linux 2.40.2).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+Command (m for help):
+```
+
+Aquela primeira linha — *changes will remain in memory only* — é a rede de segurança inteira do programa. Os comandos que valem memorizar:
+
+| Tecla | Ação |
+|---|---|
+| `m` | menu de ajuda |
+| `p` | imprime a tabela atual (em memória) |
+| `n` | nova partição |
+| `d` | apaga uma partição |
+| `t` | muda o código de tipo |
+| `g` | cria uma tabela GPT nova e vazia |
+| `o` | cria uma tabela MBR nova e vazia |
+| `v` | verifica a consistência |
+| `w` | **grava no disco e sai** |
+| `q` | sai **sem gravar** |
+
+: Comandos essenciais do `fdisk` {#tbl-comandos-fdisk}
+
+O `p` antes do `w` é o hábito que separa quem perde dados de quem não perde: ele mostra exatamente o que será gravado. E se algo estiver errado, `q` desfaz tudo — desde que ainda não se tenha digitado `w`.
+
+::: {.callout-warning}
+## `q` só salva enquanto você não escreveu
+
+Depois do `w`, não há desfazer. A tabela antiga foi sobrescrita e a única volta é restaurar um backup — daí a seção seguinte existir antes de qualquer exemplo de escrita.
+
+A exceção parcial é a GPT: como ela mantém uma cópia no fim do disco (@sec-cap045), o `gdisk` consegue restaurar a tabela principal a partir da secundária com o comando `r` seguido de `b`. Isso salva de corrupção, não de um `w` deliberado que sobrescreveu as duas cópias.
+:::
+
+## Antes de tudo: salvar a tabela
+
+Um backup de tabela de partição ocupa poucos kilobytes e resolve a maioria dos acidentes desta categoria. O `sfdisk` produz um despejo de texto, legível e versionável:
+
+```bash
+sudo sfdisk --dump /dev/sda > ~/tabela-sda-$(date +%F).txt
+cat ~/tabela-sda-2026-08-02.txt
+```
+
+```text
+label: gpt
+label-id: 6C3A9E14-7B2D-4F81-A9C3-5E7D1B04F2A8
+device: /dev/sda
+unit: sectors
+first-lba: 34
+last-lba: 209715166
+
+/dev/sda1 : start=2048, size=1048576, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI System"
+/dev/sda2 : start=1050624, size=204468224, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+```
+
+A restauração é a operação inversa, e devolve a tabela exatamente como estava:
+
+```bash
+sudo sfdisk /dev/sda < ~/tabela-sda-2026-08-02.txt
+```
+
+Guarde esse arquivo **fora do disco que ele descreve**. Um backup de tabela salvo na partição que sumiu não ajuda ninguém.
+
+Para GPT, o `sgdisk` oferece um backup binário equivalente, que inclui os GUIDs e a cópia secundária:
+
+```bash
+sudo sgdisk --backup=/tmp/gpt-sda.bin /dev/sda
+sudo sgdisk --load-backup=/tmp/gpt-sda.bin /dev/sda    # a restauracao
+```
+
+## `fdisk`: o fluxo de trabalho normal
+
+Criar uma partição nova ocupando todo o espaço livre de um disco:
+
+```bash
+sudo fdisk /dev/loop0
+```
+
+A sequência dentro do programa, com o que responder:
+
+```text
+Command (m for help): g          # cria tabela GPT nova (destroi a anterior)
+Command (m for help): n          # nova particao
+Partition number (1-128, default 1): <Enter>
+First sector (2048-2097118, default 2048): <Enter>
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (2048-2097118, default 2097118): +400M
+Command (m for help): t          # muda o tipo
+Partition type or alias: 20      # 20 = Linux filesystem
+Command (m for help): p          # confere antes de gravar
+Command (m for help): w          # grava
+```
+
+Três detalhes que economizam tempo:
+
+- **Aceitar os padrões é quase sempre certo.** O `fdisk` sugere o primeiro setor alinhado disponível e o último setor do disco. Digitar valores à mão é onde nasce o desalinhamento do @sec-cap045.
+- **Tamanho se informa com sufixo**, não com número de setor: `+400M`, `+20G`, `+1T`. Deixar o último setor no padrão preenche o resto do disco.
+- **O código de tipo é opcional na maioria dos casos.** O padrão `Linux filesystem` serve; mudar só importa para EFI, swap, LVM e RAID (@sec-cap045).
+
+Para apagar e recomeçar:
+
+```text
+Command (m for help): d          # apaga (pede o numero se houver mais de uma)
+Command (m for help): p          # confirma que sumiu
+Command (m for help): w
+```
+
+## `gdisk`: GPT e recuperação
+
+O `gdisk` é o especialista em GPT. Os comandos básicos são os mesmos do `fdisk` — `n`, `d`, `p`, `t`, `w` —, mas ele expõe o que a GPT tem de próprio: GUID por partição, rótulo de partição e o menu de recuperação.
+
+```bash
+sudo gdisk /dev/loop0
+```
+
+O menu `r` (*recovery and transformation*) é a razão de o programa existir:
+
+| Comando em `r` | O que faz |
+|---|---|
+| `b` | reconstrói a GPT principal a partir da cópia de segurança |
+| `d` | reconstrói a cópia de segurança a partir da principal |
+| `c` | carrega a tabela de partição da MBR (converte MBR em GPT) |
+| `g` | converte GPT em MBR |
+| `v` | verifica a integridade das duas cópias |
+
+: Menu de recuperação do `gdisk` {#tbl-gdisk-recovery}
+
+A conversão de MBR para GPT sem perder dados é o caso de uso clássico: o `gdisk` lê a MBR existente, monta uma GPT equivalente em memória e a grava. As partições e seus dados ficam intactos, porque só os metadados do início e do fim do disco mudam.
+
+::: {.callout-warning}
+## Converter para GPT quebra o boot se o passo seguinte for esquecido
+
+A conversão preserva os dados das partições, mas **o sistema deixa de iniciar** até que o carregador seja reinstalado no esquema novo. Num sistema BIOS, é preciso criar uma partição `BIOS boot` de 1 MiB (tipo `EF02`) e rodar `grub-install`; num sistema UEFI, uma partição EFI System de tipo `EF00` formatada em FAT32.
+
+Converter o disco de boot de uma máquina em produção sem mídia de recuperação à mão é o caminho curto para um sistema que não sobe. O @sec-cap044 trata do reparo quando isso acontece.
+:::
+
+A versão não interativa, `sgdisk`, faz o mesmo sem menu — e é o que se usa em script:
+
+```bash
+sudo sgdisk -o /dev/loop0                          # tabela GPT nova
+sudo sgdisk -n 1:0:+400M -t 1:8300 -c 1:"dados" /dev/loop0
+sudo sgdisk -n 2:0:0 -t 2:8E00 -c 2:"lvm" /dev/loop0
+sudo sgdisk -p /dev/loop0                          # imprime
+sudo sgdisk -v /dev/loop0                          # verifica
+```
+
+A sintaxe do `-n` é `número:início:fim`, com `0` significando "o padrão" — primeiro setor alinhado livre, no início; último setor do disco, no fim. É por isso que `-n 2:0:0` cria uma partição que ocupa todo o espaço restante.
+
+::: {.callout-important}
+## `sgdisk --zap-all` não pergunta nada
+
+```bash
+sudo sgdisk --zap-all /dev/sdX     # apaga GPT principal, secundaria e MBR
+```
+
+Este comando destrói toda a informação de partição do disco imediatamente, sem confirmação e sem etapa de gravação separada. É útil para limpar um disco que será reutilizado, e é a forma mais rápida de perder um disco inteiro por erro de digitação de uma letra.
+
+Se o objetivo é reutilizar um disco, `wipefs -a` é preferível por ser mais explícito sobre o que remove — e `wipefs` sem `-a` apenas **lista** as assinaturas encontradas, o que o torna seguro para inspeção.
+:::
+
+## `parted`: programável e capaz de redimensionar
+
+O `parted` se distingue por trabalhar em **unidades de tamanho** em vez de setores, por aceitar comandos direto na linha e por saber redimensionar partições:
+
+```bash
+sudo parted /dev/loop0 print
+sudo parted -s /dev/loop0 mklabel gpt
+sudo parted -s /dev/loop0 mkpart dados ext4 1MiB 400MiB
+sudo parted -s /dev/loop0 mkpart troca linux-swap 400MiB 100%
+sudo parted /dev/loop0 align-check optimal 1
+```
+
+O `-s` (*script*) suprime as perguntas. Sem ele, o `parted` é interativo — mas com uma diferença crítica em relação ao `fdisk`:
+
+::: {.callout-warning}
+## O `parted` grava imediatamente — não existe `w`
+
+Cada comando do `parted` é aplicado ao disco assim que é digitado. Não há cópia em memória, não há `q` que desfaça. `rm 2` apaga a partição 2 naquele instante.
+
+Quem alterna entre as duas ferramentas precisa ter isso presente: o `fdisk` perdoa até o `w`, o `parted` não perdoa nunca. Para edição exploratória, use `fdisk`; para automação, `parted -s` ou `sgdisk`.
+:::
+
+O `align-check optimal N` responde se a partição `N` está alinhada corretamente, e é a verificação mais direta do problema de desempenho descrito no @sec-cap045.
+
+Sempre indique unidades explícitas — `1MiB`, `400MiB`, `100%` — em vez de números soltos. Sem unidade, o `parted` assume megabytes decimais e produz partições desalinhadas por um punhado de setores.
+
+## Fazer o kernel enxergar: o erro do `Device or resource busy`
+
+Aqui está a explicação do cenário de abertura. Escrever a tabela de partição em disco é uma coisa; fazer o kernel **reler** essa tabela é outra. Enquanto o kernel não reler, `/dev/sdb1` não existe, o `lsblk` não mostra nada e o `mkfs` falha.
+
+Normalmente as ferramentas pedem a releitura sozinhas ao gravar. Ela falha quando **qualquer partição do disco está montada ou em uso** — o kernel se recusa a trocar o mapa de um disco cujos dados estão sendo acessados, porque isso corromperia o sistema de arquivos montado.
+
+```bash
+sudo partprobe /dev/sdb              # pede releitura da tabela inteira
+sudo partx -u /dev/sdb               # atualiza as particoes conhecidas
+sudo partx -a /dev/sdb               # adiciona particoes novas
+sudo blockdev --rereadpt /dev/sdb    # a chamada crua do kernel
+lsblk /dev/sdb                       # confirma
+```
+
+Quando nenhum deles funciona, a causa é sempre uma dessas:
+
+```bash
+lsblk /dev/sdb                       # alguma particao montada?
+sudo fuser -mv /dev/sdb1             # quem esta usando?
+sudo swapon --show                   # swap ativa nesse disco?
+sudo dmsetup ls                      # LVM ou LUKS mapeado em cima?
+sudo cat /proc/mdstat                # RAID usando esse disco?
+```
+
+A ordem de resolução é desmontar (`umount`), desativar swap (`swapoff`), desmontar volumes lógicos (`vgchange -an`) e fechar mapeamentos LUKS (`cryptsetup close`) — nessa sequência, de cima para baixo na pilha. Se o disco em questão hospeda a raiz do sistema, nada disso é possível com o sistema rodando, e a operação exige mídia live.
+
+## Redimensionar: a ordem que não pode ser invertida
+
+Redimensionar envolve **duas camadas** — a partição, na tabela, e o sistema de arquivos dentro dela — e a ordem entre elas depende do sentido da operação. Inverter destrói dados.
+
+::: {#fig-ordem-redimensionamento}
+```{.tikz}
+%%| filename: ordem-de-redimensionamento
+%%| alt: Diagrama comparando a ordem correta das operacoes ao aumentar e ao reduzir uma particao, com a regra geral em destaque
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.5cm,minimum height=1.25cm},
+    pt/.style={bx,draw=manualblue,fill=manualblue!12},
+    fs/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    ti/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    fl/.style={thick,-{Stealth[length=4.5pt]}}
+  ]
+  \node[ti,manualgreen,anchor=west] at (0,2.7) {AUMENTAR --- de fora para dentro};
+  \node[pt] (a1) at (2.4,1.4) {1. crescer a\\\textbf{partição}};
+  \node[fs] (a2) at (8.0,1.4) {2. crescer o\\\textbf{sistema de arquivos}};
+  \draw[fl,manualgreen] (a1) -- (a2);
+  \node[lb,anchor=north] at (2.4,0.65) {\texttt{parted resizepart}};
+  \node[lb,anchor=north] at (8.0,0.65) {\texttt{resize2fs} / \texttt{xfs\_growfs}};
+
+  \node[ti,manualred,anchor=west] at (0,-0.7) {REDUZIR --- de dentro para fora};
+  \node[fs] (b1) at (2.4,-2.0)  {1. encolher o\\\textbf{sistema de arquivos}};
+  \node[pt] (b2) at (8.0,-2.0)  {2. encolher a\\\textbf{partição}};
+  \draw[fl,manualred] (b1) -- (b2);
+  \node[lb,anchor=north] at (2.4,-2.75)  {\texttt{resize2fs} (desmontado)};
+  \node[lb,anchor=north] at (8.0,-2.75) {\texttt{parted resizepart}};
+
+  \node[nt,text width=14.2cm] at (6.6,-4.5) {A regra em uma frase: \textbf{o sistema de arquivos nunca pode ser maior que a partição que o contém}. Ao aumentar, crescer a partição primeiro garante que a segunda etapa tenha espaço; ao reduzir, encolher o sistema de arquivos primeiro garante que a partição menor ainda cubra todos os dados. Inverter na redução corta o fim do sistema de arquivos --- e é perda de dados imediata, não um erro recuperável. O XFS agrava o caso: ele \textbf{só cresce}, nunca encolhe, e reduzir um volume XFS exige recriar e restaurar de backup.};
+\end{tikzpicture}
+```
+A ordem das operações ao redimensionar, e por que ela é obrigatória.
+:::
+
+Um aumento completo, do começo ao fim:
+
+```bash
+sudo umount /dev/loop0p1
+sudo parted /dev/loop0 resizepart 1 100%     # 1. a particao
+sudo e2fsck -f /dev/loop0p1                  # 2. checagem obrigatoria
+sudo resize2fs /dev/loop0p1                  # 3. o sistema de arquivos
+```
+
+Sem argumento de tamanho, o `resize2fs` expande até preencher a partição, que é o que se quer em quase todos os casos. Vale notar que o ext4 **cresce montado** — `resize2fs` num sistema de arquivos em uso funciona — mas só encolhe desmontado.
+
+Uma redução, com o `e2fsck` obrigatório antes:
+
+```bash
+sudo umount /dev/loop0p1
+sudo e2fsck -f /dev/loop0p1
+sudo resize2fs /dev/loop0p1 300M            # 1. o sistema de arquivos
+sudo parted /dev/loop0 resizepart 1 350MiB  # 2. a particao, com folga
+```
+
+A folga entre 300M e 350MiB é deliberada: fazer a partição terminar exatamente no fim do sistema de arquivos deixa margem zero para erro de arredondamento entre unidades. Alguns megabytes desperdiçados custam menos que um sistema de arquivos truncado.
+
+::: {.callout-important}
+## Redução é a operação mais perigosa deste volume
+
+Reduzir sistema de arquivos exige: backup restaurável, `e2fsck -f` bem-sucedido antes, e desmontagem. Se qualquer um dos três faltar, a chance de perda é real.
+
+O caminho que evita o problema é estrutural: **usar LVM** (@sec-cap048). Com volumes lógicos, aumentar e reduzir se resolvem com `lvextend -r` e `lvreduce -r`, em que o `-r` coordena as duas camadas na ordem certa automaticamente — e sem depender de espaço contíguo no disco.
+:::
+
+## Limpando um disco para reutilização
+
+Restos de assinaturas antigas confundem as ferramentas: um disco que já foi membro de RAID e depois virou volume LVM pode ter três assinaturas simultâneas, e o `blkid` reporta a primeira que encontrar.
+
+```bash
+sudo wipefs /dev/loop0                # LISTA, nao remove — seguro
+sudo wipefs -a /dev/loop0p1           # remove as assinaturas da particao
+sudo wipefs -a /dev/loop0             # remove as do disco inteiro
+```
+
+O `wipefs` sem `-a` é puramente informativo, e é um bom primeiro comando ao encontrar um disco de procedência desconhecida.
+
+Para os casos em que os dados precisam ser realmente destruídos, e não apenas os metadados:
+
+```bash
+sudo shred -v -n 1 /dev/loop0         # uma passagem de dados aleatorios
+sudo blkdiscard /dev/nvme0n1          # TRIM no SSD inteiro — instantaneo
+```
+
+Uma passagem única de dados aleatórios é suficiente em disco magnético moderno; as recomendações de trinta e cinco passagens são de uma era de densidade de gravação muito menor. Em SSD, nenhuma das duas abordagens é confiável, porque o controlador remapeia blocos internamente — o método correto ali é o *secure erase* do próprio firmware (`hdparm --security-erase` ou `nvme format --ses=1`), ou ter usado criptografia desde o início (@sec-cap050), caso em que destruir a chave basta.
+
+## 🐉 No Kali
+
+- **O instalador do Kali oferece particionamento guiado, e a opção com LVM criptografado é a escolha certa para máquina de trabalho.** Ela cria a EFI, uma `/boot` sem criptografia e um volume LUKS contendo o grupo de volumes com raiz e swap. Isso resolve de uma vez a flexibilidade do LVM e a proteção em repouso — relevante num equipamento que carrega dados de cliente e viaja. O esquema é destrinchado no @sec-cap050.
+- **A `/boot` separada continua fazendo sentido no rolling.** Num sistema em que o kernel é atualizado com frequência, uma `/boot` de menos de 512 MiB enche de *initramfs* antigos e faz o `apt` falhar no meio de uma atualização, com o sistema num estado desconfortável. Reserve 1 GiB e rode `sudo apt autoremove --purge` periodicamente para limpar kernels antigos (@sec-cap034).
+- **Particionar o pendrive de persistência é o caso real mais comum de `fdisk` para quem usa Kali.** O procedimento é criar uma terceira partição no pendrive depois das duas da imagem, rotulá-la `persistence` e formatá-la em ext4 — e ele começa por um `fdisk` no dispositivo certo. Aqui a confusão de nomenclatura do @sec-cap045 é especialmente perigosa: o pendrive alvo e o disco interno estão os dois presentes, e um erro de letra formata o sistema.
+- **Perícia: nunca particione a mídia examinada — trabalhe sobre uma imagem.** O procedimento é criar uma cópia bit a bit com `dd` ou `dcfldd`, verificar por *hash*, e então examinar a **imagem** com `losetup -rP` (o `-r` monta a imagem como somente leitura). Todas as ferramentas deste capítulo funcionam sobre o dispositivo *loop* resultante, e o original permanece intocado. É a mesma técnica do laboratório, aplicada a evidência real.
+- **`kali-tweaks` não mexe em disco.** Vale registrar o limite: a ferramenta configura repositórios, shell e metapacotes (@sec-cap036), mas particionamento é sempre trabalho manual das ferramentas deste capítulo. Não existe atalho.
+- **A imagem para máquina virtual vem com o disco quase cheio.** As imagens prontas do Kali para VirtualBox e VMware trazem partições dimensionadas para a imagem, não para o disco expandido. Depois de aumentar o disco virtual no hipervisor, é preciso fazer o trabalho de dentro: `parted resizepart` seguido de `resize2fs`, exatamente na ordem da @fig-ordem-redimensionamento.
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas e se comportam de forma idêntica; o que muda é o contexto em que são usadas. Como RHEL, Rocky e AlmaLinux instalam sobre LVM por padrão, a maior parte do trabalho de redimensionamento ali nunca chega ao `parted` — resolve-se com `lvextend -r`, e a partição física raramente é tocada. O XFS, que é o sistema de arquivos padrão da família, torna a metade direita da @fig-ordem-redimensionamento inaplicável: não existe redução, e a única saída é `xfsdump`, recriar e `xfsrestore`. Em instalação mínima, `gdisk` e `parted` podem não estar presentes e vêm de `dnf install gdisk parted`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Nenhum passo toca em disco real** — tudo acontece sobre um arquivo-imagem via `losetup`, e o passo 12 remove tudo. Confira o nome do dispositivo *loop* que o passo 1 imprime e use **esse** nos passos seguintes, caso não seja `/dev/loop0`.
+
+1. **Monte o disco de laboratório.**
+
+   ```bash
+   sudo apt install -y gdisk parted
+   mkdir -p ~/lab-part && cd ~/lab-part
+   truncate -s 2G disco.img
+   sudo losetup -fP --show disco.img
+   ```
+
+   Esperado: o dispositivo criado é impresso, tipicamente `/dev/loop0`. Se for outro, substitua nos comandos seguintes.
+
+2. **Crie uma tabela GPT e duas partições com `fdisk`.**
+
+   ```bash
+   sudo fdisk /dev/loop0
+   ```
+
+   Digite, em ordem: `g`, `n`, `<Enter>`, `<Enter>`, `+500M`, `n`, `<Enter>`, `<Enter>`, `+500M`, `p`, `w`.
+
+   Esperado: o `p` mostra duas partições de 500 MiB começando no setor 2048, e o `w` grava e sai.
+
+3. **Confirme que o kernel enxergou as partições.**
+
+   ```bash
+   lsblk /dev/loop0
+   sudo partprobe /dev/loop0
+   lsblk /dev/loop0
+   ```
+
+   Esperado: `loop0p1` e `loop0p2` presentes. Como nada está montado, a releitura funciona sem reclamar.
+
+4. **Salve a tabela de partição.**
+
+   ```bash
+   sudo sfdisk --dump /dev/loop0 > ~/tabela-lab.txt
+   cat ~/tabela-lab.txt
+   ```
+
+   Esperado: um arquivo de texto com `label: gpt` e uma linha por partição. Este é o backup que o passo 8 vai restaurar.
+
+5. **Pratique o `q` do `fdisk`.**
+
+   ```bash
+   sudo fdisk /dev/loop0
+   ```
+
+   Digite `d`, `1`, `p` — a partição 1 sumiu da listagem — e então `q` para sair sem gravar.
+
+   ```bash
+   lsblk /dev/loop0
+   ```
+
+   Esperado: `loop0p1` continua existindo. A remoção só aconteceu na cópia em memória, e o `q` a descartou.
+
+6. **Agora apague de verdade e observe a diferença.**
+
+   ```bash
+   sudo sgdisk -d 2 /dev/loop0
+   sudo partprobe /dev/loop0
+   lsblk /dev/loop0
+   ```
+
+   Esperado: `loop0p2` desapareceu de fato. O `sgdisk` não tem etapa de confirmação — executou na hora, e é exatamente esse o ponto da @fig-ferramentas-particionamento.
+
+7. **Formate a partição 1 e escreva um arquivo nela.**
+
+   ```bash
+   sudo mkfs.ext4 -q -L teste /dev/loop0p1
+   sudo mkdir -p /mnt/lab && sudo mount /dev/loop0p1 /mnt/lab
+   echo "conteudo importante" | sudo tee /mnt/lab/prova.txt
+   df -h /mnt/lab
+   ```
+
+   Esperado: partição montada com cerca de 500 MiB e o arquivo gravado. Ele serve para provar, no passo 10, que redimensionar preserva os dados.
+
+8. **Restaure a tabela salva e veja a partição 2 voltar.**
+
+   ```bash
+   sudo sfdisk /dev/loop0 < ~/tabela-lab.txt
+   sudo partprobe /dev/loop0
+   lsblk /dev/loop0
+   ```
+
+   Esperado: `loop0p2` volta a existir, e `loop0p1` continua montada com o arquivo intacto. Um backup de tabela de poucos kilobytes desfez a exclusão do passo 6.
+
+9. **Provoque o erro `Device or resource busy`.**
+
+   ```bash
+   sudo sgdisk -d 1 /dev/loop0 2>&1 | tail -3
+   sudo partprobe /dev/loop0 2>&1 | tail -3
+   ```
+
+   Esperado: reclamação de dispositivo ocupado, porque `loop0p1` está montada. Restaure a tabela e siga:
+
+   ```bash
+   sudo sfdisk /dev/loop0 < ~/tabela-lab.txt
+   sudo umount /mnt/lab
+   sudo partprobe /dev/loop0
+   ```
+
+10. **Redimensione na ordem correta.**
+
+    ```bash
+    sudo sgdisk -d 2 /dev/loop0
+    sudo partprobe /dev/loop0
+    sudo parted -s /dev/loop0 resizepart 1 100%
+    sudo e2fsck -f /dev/loop0p1
+    sudo resize2fs /dev/loop0p1
+    sudo mount /dev/loop0p1 /mnt/lab && df -h /mnt/lab
+    cat /mnt/lab/prova.txt
+    ```
+
+    Esperado: quase 2 GiB disponíveis e o arquivo `prova.txt` com o conteúdo original. Partição primeiro, sistema de arquivos depois — a metade esquerda da @fig-ordem-redimensionamento.
+
+11. **Inspecione as assinaturas com `wipefs`.**
+
+    ```bash
+    sudo umount /mnt/lab
+    sudo wipefs /dev/loop0p1
+    sudo wipefs /dev/loop0
+    sudo parted /dev/loop0 align-check optimal 1
+    ```
+
+    Esperado: a assinatura `ext4` na partição, a `gpt` no disco, e `1 aligned` na verificação de alinhamento. Note que `wipefs` sem `-a` apenas listou — nada foi removido.
+
+12. **Desmonte o laboratório.**
+
+    ```bash
+    sudo losetup -d /dev/loop0
+    sudo rmdir /mnt/lab
+    cd ~ && rm -rf ~/lab-part ~/tabela-lab.txt
+    lsblk | grep loop; echo "codigo: $?"
+    ```
+
+    Esperado: nenhum dispositivo *loop* restante. Nenhum disco real foi tocado em momento algum.
+
+## Resumo
+
+- **`fdisk`, `gdisk` e `cfdisk` trabalham numa cópia em memória**: nada vai para o disco até o `w`, e o `q` descarta tudo. O `parted` é o oposto — cada comando é aplicado imediatamente, sem desfazer.
+- **`sfdisk --dump` antes de qualquer alteração** produz um backup de texto de poucos kilobytes que restaura a tabela inteira. Guardá-lo fora do disco que ele descreve é parte do procedimento.
+- **Escrever a tabela e o kernel enxergá-la são passos distintos.** `partprobe`, `partx -u` e `blockdev --rereadpt` pedem a releitura, e ela falha com `Device or resource busy` enquanto alguma partição do disco estiver montada, em uso como swap ou mapeada por LVM, LUKS ou RAID.
+- **Ao aumentar, partição primeiro; ao reduzir, sistema de arquivos primeiro.** A regra é que o sistema de arquivos nunca pode ser maior que a partição que o contém. Inverter na redução trunca os dados de forma irrecuperável.
+- **XFS só cresce.** Reduzir um volume XFS exige despejar, recriar e restaurar — não há operação equivalente ao `resize2fs` de redução.
+- **`sgdisk` e `parted -s` executam sem confirmar.** São as ferramentas certas para script e as erradas para exploração; `--zap-all` num dispositivo digitado errado destrói o disco na hora.
+- **`wipefs` sem `-a` apenas lista assinaturas**, o que o torna o primeiro comando seguro num disco de procedência desconhecida. Com `-a`, remove — e é como se limpa um disco que carrega restos de RAID ou LVM antigos.
+- **Em SSD, apagar dados de verdade não se faz com `shred`**, porque o controlador remapeia blocos. O caminho é o *secure erase* do firmware ou, melhor, ter criptografado desde o início e destruir a chave.
