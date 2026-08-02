@@ -1,3 +1,495 @@
 # Usuários, grupos e o arquivo /etc/passwd {#sec-cap021}
 
-*(em elaboracao)*
+Você roda `ls -l` num diretório de log e encontra isto:
+
+```text
+-rw-r----- 1 systemd-timesync systemd-timesync 4096 ago  1 09:14 sync.log
+-rw-r----- 1 999 999 8192 ago  1 09:14 antigo.log
+```
+
+Dois arquivos, o mesmo esquema de propriedade, e mesmo assim um mostra um nome e o outro mostra o número `999`. Nada quebrou. O segundo arquivo simplesmente pertence a um UID que **não tem mais linha** em `/etc/passwd` — o pacote que criava aquela conta foi removido, e o número ficou órfão.
+
+Esse detalhe revela o que este capítulo inteiro desenvolve: para o kernel, usuário **é** um número. Nome, senha, shell e diretório pessoal são conveniências que vivem em arquivos de texto no espaço de usuário, e o `ls` consulta esses arquivos apenas para embelezar a saída. Entender a diferença entre o número que o kernel guarda e o nome que você lê é o que separa administrar contas de chutar comandos.
+
+## Para o kernel, usuário é um inteiro
+
+Todo processo carrega um conjunto de credenciais numéricas: um UID (*user ID*), um GID (*group ID*) e uma lista de grupos suplementares. Quando o processo tenta abrir um arquivo, o kernel compara **esses números** com os números gravados no inode (@sec-cap015). Nenhuma string participa da decisão.
+
+```bash
+id
+```
+
+```text
+uid=1000(kali) gid=1000(kali) grupos=1000(kali),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev)
+```
+
+O que aparece entre parênteses é tradução, não dado. Peça só os números:
+
+```bash
+id -u        # 1000
+id -g        # 1000
+id -G        # 1000 4 24 27 30 46
+```
+
+A consequência prática aparece o tempo todo em backups e contêineres: copie um arquivo com `tar -p` para outra máquina e o dono do arquivo lá será quem tiver **UID 1000** naquela máquina, não quem se chama `kali`. Se os números não baterem, os arquivos mudam de dono sem que ninguém tenha executado `chown`.
+
+## `/etc/passwd`: sete campos separados por dois-pontos
+
+Apesar do nome, `/etc/passwd` não guarda senha desde os anos 1990. Ele é o catálogo de contas — legível por todos, porque qualquer processo precisa traduzir UID em nome. @fig-campos-passwd decompõe uma linha.
+
+::: {#fig-campos-passwd}
+```{.tikz}
+%%| filename: campos-do-arquivo-etc-passwd
+%%| alt: Linha do arquivo etc passwd dividida em sete campos rotulados nome senha uid gid gecos home e shell
+\begin{tikzpicture}[
+    cx/.style={rounded corners=2pt,font=\scriptsize\ttfamily,minimum height=0.62cm,thick,inner sep=3pt},
+    a/.style={cx,draw=manualblue,fill=manualblue!13},
+    b/.style={cx,draw=manualgray,fill=manualgray!12},
+    c/.style={cx,draw=manualgreen,fill=manualgreen!15},
+    d/.style={cx,draw=manualyellow,fill=manualyellow!22},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    lb/.style={font=\scriptsize\bfseries,align=center}
+  ]
+  \node[a] (f1) at (0,0)     {kali};
+  \node[b] (f2) at (1.35,0)  {x};
+  \node[c] (f3) at (2.25,0)  {1000};
+  \node[c] (f4) at (3.35,0)  {1000};
+  \node[b] (f5) at (4.9,0)   {Kali Live User};
+  \node[d] (f6) at (7.0,0)   {/home/kali};
+  \node[d] (f7) at (9.3,0)   {/usr/bin/zsh};
+
+  \node[lb,manualblue]      at (0,0.6)    {1. nome};
+  \node[lb,manualgray]      at (1.35,0.95) {2. senha};
+  \node[lb,manualgreen]     at (2.25,0.6)  {3. UID};
+  \node[lb,manualgreen]     at (3.35,0.95) {4. GID};
+  \node[lb,manualgray]      at (4.9,0.6)   {5. GECOS};
+  \node[lb,manualyellow!65!black] at (7.0,0.95) {6. diretório};
+  \node[lb,manualyellow!65!black] at (9.3,0.6)  {7. shell};
+
+  \node[nt,align=left,text width=12.4cm] at (4.9,-1.2) {\textbf{2. senha:} sempre \texttt{x} num sistema moderno --- o hash mora em \texttt{/etc/shadow}. \quad \textbf{3--4:} os únicos campos que o kernel usa.\\\textbf{5. GECOS:} nome real e contatos, subcampos separados por vírgula, editável com \texttt{chfn}. \quad \textbf{7:} um shell inválido aqui bloqueia login interativo.};
+  \node[nt,align=left,text width=12.4cm] at (4.9,-2.35) {O arquivo é \texttt{644}: legível por todos por necessidade. Qualquer processo que mostre ``dono: kali'' em vez de ``dono: 1000'' precisou lê-lo.};
+\end{tikzpicture}
+```
+Os sete campos de uma linha de `/etc/passwd`, separados por dois-pontos.
+:::
+
+Leia o seu:
+
+```bash
+grep "^$USER:" /etc/passwd
+getent passwd "$USER"
+```
+
+O campo de shell merece atenção. Contas de serviço trazem `/usr/sbin/nologin` ou `/bin/false` — o primeiro imprime uma mensagem educada e sai, o segundo apenas sai com código 1. Em ambos os casos o login interativo morre ali. Não é uma trava forte de segurança: a conta continua podendo executar processos, receber arquivos e, dependendo da configuração, autenticar em serviços que não usam shell.
+
+## `/etc/shadow`: onde a senha realmente está
+
+```bash
+sudo getent shadow "$USER"
+```
+
+```text
+kali:$y$j9T$Xa1...$Kd9:20301:0:99999:7:::
+```
+
+São nove campos, também separados por dois-pontos:
+
+| # | Campo | Significado |
+|:---:|---|---|
+| 1 | nome | a conta, chave de ligação com `/etc/passwd` |
+| 2 | hash | algoritmo, sal e hash da senha |
+| 3 | última troca | dias desde 01/01/1970 |
+| 4 | mínimo | dias antes de poder trocar de novo |
+| 5 | máximo | dias até a senha expirar |
+| 6 | aviso | dias de aviso antes da expiração |
+| 7 | inatividade | dias de tolerância depois de expirar |
+| 8 | expiração | dia em que a **conta** expira |
+| 9 | reservado | não usado |
+
+: Os nove campos de `/etc/shadow` {#tbl-campos-shadow}
+
+O segundo campo é o que interessa aqui. Ele é estruturado em `$id$sal$hash`, e o `id` identifica o algoritmo:
+
+| Prefixo | Algoritmo | Situação |
+|:---:|---|---|
+| `$y$` | yescrypt | padrão atual do Debian e do Kali |
+| `$6$` | SHA-512 | ainda muito comum, aceitável |
+| `$2b$` | bcrypt | comum em BSD e em aplicações |
+| `$1$` | MD5 | obsoleto, não use |
+
+: Prefixos de hash em `/etc/shadow` {#tbl-prefixos-hash}
+
+Dois valores no campo de hash não são hash nenhum e confundem muita gente:
+
+- **`!` sozinho ou seguido do hash** — conta **bloqueada** para senha. O hash original fica preservado atrás do `!`, e `usermod -U` o devolve. Bloquear a senha não impede login por chave SSH.
+- **campo vazio** — conta **sem senha**. Qualquer um autentica com senha em branco. É um achado grave numa auditoria.
+
+A permissão do arquivo é a razão de ele existir:
+
+```bash
+ls -l /etc/passwd /etc/shadow
+```
+
+```text
+-rw-r--r-- 1 root root   2847 ago  1 09:14 /etc/passwd
+-rw-r----- 1 root shadow 1523 ago  1 09:14 /etc/shadow
+```
+
+`644` contra `640`. A separação nasceu justamente porque `/etc/passwd` precisa ser público e o hash não pode ser. Quando os dois moravam no mesmo arquivo, qualquer usuário levava os hashes para casa e quebrava offline, sem deixar rastro no sistema.
+
+## Grupos: primário e suplementares
+
+Um usuário tem exatamente **um** grupo primário e quantos suplementares forem necessários. @fig-credenciais-processo mostra como as duas coisas entram nas credenciais de um processo.
+
+::: {#fig-credenciais-processo}
+```{.tikz}
+%%| filename: grupo-primario-e-suplementares
+%%| alt: Diagrama ligando a linha do etc passwd ao grupo primario e as linhas do etc group aos grupos suplementares que compoem as credenciais do processo
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt},
+    src/.style={bx,draw=manualgray,fill=manualgray!10,text width=3.1cm},
+    pri/.style={bx,draw=manualblue,fill=manualblue!13,text width=2.7cm},
+    sup/.style={bx,draw=manualgreen,fill=manualgreen!15,text width=2.7cm},
+    cred/.style={bx,draw=manualred,fill=manualred!10,text width=3.3cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[src] (p) at (0,0.9)    {\texttt{/etc/passwd}\\campo 4 = \texttt{1000}};
+  \node[src] (g) at (0,-1.1)   {\texttt{/etc/group}\\linhas que citam \texttt{kali}};
+
+  \node[pri] (pg) at (4.2,0.9)  {grupo \textbf{primário}\\\texttt{kali} (1000)};
+  \node[sup] (sg) at (4.2,-1.1) {grupos \textbf{suplementares}\\\texttt{sudo}, \texttt{adm}, \texttt{plugdev}};
+
+  \node[cred] (cr) at (8.6,-0.1) {credenciais do processo\\\texttt{uid=1000}\\\texttt{gid=1000}\\\texttt{groups=1000,4,24,27}};
+
+  \draw[fl] (p)  -- (pg);
+  \draw[fl] (g)  -- (sg);
+  \draw[fl] (pg) -- (cr);
+  \draw[fl] (sg) -- (cr);
+
+  \node[nt,text width=5.2cm] at (3.2,-2.9) {O grupo \textbf{primário} é o dono de tudo que você cria: aparece no \texttt{ls -l} de cada arquivo novo.};
+  \node[nt,text width=5.6cm] at (9.4,-2.9) {Os \textbf{suplementares} só concedem acesso. São lidos no \textbf{login} --- por isso um grupo recém-atribuído não vale na sessão em andamento.};
+\end{tikzpicture}
+```
+O grupo primário vem de `/etc/passwd`; os suplementares, das linhas de `/etc/group`.
+:::
+
+O arquivo `/etc/group` tem quatro campos:
+
+```bash
+getent group sudo
+```
+
+```text
+sudo:x:27:kali,pentester
+```
+
+Nome, senha (obsoleta, em `/etc/gshadow`), GID e a lista de membros **suplementares**. Repare no detalhe que mais engana: quem tem aquele grupo como **primário** não aparece nessa lista. O grupo `kali` normalmente tem o quarto campo vazio mesmo tendo o usuário `kali` dentro dele, porque a ligação está em `/etc/passwd`.
+
+Por isso a forma correta de perguntar "quem está no grupo X" combina as duas fontes:
+
+```bash
+getent group docker | cut -d: -f4          # so os suplementares
+awk -F: '$4==118 {print $1}' /etc/passwd   # quem tem o GID como primario
+```
+
+E a pegadinha do dia a dia: você foi adicionado ao grupo `docker`, e continua recebendo `permission denied`. Os grupos suplementares entram no processo no **login** e são herdados dali para baixo. O shell aberto antes da mudança nunca vai enxergá-los.
+
+```bash
+id                    # ainda sem o grupo novo
+newgrp docker         # abre um shell com o grupo, paliativo
+exec su - "$USER"     # renova a sessao
+```
+
+A solução definitiva é sair e entrar de novo. Verifique a diferença entre o que está registrado e o que o seu processo carrega:
+
+```bash
+id -Gn                       # o que este processo tem
+groups "$USER"               # o que os arquivos dizem
+```
+
+Quando as duas saídas divergem, é exatamente esse o caso.
+
+## Tipos de conta e a faixa de UID
+
+Nem toda conta é gente. O Debian — e portanto o Kali — divide as faixas assim:
+
+| Faixa de UID | Tipo | Exemplos |
+|:---:|---|---|
+| `0` | superusuário | `root` |
+| `1–99` | sistema, estáticas | `daemon`, `bin`, `sys`, `sync` |
+| `100–999` | sistema, dinâmicas | `systemd-timesync`, `_apt`, `messagebus` |
+| `1000–59999` | usuários comuns | `kali`, e quem você criar |
+| `65534` | `nobody` | usuário sem privilégio, usado em NFS e sandboxes |
+
+: Faixas de UID no Debian e no Kali {#tbl-faixas-uid}
+
+Os limites vivem em `/etc/adduser.conf` e `/etc/login.defs`:
+
+```bash
+grep -E '^(UID|GID)_(MIN|MAX)' /etc/login.defs
+grep -E '^(FIRST|LAST)_(SYS_)?(UID|GID)' /etc/adduser.conf
+```
+
+Contas de sistema existem para dar a cada serviço um UID próprio. Se o `nginx` roda como `www-data`, uma falha nele compromete o que `www-data` alcança — não o sistema inteiro. É o princípio do menor privilégio aplicado na camada mais barata que existe.
+
+Para separar humanos de serviços numa máquina desconhecida:
+
+```bash
+awk -F: '$3>=1000 && $3<65534 {print $1, $3, $7}' /etc/passwd
+awk -F: '$3<1000 {print $1, $3, $7}' /etc/passwd | head -20
+```
+
+::: {.callout-important}
+## UID 0 é o que define o root, não o nome
+
+O nome `root` é convenção. O que o kernel testa é `uid` igual a zero. Qualquer conta com UID 0 **é** superusuário, com qualquer nome:
+
+```bash
+awk -F: '$3==0 {print $1}' /etc/passwd
+```
+
+Essa linha precisa retornar exatamente `root`. Uma segunda conta com UID 0 é uma porta dos fundos clássica: passa despercebida numa listagem casual de usuários e tem poder total. É uma das primeiras coisas a verificar numa máquina suspeita.
+:::
+
+## `getent` e o NSS: os arquivos não são a única fonte
+
+`/etc/passwd` é a fonte **local**. Uma máquina integrada a LDAP, Active Directory ou SSSD tem usuários que não aparecem nele. Quem decide onde procurar é o NSS (*Name Service Switch*), configurado em `/etc/nsswitch.conf`:
+
+```bash
+grep -E '^(passwd|group|shadow)' /etc/nsswitch.conf
+```
+
+```text
+passwd:  files systemd
+group:   files systemd
+shadow:  files
+```
+
+A ordem é a ordem de consulta. Por isso `getent` é superior a `grep` para consultar contas: ele pergunta ao NSS e enxerga **todas** as fontes, enquanto o `grep` só lê o arquivo.
+
+```bash
+getent passwd kali        # consulta todas as fontes configuradas
+grep '^kali:' /etc/passwd # so o arquivo local
+getent passwd             # lista tudo que o NSS conhece
+```
+
+Em script de administração, `getent` é a escolha certa — e o código de saída dele já diz se a conta existe:
+
+```bash
+if getent passwd "$conta" >/dev/null; then echo "existe"; fi
+```
+
+## Editar essas bases com segurança
+
+Editar `/etc/passwd` ou `/etc/shadow` com um editor comum é um risco real: sem travas, duas edições simultâneas se sobrescrevem, e um erro de sintaxe pode inviabilizar o login de todo mundo. Existem ferramentas para isso:
+
+```bash
+sudo vipw          # edita /etc/passwd com trava e valida ao sair
+sudo vipw -s       # idem para /etc/shadow
+sudo vigr          # /etc/group
+sudo vigr -s       # /etc/gshadow
+```
+
+E ferramentas de conferência, que devem ser rodadas depois de qualquer manutenção:
+
+```bash
+sudo pwck          # inconsistencias em passwd e shadow
+sudo grpck         # inconsistencias em group e gshadow
+```
+
+O `pwck` aponta diretório pessoal inexistente, shell inválido, entrada duplicada e conta em `/etc/passwd` sem par em `/etc/shadow`. Os comandos de criação e remoção de contas — `useradd`, `adduser`, `usermod`, `userdel` — são o tema do capítulo 025.
+
+## 🐉 No Kali
+
+- **Desde 2020 o Kali não usa mais root por padrão.** A imagem instalada cria um usuário comum (`kali`, UID 1000) com senha `kali` e pertencente ao grupo `sudo`. O modelo antigo, com root direto, existiu porque quase toda ferramenta pedia privilégio; hoje o padrão é o mesmo de qualquer Debian. O capítulo 026 trata do fluxo de trabalho que isso implica.
+- **Trocar a senha padrão é o primeiro comando numa VM nova.** `passwd` no primeiro login. Uma instalação com `kali:kali` exposta em rede é uma máquina de outra pessoa esperando para acontecer.
+- **`/etc/passwd` legível por todos é reconhecimento, não vulnerabilidade.** Depois de qualquer acesso a um sistema, ler `/etc/passwd` revela quais serviços existem — uma conta `postgres` denuncia um banco, `www-data` denuncia um servidor web — e quais contas têm shell de verdade. Ferramentas de enumeração local automatizam essa leitura em teste autorizado. O arquivo ser público é decisão de projeto: sem ele, nada traduziria UID em nome.
+- **`unshadow` e `/etc/shadow` só com autorização escrita.** O par `unshadow passwd.txt shadow.txt > combinado.txt` seguido de `john combinado.txt` é o fluxo padrão de auditoria de senhas — e exige acesso de root ao sistema alvo, ou seja, você já está dentro. Sirva-se dele para medir a força das senhas **da sua própria organização**, com autorização formal e escopo definido. Fora disso, acesso não autorizado a sistema informático é crime no Brasil (Lei 12.737/2012).
+- **Ferramenta do Kali quase sempre cria conta de sistema própria.** Instalar `postgresql` (dependência do Metasploit) traz o usuário `postgres`; `mysql` traz `mysql`. Depois de um `apt install` grande, `getent passwd | awk -F: '$3>=100 && $3<1000'` mostra o que chegou junto.
+- **Grupos que importam no Kali.** `sudo` para elevação; `adm` para ler logs em `/var/log` sem `sudo`; `wireshark` para capturar tráfego sem root (o `dumpcap` usa capabilities, tema do Volume 14); `plugdev` para dispositivos removíveis. Repare que **`docker` é equivalente a root**: quem pode falar com o *daemon* pode montar `/` dentro de um contêiner e sair de lá com privilégio total. Adicionar alguém a `docker` é conceder poder de root, não um subconjunto dele.
+- **UID 0 duplicado é achado de auditoria.** `awk -F: '$3==0' /etc/passwd` deve retornar uma única linha. Vale rodar junto `sudo awk -F: '$2==""' /etc/shadow` para contas sem senha.
+- **Kali no WSL tem autenticação diferente.** O login passa pelo Windows; o usuário Linux é criado na primeira execução e o `sudo` funciona normalmente, mas expectativas sobre políticas de senha e PAM não se transferem do WSL para uma instalação real.
+
+> **Nota sobre a família RHEL.** Os arquivos e os campos são idênticos — é tudo POSIX [@posix2018]. Três diferenças de contexto: (1) o RHEL usa *user private groups* por padrão, ou seja, cada usuário ganha um grupo próprio de mesmo nome, o que muda o cálculo de `umask` seguro (@sec-cap020); (2) `wheel` é o grupo tradicional de administradores no lugar de `sudo`; (3) contas de sistema costumam ocupar `1–200` para pacotes e `201–999` para alocação dinâmica, faixa diferente da do Debian. As ferramentas de edição travada (`vipw`, `vigr`, `pwck`) são as mesmas.
+
+## 🧪 Laboratório
+
+Roteiro de leitura e inspeção. Só os passos 9 a 13 criam algo, e o passo 16 limpa tudo.
+
+1. **Veja suas próprias credenciais numéricas.**
+
+   ```bash
+   id
+   id -u; id -g; id -G
+   echo "$USER"
+   ```
+
+   Esperado: o nome entre parênteses é tradução. Os números são o que o kernel usa.
+
+2. **Leia sua linha de `/etc/passwd` campo a campo.**
+
+   ```bash
+   getent passwd "$USER"
+   getent passwd "$USER" | awk -F: '{print "nome:",$1; print "UID:",$3; print "GID:",$4; print "GECOS:",$5; print "home:",$6; print "shell:",$7}'
+   ```
+
+   Esperado: sete campos, com `x` no segundo.
+
+3. **Compare com o `/etc/shadow`.**
+
+   ```bash
+   ls -l /etc/passwd /etc/shadow
+   getent shadow "$USER" 2>/dev/null || echo "precisa de sudo"
+   sudo getent shadow "$USER" | cut -d: -f2 | cut -c1-4
+   ```
+
+   Esperado: leitura negada sem `sudo`, e o prefixo do hash (`$y$` no Kali atual) revelando o algoritmo.
+
+4. **Separe humanos de contas de serviço.**
+
+   ```bash
+   awk -F: '$3>=1000 && $3<65534 {printf "%-20s %-6s %s\n", $1, $3, $7}' /etc/passwd
+   awk -F: '$3<1000 {printf "%-20s %-6s %s\n", $1, $3, $7}' /etc/passwd | head -15
+   ```
+
+   Esperado: pouquíssimas contas na primeira lista; dezenas na segunda, quase todas com `nologin` ou `false`.
+
+5. **Conte quantas contas podem fazer login interativo.**
+
+   ```bash
+   grep -c . /etc/passwd
+   awk -F: '$7 !~ /(nologin|false)$/ {print $1, $7}' /etc/passwd
+   ```
+
+   Esperado: o total é grande, mas a lista de shells reais é curta — normalmente só `root` e você.
+
+6. **Verifique se há mais de um UID 0 e contas sem senha.**
+
+   ```bash
+   awk -F: '$3==0 {print "UID 0:", $1}' /etc/passwd
+   sudo awk -F: '$2=="" {print "SEM SENHA:", $1}' /etc/shadow
+   ```
+
+   Esperado: exatamente uma linha `UID 0: root` e nenhuma conta sem senha.
+
+7. **Entenda o grupo primário e os suplementares.**
+
+   ```bash
+   getent group "$(id -gn)"
+   id -Gn
+   getent group sudo
+   ```
+
+   Esperado: seu nome **não** aparece na lista de membros do próprio grupo primário — a ligação está em `/etc/passwd`, campo 4.
+
+8. **Descubra todos os membros reais de um grupo.**
+
+   ```bash
+   getent group sudo | cut -d: -f4
+   gid=$(getent group sudo | cut -d: -f3)
+   awk -F: -v g="$gid" '$4==g {print $1}' /etc/passwd
+   ```
+
+   Esperado: a união das duas saídas é a resposta completa.
+
+9. **Crie uma conta descartável e observe o efeito nos arquivos.**
+
+   ```bash
+   sudo useradd -m -s /bin/bash -c "Conta de teste do laboratorio" lab021
+   getent passwd lab021
+   getent group lab021
+   ls -ld /home/lab021
+   sudo getent shadow lab021 | cut -d: -f2
+   ```
+
+   Esperado: UID e GID novos acima de 1000, diretório pessoal criado e `!` no campo de hash — a conta existe e ainda não tem senha utilizável.
+
+10. **Adicione um grupo suplementar e veja o atraso.**
+
+    ```bash
+    sudo groupadd lab021grp
+    sudo usermod -aG lab021grp lab021
+    getent group lab021grp
+    sudo -u lab021 id -Gn
+    ```
+
+    Esperado: o grupo aparece porque o `sudo -u` inicia uma sessão nova. Numa sessão já aberta, não apareceria — é o mesmo mecanismo do problema com `docker`.
+
+    ::: {.callout-warning}
+    O `-a` de `usermod -aG` é obrigatório. `usermod -G grupo usuario`, sem o `-a`, **substitui** toda a lista de grupos suplementares em vez de acrescentar — é assim que se remove alguém do grupo `sudo` sem querer, inclusive a si mesmo.
+    :::
+
+11. **Veja o UID em ação num arquivo.**
+
+    ```bash
+    sudo -u lab021 touch /tmp/dono-lab021
+    ls -l /tmp/dono-lab021
+    stat -c '%u:%g %U:%G %n' /tmp/dono-lab021
+    ```
+
+    Esperado: `%u:%g` mostra os números; `%U:%G` mostra os nomes traduzidos a partir deles.
+
+12. **Prove que o número é o que vale.**
+
+    ```bash
+    uid=$(id -u lab021)
+    sudo userdel lab021
+    ls -l /tmp/dono-lab021
+    stat -c '%u %U %n' /tmp/dono-lab021
+    ```
+
+    Esperado: com a conta removida, o `ls` passa a mostrar o **número** onde antes havia nome. É exatamente o `999` da abertura do capítulo. O arquivo não mudou; o tradutor é que sumiu.
+
+13. **Reaproveite o UID órfão.**
+
+    ```bash
+    sudo useradd -u "$uid" -M -s /usr/sbin/nologin lab021bis
+    ls -l /tmp/dono-lab021
+    ```
+
+    Esperado: o arquivo antigo agora "pertence" a `lab021bis`, sem nenhum `chown`. É o motivo de restaurar backup entre máquinas com UIDs diferentes dar tanto trabalho.
+
+14. **Compare `getent` com `grep`.**
+
+    ```bash
+    getent passwd lab021bis
+    grep '^lab021bis:' /etc/passwd
+    grep -E '^(passwd|group):' /etc/nsswitch.conf
+    getent passwd inexistente; echo "codigo de saida: $?"
+    ```
+
+    Esperado: aqui as duas formas coincidem, porque a fonte é `files`; só o `getent` funcionaria com LDAP. Código de saída 2 para conta inexistente.
+
+15. **Rode a verificação de consistência.**
+
+    ```bash
+    sudo pwck -r
+    sudo grpck -r
+    ```
+
+    Esperado: o `-r` é somente leitura e não altera nada. Avisos sobre diretório pessoal inexistente são comuns em contas de sistema e não indicam problema.
+
+16. **Limpe.**
+
+    ```bash
+    sudo userdel -r lab021bis 2>/dev/null
+    sudo groupdel lab021grp 2>/dev/null
+    sudo rm -f /tmp/dono-lab021
+    sudo rm -rf /home/lab021
+    getent passwd lab021 lab021bis; echo "codigo: $?"
+    ```
+
+    Esperado: nenhuma saída e código diferente de zero — as contas de teste sumiram.
+
+## Resumo
+
+- **Para o kernel, usuário e grupo são inteiros.** UID e GID entram na decisão de acesso; nome, shell e diretório pessoal são conveniências do espaço de usuário. Por isso um arquivo restaurado em outra máquina troca de dono sozinho quando os números não batem.
+- **`/etc/passwd` tem sete campos** — nome, `x`, UID, GID, GECOS, diretório, shell — é `644` por necessidade, e não guarda senha nenhuma desde que o `shadow` existe.
+- **`/etc/shadow` é `640` e concentra o hash** no formato `$id$sal$hash`, mais a política de expiração. `!` no início significa conta bloqueada; campo vazio significa conta sem senha, que é um achado grave.
+- **Grupo primário vem de `/etc/passwd`; suplementares, de `/etc/group`.** Quem tem o grupo como primário não aparece na lista de membros, então "quem está no grupo X" exige consultar as duas fontes.
+- **Grupos suplementares são carregados no login.** Um grupo recém-atribuído não vale na sessão em andamento; `newgrp` é paliativo, novo login é a solução.
+- **UID 0 é o que define o superusuário**, não o nome `root`. Uma segunda conta com UID 0 é porta dos fundos clássica e a primeira coisa a checar numa máquina suspeita.
+- **Faixas de UID separam gente de serviço**: abaixo de 1000 são contas de sistema, cada uma existindo para limitar o estrago de uma falha no serviço que ela roda.
+- **`getent` consulta o NSS; `grep` só lê o arquivo.** Em script, use `getent` — funciona com LDAP e já devolve código de saída útil.
+- **Edite essas bases com `vipw`, `vipw -s` e `vigr`**, que travam e validam, e confira com `pwck -r` e `grpck -r` depois de qualquer manutenção.

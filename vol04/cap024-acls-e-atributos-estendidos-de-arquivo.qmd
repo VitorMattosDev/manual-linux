@@ -1,3 +1,412 @@
 # ACLs e atributos estendidos de arquivo {#sec-cap024}
 
-*(em elaboracao)*
+Você administra um diretório de relatórios. O dono é você, o grupo é `analistas`, e o modo `750` está correto: sua equipe lê e escreve, o resto do mundo não vê nada. Aí chega o pedido: a auditora externa, a Márcia, precisa ler **este um** diretório. Ela não é do grupo `analistas`, e você não quer colocá-la lá — isso lhe daria acesso a tudo que o grupo alcança.
+
+O modelo clássico de permissões, com suas três classes (@sec-cap020), não tem resposta boa para isso. Só existem dono, grupo e outros. Adicionar a Márcia ao grupo é excesso; abrir para "outros" é excesso maior. O que você precisa é conceder a **uma pessoa específica** um acesso específico, sem tocar em mais nada.
+
+É exatamente esse buraco que as **ACLs** (*Access Control Lists*) preenchem. E, num tema vizinho, os **atributos estendidos** — que incluem a imutabilidade e o *append-only* — controlam o que se pode fazer com um arquivo num nível abaixo das permissões. Este capítulo trata dos dois refinamentos que ficam nas bordas do modelo Unix básico.
+
+## O limite do modelo de três classes
+
+Releia a regra central de @sec-cap020: o kernel escolhe **uma** classe — dono, grupo ou outros — e aplica só os bits dela. Isso significa que o modelo comporta exatamente:
+
+- um usuário com direitos próprios (o dono);
+- um grupo com direitos próprios;
+- todos os demais.
+
+Qualquer cenário que precise de "este usuário aqui e aquele grupo ali, com direitos diferentes cada" não cabe. A saída histórica era criar grupos sob medida — um grupo para cada combinação de acesso —, o que rapidamente vira uma explosão de grupos impossível de administrar. As ACLs foram padronizadas (POSIX.1e) precisamente para acabar com essa ginástica.
+
+## `getfacl` e `setfacl`: ler e escrever ACLs
+
+Um arquivo sem ACL estendida mostra apenas o modelo clássico traduzido:
+
+```bash
+getfacl relatorios/
+```
+
+```text
+# file: relatorios/
+# owner: kali
+# group: analistas
+user::rwx
+group::r-x
+other::---
+```
+
+As três primeiras entradas — `user::`, `group::`, `other::` — são os mesmos nove bits do `ls -l`, só que escritos por extenso. Agora conceda acesso à Márcia:
+
+```bash
+setfacl -m u:marcia:rx relatorios/
+getfacl relatorios/
+```
+
+```text
+# file: relatorios/
+# owner: kali
+# group: analistas
+user::rwx
+user:marcia:r-x        <- entrada nova, so para a marcia
+group::r-x
+mask::r-x
+other::---
+```
+
+Apareceu uma linha `user:marcia:r-x` e uma linha `mask::`. A Márcia agora entra e lê o diretório, sem estar no grupo `analistas` e sem que "outros" tenha ganhado nada. @fig-acl-vs-classico contrasta os dois modelos.
+
+::: {#fig-acl-vs-classico}
+```{.tikz}
+%%| filename: modelo-classico-versus-acl
+%%| alt: A esquerda o modelo classico com apenas dono grupo e outros, a direita a ACL acrescentando entradas nomeadas para usuarios e grupos especificos alem da mascara
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,minimum height=0.6cm},
+    cl/.style={bx,draw=manualgray,fill=manualgray!12,text width=3.0cm},
+    ac/.style={bx,draw=manualblue,fill=manualblue!12,text width=3.4cm},
+    nw/.style={bx,draw=manualgreen,fill=manualgreen!15,text width=3.4cm},
+    mk/.style={bx,draw=manualred,fill=manualred!11,text width=3.4cm},
+    lb/.style={font=\scriptsize\bfseries},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \node[lb,manualgray] at (0,2.0) {modelo clássico};
+  \node[cl] (c1) at (0,1.2)  {\texttt{user::rwx} (dono)};
+  \node[cl] (c2) at (0,0.4)  {\texttt{group::r-x}};
+  \node[cl] (c3) at (0,-0.4) {\texttt{other::---}};
+
+  \node[lb,manualblue] at (5.4,2.0) {com ACL};
+  \node[ac] (a1) at (5.4,1.2)  {\texttt{user::rwx} (dono)};
+  \node[nw] (a2) at (5.4,0.4)  {\texttt{user:marcia:r-x}};
+  \node[ac] (a3) at (5.4,-0.4) {\texttt{group::r-x}};
+  \node[nw] (a4) at (5.4,-1.2) {\texttt{group:aud:r--}};
+  \node[mk] (a5) at (5.4,-2.0) {\texttt{mask::r-x}};
+  \node[ac] (a6) at (5.4,-2.8) {\texttt{other::---}};
+
+  \draw[manualgray,thick,-{Stealth[length=4pt]}] (2.0,0.4) -- (3.5,0.4);
+
+  \node[nt,align=left,text width=4.3cm] at (10.3,0.6) {As entradas \textbf{nomeadas} (verde) são o que o modelo clássico não tem: usuários e grupos individuais.};
+  \node[nt,align=left,text width=4.3cm] at (10.3,-1.9) {A \textbf{máscara} (vermelho) é um teto de permissão para todas as entradas nomeadas e para o grupo.};
+\end{tikzpicture}
+```
+A ACL preserva o modelo clássico e acrescenta entradas nomeadas, controladas por uma máscara.
+:::
+
+Sintaxe essencial do `setfacl`:
+
+```bash
+setfacl -m u:marcia:rx arquivo       # concede a um usuario
+setfacl -m g:auditores:r arquivo     # concede a um grupo
+setfacl -m o::- arquivo              # ajusta "outros"
+setfacl -x u:marcia arquivo          # remove a entrada da marcia
+setfacl -b arquivo                   # remove TODAS as ACLs estendidas
+setfacl -R -m u:marcia:rX diretorio/ # recursivo, com X maiusculo
+```
+
+O `X` maiúsculo em ACL tem o mesmo bom-senso do `chmod` (@sec-cap020): dá `x` só a diretórios e ao que já era executável, evitando tornar dados executáveis numa aplicação recursiva.
+
+## A máscara: o teto que confunde todo mundo
+
+A entrada `mask::` é a maior fonte de surpresa com ACLs. Ela define o **máximo de permissão efetiva** que qualquer entrada nomeada (usuários nomeados e o grupo) pode ter. A permissão que vale é a **interseção** entre o que a entrada pede e o que a máscara permite.
+
+```text
+user:marcia:rwx        <- a entrada pede rwx
+mask::r-x              <- a mascara so permite r-x
+                          -> a marcia efetivamente tem r-x
+```
+
+O `getfacl` sinaliza isso explicitamente com um comentário `#effective`:
+
+```text
+user:marcia:rwx        #effective:r-x
+```
+
+Por que essa máscara existe? Para dar ao `chmod` um ponto de controle único. Quando você roda `chmod g-w` num arquivo com ACL, o que muda **não** é o `group::` — é a **máscara**. Assim, um `chmod` tradicional continua funcionando como uma tampa geral sobre todas as permissões estendidas, sem precisar conhecer cada entrada individual. O efeito colateral: um `chmod` restritivo pode "apagar" silenciosamente acessos que você concedeu via ACL. Se a Márcia perdeu o acesso depois de um `chmod`, a máscara é a primeira suspeita.
+
+Para recalcular a máscara como o mínimo necessário para cobrir todas as entradas:
+
+```bash
+setfacl -m u:marcia:rwx arquivo
+setfacl -R -m m::rwx diretorio/     # define a mascara explicitamente
+```
+
+## ACLs padrão: herança em diretórios
+
+Um segundo tipo de ACL só existe em diretórios e resolve herança: a **ACL padrão** (*default*). Ela não afeta o diretório em si — define o que **arquivos e subdiretórios criados dentro** vão receber automaticamente.
+
+```bash
+setfacl -d -m u:marcia:rx projeto/    # -d = default
+getfacl projeto/
+```
+
+```text
+# file: projeto/
+user::rwx
+group::r-x
+other::---
+default:user::rwx
+default:user:marcia:r-x       <- todo arquivo novo aqui ja nasce assim
+default:group::r-x
+default:mask::r-x
+default:other::---
+```
+
+A partir daí, qualquer arquivo criado em `projeto/` já vem com a entrada da Márcia, sem você repetir o `setfacl`. É o análogo em ACL do que o SGID (@sec-cap023) faz com o grupo — e os dois se combinam bem: SGID força o grupo, ACL padrão força permissões nominais. Para uma pasta de equipe realmente robusta, os dois juntos.
+
+::: {.callout-note}
+## O `+` no `ls -l`
+
+Um arquivo com ACL estendida ganha um `+` no fim da coluna de modo:
+
+```text
+drwxr-x---+ 2 kali analistas 4096 ago  1 09:14 relatorios
+```
+
+Aquele `+` é o aviso de que o `ls -l` **não está contando a história toda** — há entradas que só o `getfacl` mostra. Quando uma permissão parece não bater com o `ls -l`, procure o `+`.
+:::
+
+## Atributos estendidos e `chattr`: abaixo das permissões
+
+Há uma camada diferente das ACLs: os **atributos** de arquivo, controlados por `chattr` e lidos por `lsattr`. Enquanto permissões e ACLs dizem *quem* pode fazer *o quê*, atributos dizem *o que é possível fazer com o arquivo*, independentemente de quem seja — incluindo o root.
+
+Os dois mais importantes:
+
+```bash
+sudo chattr +i arquivo       # imutavel
+sudo chattr +a arquivo       # append-only (so acrescentar)
+lsattr arquivo
+sudo chattr -i arquivo       # remove a imutabilidade
+```
+
+**Imutável (`+i`)**: o arquivo não pode ser modificado, renomeado, apagado, nem ganhar hard links — **nem pelo root**. Um `sudo rm` num arquivo imutável falha:
+
+```text
+rm: cannot remove 'importante.conf': Operation not permitted
+```
+
+O root só consegue apagá-lo depois de remover o atributo com `chattr -i`. É por isso que a imutabilidade não é uma barreira absoluta contra o root — ele pode desfazê-la —, mas é uma trava excelente contra **erro** e contra scripts que agem cegamente. Um `/etc/resolv.conf` que insiste em ser sobrescrito, uma chave que não pode ser tocada por engano: `+i` resolve.
+
+**Append-only (`+a`)**: o arquivo só aceita **acréscimos** ao final; não se pode sobrescrever nem truncar o que já está lá. É o atributo natural de arquivo de log que não deve ser adulterado — um invasor até acrescenta linhas, mas não consegue apagar o rastro que já ficou gravado.
+
+@fig-chattr-camadas situa os atributos em relação às outras camadas.
+
+::: {#fig-chattr-camadas}
+```{.tikz}
+%%| filename: camadas-de-controle-de-acesso-a-arquivo
+%%| alt: Quatro camadas empilhadas de controle de acesso a arquivo, do topo para a base atributos chattr, ACLs, permissoes classicas e o dono do inode
+\begin{tikzpicture}[
+    layer/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,minimum width=8.2cm,minimum height=0.85cm,inner sep=3pt},
+    l1/.style={layer,draw=manualred,fill=manualred!11},
+    l2/.style={layer,draw=manualblue,fill=manualblue!12},
+    l3/.style={layer,draw=manualgreen,fill=manualgreen!14},
+    l4/.style={layer,draw=manualgray,fill=manualgray!14},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[l1] (a) at (0,2.7)  {\textbf{atributos} (\texttt{chattr}): \texttt{+i} imutável, \texttt{+a} append-only --- barram até o root};
+  \node[l2] (b) at (0,1.7)  {\textbf{ACLs} (\texttt{setfacl}): usuários e grupos nomeados + máscara};
+  \node[l3] (c) at (0,0.7)  {\textbf{permissões clássicas} (\texttt{chmod}): dono, grupo, outros};
+  \node[l4] (d) at (0,-0.3) {\textbf{dono do inode} (UID/GID): a identidade de base};
+
+  \node[nt,text width=8.0cm] at (0,-1.5) {O kernel consulta de baixo para cima. Um \texttt{+i} no topo pode negar uma escrita que todas as camadas abaixo permitiriam --- é a única que ignora o UID 0.};
+\end{tikzpicture}
+```
+As camadas de controle de acesso a um arquivo; os atributos ficam acima até das permissões.
+:::
+
+Outros atributos úteis, em menor frequência:
+
+| Atributo | `chattr` | Efeito |
+|:---:|---|---|
+| imutável | `+i` | nenhuma alteração, nem pelo root |
+| append-only | `+a` | só acréscimos ao final |
+| sem dump | `+d` | ignorado pelo utilitário `dump` de backup |
+| sem CoW | `+C` | desliga *copy-on-write* (Btrfs), útil para VMs e bancos |
+| exclusão segura | `+s` | (se suportado) zera os blocos ao apagar |
+
+: Atributos de arquivo mais usados {#tbl-atributos-chattr}
+
+Nem todos os atributos são implementados por todos os sistemas de arquivos; `ext4` e `xfs` suportam os principais, e um atributo não suportado simplesmente não tem efeito.
+
+## Xattrs de propósito geral: o guarda-chuva por trás de tudo
+
+Tanto as ACLs quanto os atributos de segurança do SELinux são, por baixo, **atributos estendidos** (*extended attributes*, ou *xattrs*) — pares nome-valor pendurados no inode, organizados em namespaces (`system`, `security`, `trusted`, `user`). Você raramente mexe neles à mão, mas vale saber que existem e como olhar:
+
+```bash
+getfattr -d -m - arquivo            # lista todos os xattrs
+getfattr -n user.comentario arquivo # le um xattr especifico do namespace user
+setfattr -n user.origem -v "download" arquivo   # grava um no namespace user
+```
+
+O namespace `user.` é livre para você guardar metadados arbitrários (a origem de um download, um comentário, um hash). O `system.` guarda a ACL; o `security.` guarda o rótulo do SELinux/SMACK. Ferramentas de perícia usam os xattrs `user.` como pista, e é por eles que uma ACL "viaja" quando você copia um arquivo com as opções certas.
+
+## Preservar ACLs e atributos ao copiar e arquivar
+
+Este é o ponto que morde: **`cp` comum não copia ACLs nem xattrs**, e um `tar` sem as opções certas também os perde. O resultado é um backup que restaura permissões erradas.
+
+```bash
+cp -a origem destino                 # -a preserva ACLs, xattrs, dono, tempos
+cp --preserve=all origem destino     # equivalente explicito
+rsync -aAX origem/ destino/          # -A ACLs, -X xattrs (alem do -a)
+tar --acls --xattrs -cf bkp.tar dir/ # tar preservando os dois
+tar --acls --xattrs -xf bkp.tar      # e restaurando
+```
+
+A regra prática: sempre que ACLs ou atributos importam, use `cp -a`, `rsync -aAX` ou `tar --acls --xattrs`. O `cp` sem `-a` produz cópias com o modelo clássico apenas, e as ACLs somem sem aviso.
+
+## 🐉 No Kali
+
+- **ACL é a forma limpa de compartilhar coleta com um colega pontual.** Num engajamento, dar a um analista específico acesso de leitura a um diretório de evidências sem colocá-lo no grupo do projeto: `setfacl -m u:colega:rX -R evidencias/`. E `setfacl -d -m u:colega:rX evidencias/` para que o que for coletado depois já nasça acessível a ele.
+- **`chattr +a` protege a integridade de um log de atividades.** Ao manter um registro das ações de um teste (o que é boa prática para o relatório e para questões legais), `sudo chattr +a atividades.log` garante que nem um erro seu nem um processo desgovernado sobrescreva o histórico — só acréscimos passam.
+- **`chattr +i` e `+a` são também técnica de persistência de atacante — logo, item de checklist defensivo.** Um invasor pode marcar seu binário malicioso como imutável para dificultar a remoção, ou tornar um arquivo de configuração `+i` para travar uma porta dos fundos. Por isso, ao investigar uma máquina suspeita, `lsattr -R /etc /usr/bin /tmp 2>/dev/null | grep -E '^....i|^.....a'` revela arquivos com esses atributos — um `i` inesperado em `/etc` ou `/tmp` é um forte indicador. Enumerar isso no seu próprio sistema, ou num alvo autorizado, é defesa; contra terceiros sem autorização, é crime (Lei 12.737/2012).
+- **Backup de evidência sem `--acls --xattrs` perde metadados que importam.** Ao arquivar uma coleta que preserva permissões originais do alvo, `tar --acls --xattrs --preserve-permissions` mantém as ACLs e os rótulos de segurança; um `tar` simples os descarta e a cadeia de custódia sofre.
+- **O `+` no `ls -l` é pista rápida numa triagem.** Ao varrer um sistema, arquivos com `+` têm ACLs que o `ls` esconde — vale um `getfacl` para ver se alguém concedeu acesso nominal que não deveria estar ali.
+- **No Kali sobre Btrfs (algumas instalações e o modo de persistência live), `chattr +C` importa para VMs.** Imagens de máquina virtual e bancos de dados sofrem com o *copy-on-write* do Btrfs; marcar o diretório com `+C` **antes** de criar os arquivos melhora o desempenho. O atributo só vale para arquivos criados depois de ligado.
+
+> **Nota sobre a família RHEL.** `setfacl`, `getfacl`, `chattr` e `lsattr` são idênticos — vêm dos mesmos pacotes (`acl`, `e2fsprogs`). A diferença central é o SELinux, ativo por padrão no RHEL: ele adiciona o **contexto de segurança** como um xattr no namespace `security.`, visível com `ls -Z` e `getfattr -m security`. No RHEL, quando uma permissão que o `getfacl` diz estar correta ainda é negada, o próximo passo é `ls -Z` e o log de auditoria — a ACL passou, mas a política SELinux barrou. As ferramentas de cópia precisam do mesmo cuidado: `cp -a` e `rsync -aAX` preservam também o contexto SELinux quando a política permite.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`. Alguns passos usam `chattr`, que exige `sudo`. Tudo é revertido no final.
+
+1. **Prepare o cenário e veja a ACL implícita.**
+
+   ```bash
+   mkdir -p /tmp/lab024 && cd /tmp/lab024
+   mkdir relatorios
+   chmod 750 relatorios
+   getfacl relatorios
+   ls -ld relatorios
+   ```
+
+   Esperado: `getfacl` mostra só `user::`, `group::`, `other::` — o modelo clássico traduzido. Nenhum `+` no `ls -l` ainda.
+
+2. **Conceda acesso a um usuário específico.**
+
+   ```bash
+   sudo useradd -M -s /usr/sbin/nologin marcia 2>/dev/null
+   setfacl -m u:marcia:rx relatorios
+   getfacl relatorios
+   ls -ld relatorios
+   ```
+
+   Esperado: a entrada `user:marcia:r-x`, uma linha `mask::`, e agora o `+` no fim do modo no `ls -l`.
+
+3. **Prove que só a Márcia ganhou acesso.**
+
+   ```bash
+   echo dado > relatorios/rel.txt
+   chmod 640 relatorios/rel.txt
+   setfacl -m u:marcia:r relatorios/rel.txt
+   sudo -u marcia cat /tmp/lab024/relatorios/rel.txt
+   sudo -u nobody cat /tmp/lab024/relatorios/rel.txt 2>&1
+   ```
+
+   Esperado: a `marcia` lê; o `nobody`, que representa "outros", é barrado. Acesso individual, sem abrir para o mundo.
+
+4. **Veja a máscara em ação.**
+
+   ```bash
+   setfacl -m u:marcia:rwx relatorios/rel.txt
+   getfacl relatorios/rel.txt
+   ```
+
+   Esperado: a entrada da `marcia` pede `rwx`, mas o `getfacl` anota `#effective:r--` porque a máscara limita. A permissão real é a interseção.
+
+5. **Descubra o `chmod` mexendo na máscara.**
+
+   ```bash
+   setfacl -m u:marcia:rwx relatorios/rel.txt
+   getfacl relatorios/rel.txt | grep -E 'marcia|mask'
+   chmod g-rwx relatorios/rel.txt
+   getfacl relatorios/rel.txt | grep -E 'marcia|mask'
+   ```
+
+   Esperado: depois do `chmod g-rwx`, a máscara caiu para `---` e a permissão efetiva da `marcia` sumiu, **mesmo a entrada dela continuando `rwx`**. É a pegadinha clássica: o `chmod` apagou o acesso via máscara.
+
+6. **Configure herança com ACL padrão.**
+
+   ```bash
+   mkdir projeto
+   setfacl -d -m u:marcia:rx projeto
+   getfacl projeto | grep default
+   touch projeto/novo.txt
+   getfacl projeto/novo.txt | grep marcia
+   ```
+
+   Esperado: o arquivo `novo.txt`, criado depois, já nasce com a entrada da `marcia` herdada da ACL padrão do diretório.
+
+7. **Combine com a cópia que preserva.**
+
+   ```bash
+   cp projeto/novo.txt copia-sem.txt
+   cp -a projeto/novo.txt copia-com.txt
+   getfacl copia-sem.txt | grep -c marcia
+   getfacl copia-com.txt | grep -c marcia
+   ```
+
+   Esperado: `0` para a cópia comum (perdeu a ACL) e `1` para a cópia com `-a`. A diferença que arruína backups feitos com `cp` simples.
+
+8. **Marque um arquivo como imutável.**
+
+   ```bash
+   echo "nao mexa" > importante.conf
+   sudo chattr +i importante.conf
+   lsattr importante.conf
+   echo "tentando" >> importante.conf 2>&1
+   sudo rm -f importante.conf 2>&1
+   ```
+
+   Esperado: o `lsattr` mostra o `i`; a escrita e o `sudo rm` falham com `Operation not permitted` — nem o root passa enquanto o atributo estiver ligado.
+
+9. **Remova a imutabilidade e confirme.**
+
+   ```bash
+   sudo chattr -i importante.conf
+   lsattr importante.conf
+   echo "agora vai" >> importante.conf
+   cat importante.conf
+   ```
+
+   Esperado: sem o `i`, a escrita volta a funcionar. A imutabilidade trava por engano, não contra um root determinado.
+
+10. **Teste o append-only num log.**
+
+    ```bash
+    echo "linha 1" > atividades.log
+    sudo chattr +a atividades.log
+    echo "linha 2" >> atividades.log      # acrescimo: permitido
+    echo "sobrescreve" > atividades.log 2>&1   # truncar: negado
+    cat atividades.log
+    sudo chattr -a atividades.log
+    ```
+
+    Esperado: o `>>` funciona, o `>` (que trunca) é negado. Exatamente o que protege um log contra adulteração.
+
+11. **Brinque com um xattr do namespace `user`.**
+
+    ```bash
+    touch marcado.txt
+    setfattr -n user.origem -v "laboratorio-cap024" marcado.txt
+    getfattr -d marcado.txt
+    getfattr -n user.origem marcado.txt
+    ```
+
+    Esperado: o par nome-valor aparece. É onde metadados arbitrários e rótulos de ferramentas ficam pendurados no inode.
+
+12. **Limpe.**
+
+    ```bash
+    cd /tmp
+    sudo chattr -R -i /tmp/lab024 2>/dev/null
+    sudo chattr -R -a /tmp/lab024 2>/dev/null
+    sudo userdel marcia 2>/dev/null
+    sudo rm -rf /tmp/lab024
+    ```
+
+    Esperado: os atributos são removidos antes do `rm` — sem isso, um arquivo `+i` esquecido impediria a limpeza.
+
+## Resumo
+
+- **ACLs resolvem o que o modelo de três classes não comporta**: conceder acesso a um usuário ou grupo **nomeado**, sem alterar dono, grupo ou "outros". `setfacl -m u:nome:rx` concede; `getfacl` lê; um `+` no `ls -l` sinaliza que há ACL.
+- **A máscara é o teto de permissão efetiva** das entradas nomeadas e do grupo. A permissão real é a interseção entre o pedido e a máscara; `getfacl` mostra o `#effective`.
+- **`chmod` num arquivo com ACL mexe na máscara**, não no `group::` — por isso um `chmod` restritivo pode apagar silenciosamente acessos concedidos via ACL. É a primeira suspeita quando um acesso some.
+- **ACLs padrão (`-d`) dão herança a diretórios**: arquivos criados dentro nascem com as entradas definidas. Combinam com o SGID — um força o grupo, o outro força permissões nominais.
+- **Atributos (`chattr`) ficam abaixo das permissões**: `+i` (imutável) barra alteração, remoção e renomeação **até do root**; `+a` (append-only) só permite acréscimos, protegendo logs. O root pode desfazê-los, então travam contra erro, não contra um root determinado.
+- **ACLs e atributos são, por baixo, xattrs** (atributos estendidos) pendurados no inode, em namespaces; o SELinux usa o mesmo mecanismo no namespace `security.`.
+- **`cp` comum descarta ACLs e xattrs.** Use `cp -a`, `rsync -aAX` ou `tar --acls --xattrs` sempre que esses metadados importarem — caso contrário o backup restaura permissões erradas.

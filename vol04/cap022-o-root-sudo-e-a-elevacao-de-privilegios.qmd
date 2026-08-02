@@ -1,3 +1,354 @@
 # O root, sudo e a elevação de privilégios {#sec-cap022}
 
-*(em elaboracao)*
+Você abre um terminal no Kali recém-instalado, digita `apt update` e leva um tapa na cara:
+
+```text
+Reading package lists... Done
+E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)
+E: Unable to lock directory /var/lib/apt/lists/
+```
+
+O erro `13` é `EACCES` — permissão negada. Você é um usuário comum tentando escrever num diretório de `root`. A solução que todo mundo aprende é colar `sudo` na frente e seguir a vida. Mas colar `sudo` sem entender o que ele faz é como dirigir sem saber onde fica o freio: funciona até o dia em que você digita `sudo rm -rf` no lugar errado e não há mais rede de proteção nenhuma.
+
+Este capítulo explica o que é o `root`, por que o modelo Unix concentra todo o poder num único UID, e como o `sudo` transformou "virar root" de um interruptor bruto num sistema de concessões auditáveis. O foco é o uso correto e seguro — os bits SUID que fazem programas escalarem privilégio por conta própria são o tema do capítulo 023.
+
+## O que o root realmente é
+
+`root` é o UID 0, e o UID 0 tem uma propriedade única: o kernel **pula quase todas as verificações de permissão** para ele. Onde um usuário comum é barrado pelos bits `rwx` (@sec-cap020), o root passa direto. Ele lê qualquer arquivo, escreve em qualquer arquivo, mata qualquer processo, monta qualquer dispositivo, escuta qualquer porta abaixo de 1024 e carrega módulos no kernel.
+
+Três limites, e só três, valem até para o root:
+
+- **Bit de execução:** o root só executa um arquivo se **algum** bit `x` estiver aceso. Um arquivo `600` (`rw-`) ele não roda diretamente — mas nada o impede de dar `chmod +x` primeiro.
+- **Arquivo imutável:** um arquivo marcado com `chattr +i` (@sec-cap024) não pode ser alterado nem apagado, nem pelo root, até o atributo ser removido — o que, claro, o root também pode fazer.
+- **Confinamento obrigatório:** SELinux ou AppArmor (Volume 14) impõem uma política **acima** das permissões. Nesses sistemas, mesmo o root age dentro do que a política permite.
+
+Nenhum desses limites é uma barreira real contra o próprio root — todos podem ser desfeitos por ele. A lição é outra: no modelo Unix clássico, **root é poder ilimitado**, e é por isso que não se deve viver logado como ele.
+
+::: {.callout-warning}
+## Por que não trabalhar como root o tempo todo
+
+Como root, não existe a rede de segurança das permissões. Um `rm` com o caractere errado, um script baixado que faz mais do que diz, um `dd` com o `of=` trocado — qualquer um desses vira dano irreversível sem uma única pergunta. Como usuário comum, os mesmos erros esbarram num `Permission denied` que te dá a chance de perceber o engano.
+
+O princípio é o do **menor privilégio**: rode com o mínimo de poder necessário, e eleve só o comando específico que precisa de mais. É exatamente para isso que o `sudo` existe.
+:::
+
+## `su` e `sudo`: dois caminhos para elevar
+
+Antes do `sudo`, a única forma de virar root era o `su` (*substitute user*):
+
+```bash
+su -              # vira root, pede a senha DO ROOT
+su - kali         # vira o usuario kali, pede a senha DELE
+su                # vira root SEM carregar o ambiente dele (evite)
+```
+
+O `su -` te dá um shell de root completo e depende de a conta root ter uma senha definida. O problema é de escala e de auditoria: todo mundo que administra precisa saber a senha do root, essa senha nunca muda quando alguém sai da equipe, e o log registra apenas "alguém virou root" — não quem.
+
+O `sudo` (*substitute user do*) resolve os três problemas. Ele executa **um comando** como outro usuário, autenticando com a **sua própria** senha, e registra quem rodou o quê. @fig-su-vs-sudo contrasta os dois fluxos.
+
+::: {#fig-su-vs-sudo}
+```{.tikz}
+%%| filename: fluxo-su-versus-sudo
+%%| alt: Dois fluxos lado a lado, su pedindo a senha do root e abrindo um shell de root persistente, sudo pedindo a senha do proprio usuario e rodando um unico comando
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,minimum height=0.7cm},
+    u/.style={bx,draw=manualblue,fill=manualblue!12,text width=2.7cm},
+    chk/.style={bx,draw=manualyellow,fill=manualyellow!22,text width=2.9cm},
+    r/.style={bx,draw=manualred,fill=manualred!11,text width=2.9cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  % su
+  \node[nt,font=\scriptsize\bfseries] at (0,1.4) {\texttt{su -}};
+  \node[u]   (su1) at (0,0.5)  {usuário digita\\\texttt{su -}};
+  \node[chk] (su2) at (0,-0.9) {pede a senha\\\textbf{do root}};
+  \node[r]   (su3) at (0,-2.4) {shell de root\\\textbf{persistente}\\(tudo é root até \texttt{exit})};
+  \draw[fl] (su1) -- (su2);
+  \draw[fl] (su2) -- (su3);
+
+  % sudo
+  \node[nt,font=\scriptsize\bfseries] at (5.2,1.4) {\texttt{sudo comando}};
+  \node[u]   (sd1) at (5.2,0.5)  {usuário digita\\\texttt{sudo apt update}};
+  \node[chk] (sd2) at (5.2,-0.9) {pede a senha\\\textbf{do usuário}\\+ checa \texttt{/etc/sudoers}};
+  \node[r]   (sd3) at (5.2,-2.4) {roda \textbf{um} comando\\como root e\\\textbf{volta} ao usuário};
+  \draw[fl] (sd1) -- (sd2);
+  \draw[fl] (sd2) -- (sd3);
+
+  \node[nt,align=left,text width=5.0cm] at (10.3,-0.2) {\textbf{\texttt{su}} exige a senha do root e abre um shell onde \emph{todo} comando seguinte é privilegiado.};
+  \node[nt,align=left,text width=5.0cm] at (10.3,-2.2) {\textbf{\texttt{sudo}} autentica com a senha de quem chama, consulta uma política e eleva só aquele comando. Cada uso vira log.};
+\end{tikzpicture}
+```
+`su` abre um shell de root persistente; `sudo` eleva um único comando e registra quem foi.
+:::
+
+No Debian e no Kali, a conta root vem com a **senha bloqueada** por padrão (o `!` do capítulo 021). Isso significa que `su -` simplesmente não funciona até você definir uma senha de root com `sudo passwd root` — e a recomendação é não definir. Todo o acesso privilegiado passa pelo `sudo`, que é auditável e revogável.
+
+## Anatomia de uma linha de `sudo`
+
+```bash
+sudo apt update                    # roda como root
+sudo -u postgres psql              # roda como o usuario postgres
+sudo -i                            # shell de login de root (como su -)
+sudo -s                            # shell de root com SEU ambiente
+sudo -l                            # lista o que VOCE pode rodar
+sudo -k                            # esquece a senha em cache agora
+sudo !!                            # repete o comando anterior com sudo
+```
+
+Dois pontos que confundem:
+
+**`sudo -i` versus `sudo -s`.** O `-i` simula um login limpo de root: vai para `/root`, lê o `.bashrc` do root, zera seu ambiente. O `-s` mantém o **seu** ambiente e diretório, apenas com poder de root. Para tarefas administrativas de verdade, `-i` é mais previsível, porque você trabalha com o ambiente do root e não com variáveis herdadas da sua sessão.
+
+**O cache de credenciais.** Depois de digitar a senha uma vez, o `sudo` não pergunta de novo por 15 minutos (por terminal, por padrão). É conveniência, e também um risco: um terminal deixado aberto tem 15 minutos de root disponível para quem sentar ali. `sudo -k` invalida o cache na hora.
+
+## `/etc/sudoers`: onde a política mora
+
+Quem pode rodar o quê está em `/etc/sudoers` e nos arquivos de `/etc/sudoers.d/`. **Nunca** edite esses arquivos com um editor comum: uma vírgula fora do lugar pode trancar todo o acesso administrativo da máquina. Use sempre o `visudo`, que valida a sintaxe antes de salvar:
+
+```bash
+sudo visudo                          # edita /etc/sudoers
+sudo visudo -f /etc/sudoers.d/local  # um arquivo separado, jeito recomendado
+```
+
+A linha que dá poder ao seu usuário no Kali é o pertencimento ao grupo `sudo`, expresso assim no arquivo:
+
+```text
+%sudo   ALL=(ALL:ALL) ALL
+```
+
+@fig-linha-sudoers decompõe essa sintaxe densa.
+
+::: {#fig-linha-sudoers}
+```{.tikz}
+%%| filename: anatomia-de-uma-regra-do-sudoers
+%%| alt: Regra do arquivo sudoers dividida em quem, em quais maquinas, como quais usuarios e grupos, e quais comandos
+\begin{tikzpicture}[
+    cx/.style={rounded corners=2pt,font=\small\ttfamily,minimum height=0.7cm,thick,inner sep=4pt},
+    a/.style={cx,draw=manualblue,fill=manualblue!13},
+    b/.style={cx,draw=manualgray,fill=manualgray!12},
+    c/.style={cx,draw=manualgreen,fill=manualgreen!15},
+    d/.style={cx,draw=manualred,fill=manualred!11},
+    lb/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \node[a] (q)  at (0,0)     {\%sudo};
+  \node[b] (h)  at (2.0,0)   {ALL};
+  \node[c] (ru) at (4.4,0)   {(ALL:ALL)};
+  \node[d] (cm) at (7.0,0)   {ALL};
+
+  \node[lb,manualblue]  at (0,0.75)   {quem};
+  \node[lb,manualgray]  at (2.0,0.75)  {em quais\\máquinas};
+  \node[lb,manualgreen] at (4.4,0.9)  {como quais\\usuário:grupo};
+  \node[lb,manualred]   at (7.0,0.75)  {quais\\comandos};
+
+  \node[nt,align=left,text width=12.6cm] at (4.0,-1.35) {\texttt{\%sudo} = membros do grupo \texttt{sudo} (o \texttt{\%} marca grupo). \quad \texttt{ALL} em máquinas permite a regra em qualquer host --- relevante quando um mesmo \texttt{sudoers} é distribuído para vários servidores.};
+  \node[nt,align=left,text width=12.6cm] at (4.0,-2.5) {\texttt{(ALL:ALL)} = pode virar qualquer usuário e qualquer grupo. \quad O último \texttt{ALL} = pode rodar qualquer comando. Trocar esse campo por uma lista de binários é o coração do menor privilégio.};
+\end{tikzpicture}
+```
+A regra `%sudo ALL=(ALL:ALL) ALL`: quem, onde, como quem, e o quê.
+:::
+
+O poder está no último campo. Em vez de `ALL`, você pode listar exatamente os comandos que uma conta precisa:
+
+```text
+# operador so pode reiniciar o nginx e ver o status, nada mais
+operador  ALL=(root) /usr/bin/systemctl restart nginx, /usr/bin/systemctl status nginx
+
+# deploy roda um script especifico sem pedir senha
+deploy    ALL=(root) NOPASSWD: /opt/deploy/publica.sh
+```
+
+O `NOPASSWD:` dispensa a senha para aquele comando — útil em automação, perigoso se o comando permitir escapar para um shell. Um `sudo NOPASSWD` para `vim`, por exemplo, é equivalente a dar root completo, porque de dentro do `vim` se executa `:!bash`.
+
+### Aliases deixam a política legível
+
+```text
+Cmnd_Alias SERVICOS = /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart php-fpm
+Cmnd_Alias LEITURA  = /usr/bin/journalctl, /usr/bin/tail /var/log/*
+User_Alias  WEBOPS  = ana, bruno
+
+WEBOPS  ALL=(root) SERVICOS, LEITURA
+```
+
+Aliases transformam uma parede de caminhos numa política que se lê como uma frase: "a equipe de web pode reiniciar serviços e ler logs".
+
+## A armadilha dos comandos que escapam
+
+Restringir o `sudo` a uma lista de comandos só funciona se nenhum deles permitir executar **outra coisa**. Muitos programas comuns têm uma porta de fuga para um shell, e conceder `sudo` a eles é conceder root inteiro sem perceber:
+
+| Comando com `sudo` | Como escapa para root |
+|---|---|
+| `vim`, `less`, `man` | `:!bash` / `!bash` de dentro do programa |
+| `find` | `find . -exec bash \;` |
+| `awk`, `perl`, `python` | executam código arbitrário por definição |
+| `tar`, `zip` | opções `--checkpoint-action` / `-TT` rodam comandos |
+| `cp`, `tee`, `dd` | sobrescrevem `/etc/sudoers` ou `/etc/passwd` |
+
+: Comandos comuns que quebram a restrição do `sudo` {#tbl-sudo-escape}
+
+O projeto **GTFOBins** cataloga essas fugas de forma exaustiva, e é leitura obrigatória dos dois lados: para quem escreve regras de `sudoers` (para não conceder mais do que pensa) e para quem faz teste de intrusão autorizado (para reconhecer uma escalada de privilégio mal configurada). A conclusão prática: uma regra de `sudo` restrita só é confiável se cada comando dela for incapaz de rodar outro programa ou de escrever num arquivo sensível.
+
+## Ler o log: quem fez o quê
+
+Todo uso do `sudo` — bem-sucedido ou não — vira registro. É a diferença fundamental em relação ao `su`.
+
+```bash
+sudo journalctl _COMM=sudo --no-pager | tail -20
+sudo journalctl -e | grep sudo
+sudo grep sudo /var/log/auth.log        # se o rsyslog estiver instalado
+```
+
+Uma entrada típica:
+
+```text
+sudo: kali : TTY=pts/1 ; PWD=/home/kali ; USER=root ; COMMAND=/usr/bin/apt update
+```
+
+Ela responde as perguntas de uma auditoria: quem (`kali`), de onde (`pts/1`), em que diretório (`PWD`), como quem (`USER=root`) e o quê (`COMMAND`). Tentativas negadas aparecem com `command not allowed` ou `authentication failure` — e uma sequência de falhas de autenticação de `sudo` é um sinal a investigar. O journald e o `auth.log` são o tema do capítulo 042.
+
+## 🐉 No Kali
+
+- **O usuário `kali` já está no grupo `sudo`.** A imagem padrão coloca `kali` no grupo `sudo` na instalação, então `sudo` funciona de saída com a senha do próprio `kali`. Confirme com `sudo -l`, que lista suas permissões sem executar nada.
+- **A conta root vem bloqueada; não a desbloqueie sem motivo.** `su -` não funciona por padrão justamente porque a senha do root está travada. Manter assim é a postura correta: todo acesso privilegiado passa pelo `sudo`, que registra quem foi. Se algum procedimento antigo pede `su -`, quase sempre `sudo -i` é o substituto certo.
+- **Muitas ferramentas ofensivas exigem root, e o motivo é técnico.** `nmap -sS` (SYN scan), `tcpdump`, `wireshark`, `aircrack-ng`, `ettercap` e `responder` precisam de sockets *raw* ou de capturar tráfego — operações que o kernel reserva ao root ou a quem tem `CAP_NET_RAW` (Volume 14). Rodá-las com `sudo` é esperado. O que **não** se deve é abrir um `sudo -i` e conduzir a sessão inteira como root: eleve por comando.
+- **`sudo -l` é reconhecimento em teste de intrusão.** Ao obter acesso a uma conta num alvo autorizado, `sudo -l` mostra quais comandos privilegiados aquela conta pode rodar sem senha — muitas escaladas nascem de um `NOPASSWD` para um binário que escapa (a tabela acima). Fora de um engajamento com escopo escrito, testar isso em sistema alheio é crime (Lei 12.737/2012); dentro dele, é o método padrão de avaliar configuração de `sudoers`.
+- **Preencha `sudoers.d`, não edite o arquivo principal.** Para conceder uma permissão pontual num laboratório, `sudo visudo -f /etc/sudoers.d/nome` cria um arquivo isolado que sobrevive a atualizações do pacote `sudo` e não corre o risco de corromper o `/etc/sudoers` base.
+- **Kali no WSL usa `sudo` normalmente, sem senha em algumas configs.** Dependendo de como a distribuição WSL foi configurada, o `sudo` pode estar com `NOPASSWD` para o usuário inicial. Verifique com `sudo -l`; se for o caso e a máquina for exposta, considere ajustar.
+
+> **Nota sobre a família RHEL.** O `sudo` é idêntico — mesma sintaxe de `sudoers`, mesmo `visudo`. Duas diferenças: (1) o grupo administrativo tradicional é `wheel`, não `sudo`, então a linha equivalente é `%wheel ALL=(ALL) ALL`; (2) o RHEL, ao contrário do Debian, **define** uma senha de root na instalação por padrão, de modo que `su -` costuma funcionar de imediato. O log de `sudo` no RHEL vai para `/var/log/secure` em vez de `/var/log/auth.log`, mas o `journalctl _COMM=sudo` funciona igual nos dois.
+
+## 🧪 Laboratório
+
+Roteiro em VM descartável, de preferência. Os passos que mexem em `sudoers` usam `sudoers.d` e são revertidos no final.
+
+1. **Provoque o erro de permissão e resolva.**
+
+   ```bash
+   apt update
+   echo "codigo de saida: $?"
+   sudo apt update
+   echo "codigo de saida: $?"
+   ```
+
+   Esperado: o primeiro falha com `Permission denied` e código diferente de zero; o segundo funciona.
+
+2. **Veja o que você pode fazer.**
+
+   ```bash
+   sudo -l
+   id -Gn | tr ' ' '\n' | grep -x sudo
+   ```
+
+   Esperado: a saída de `sudo -l` termina com uma linha citando `(ALL : ALL) ALL`, e `sudo` aparece na sua lista de grupos.
+
+3. **Compare a identidade em cada contexto.**
+
+   ```bash
+   id -u
+   sudo id -u
+   sudo whoami
+   sudo -u nobody id
+   ```
+
+   Esperado: `0` sob `sudo`, e o UID do `nobody` no último — `sudo` não é só "virar root", é "virar quem eu mandar".
+
+4. **Entenda `-i` versus `-s`.**
+
+   ```bash
+   pwd
+   sudo -s pwd            # mantem seu diretorio
+   sudo -i pwd            # vai para /root
+   sudo -i env | grep -E '^(HOME|USER|PWD)='
+   ```
+
+   Esperado: `-s` reporta seu diretório atual; `-i` reporta `/root` e `HOME=/root`.
+
+5. **Observe o cache de credenciais.**
+
+   ```bash
+   sudo -k
+   sudo true             # vai pedir a senha
+   sudo true             # NAO pede: cache de 15 min
+   sudo -k
+   sudo true             # pede de novo: cache invalidado
+   ```
+
+   Esperado: o `-k` força a nova solicitação. É o comando para "trancar" o sudo antes de deixar o terminal.
+
+6. **Confirme que a conta root está bloqueada.**
+
+   ```bash
+   sudo passwd -S root
+   su -                  # tende a falhar: authentication failure
+   ```
+
+   Esperado: `passwd -S root` mostra `L` (locked) e o `su -` é recusado, porque não há senha de root válida.
+
+7. **Leia a política ativa.**
+
+   ```bash
+   sudo grep -vE '^\s*#|^\s*$' /etc/sudoers
+   ls -l /etc/sudoers.d/
+   sudo cat /etc/sudoers.d/* 2>/dev/null
+   ```
+
+   Esperado: a linha `%sudo ALL=(ALL:ALL) ALL` no arquivo principal e, possivelmente, arquivos extras do Kali em `sudoers.d`.
+
+8. **Crie uma regra restrita num arquivo isolado.**
+
+   ```bash
+   sudo useradd -m -s /bin/bash operador
+   echo 'operador ALL=(root) NOPASSWD: /usr/bin/systemctl status ssh' | sudo tee /etc/sudoers.d/lab-operador
+   sudo visudo -cf /etc/sudoers.d/lab-operador
+   sudo -u operador sudo -l
+   ```
+
+   Esperado: `visudo -c` confirma sintaxe válida, e `sudo -l` do operador lista **apenas** aquele `systemctl status ssh`.
+
+9. **Teste a fronteira da regra.**
+
+   ```bash
+   sudo -u operador sudo systemctl status ssh --no-pager | head -3
+   sudo -u operador sudo systemctl restart ssh
+   sudo -u operador sudo cat /etc/shadow
+   ```
+
+   Esperado: o `status` roda; o `restart` e o `cat` são recusados com "command not allowed". A regra concede exatamente um comando.
+
+10. **Veja tudo isso no log.**
+
+    ```bash
+    sudo journalctl _COMM=sudo --no-pager | tail -8
+    ```
+
+    Esperado: entradas para os comandos permitidos e para as tentativas negadas do passo 9, cada uma com `USER=`, `TTY=` e `COMMAND=`.
+
+11. **Demonstre a fuga de um comando "inofensivo".**
+
+    ```bash
+    echo 'operador ALL=(root) NOPASSWD: /usr/bin/find' | sudo tee /etc/sudoers.d/lab-operador
+    sudo -u operador sudo find /etc/hostname -exec whoami \;
+    ```
+
+    Esperado: o `whoami` imprime `root`. Um `sudo` restrito ao `find` **é** root completo — a lição central da tabela de escapes.
+
+12. **Limpe.**
+
+    ```bash
+    sudo rm -f /etc/sudoers.d/lab-operador
+    sudo userdel -r operador 2>/dev/null
+    sudo -l | tail -2
+    ```
+
+    Esperado: o arquivo de regra some e a conta de teste é removida. Confirme que sua própria permissão continua intacta.
+
+## Resumo
+
+- **Root é o UID 0**, e para ele o kernel pula quase todas as verificações de permissão. Os únicos limites — bit de execução, imutabilidade, confinamento MAC — são todos removíveis pelo próprio root.
+- **Não se trabalha logado como root.** O princípio do menor privilégio manda rodar como usuário comum e elevar apenas o comando que precisa, para que erros esbarrem em `Permission denied` em vez de virar dano irreversível.
+- **`su` abre um shell de root persistente** e exige a senha do root; **`sudo` eleva um comando**, autentica com a senha de quem chama, consulta uma política e **registra** cada uso.
+- **No Debian e no Kali a conta root vem bloqueada.** Todo acesso privilegiado passa pelo `sudo`, que é auditável e revogável; definir senha de root raramente é necessário.
+- **`sudo -i` dá um ambiente limpo de root; `sudo -s` mantém o seu.** O cache de credenciais dura 15 minutos por terminal — `sudo -k` o invalida na hora.
+- **A política vive em `/etc/sudoers` e `/etc/sudoers.d/`**, editada só com `visudo`. Restringir o último campo da regra a comandos específicos é o coração do menor privilégio.
+- **Comandos que escapam para um shell quebram a restrição.** `vim`, `find`, `less`, `awk`, `tar` e outros permitem executar código; conceder `sudo` a eles é conceder root inteiro. O GTFOBins cataloga essas fugas.
+- **Todo uso de `sudo` vira log**, com quem, de onde, como quem e o quê — a base da auditoria e a razão de preferir `sudo` a `su`.

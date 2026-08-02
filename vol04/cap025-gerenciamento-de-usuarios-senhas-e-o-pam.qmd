@@ -1,3 +1,393 @@
 # Gerenciamento de usuários, senhas e o PAM {#sec-cap025}
 
-*(em elaboracao)*
+Você cria uma conta nova num servidor, define uma senha forte, testa o login por SSH — e funciona. Uma semana depois, o dono da conta reclama que não consegue mais entrar. Você confere o `/etc/passwd`: a conta está lá, com shell válido. O `/etc/shadow`: o hash continua correto. Você não mudou nada. E mesmo assim o login é recusado com uma mensagem lacônica: `Your account has expired`.
+
+O que aconteceu não está em nenhum dos dois arquivos que você olhou. A conta tinha uma data de expiração definida no ato da criação — talvez por uma política padrão da empresa —, e essa data chegou. A decisão de barrar o login não foi tomada pelo `sshd` nem pelo kernel: foi tomada por um módulo do **PAM**, a camada que fica entre "provar quem você é" e "poder usar o sistema".
+
+Este capítulo junta duas coisas que andam sempre juntas: as ferramentas que criam, modificam e removem contas (`useradd`, `usermod`, `userdel` e a dupla amigável `adduser`/`deluser`), e o **PAM** — o *Pluggable Authentication Modules* —, que é onde as regras de senha, de bloqueio e de expiração realmente vivem. Sem entender o PAM, metade dos problemas de autenticação parece mágica.
+
+## `useradd` versus `adduser`: baixo nível e alto nível
+
+O Debian, e portanto o Kali, oferece duas camadas de ferramentas para criar contas, e confundi-las gera resultados frustrantes.
+
+- **`useradd`** é o utilitário de baixo nível, do pacote `shadow-utils`, padrão em todo Linux. Sozinho, ele faz o mínimo: cria a linha em `/etc/passwd`, e só. Não cria o diretório pessoal, não copia arquivos-modelo, não pede senha.
+- **`adduser`** é um script Perl do Debian, de alto nível, que orquestra o `useradd` com defaults sensatos: cria e povoa o diretório pessoal, pede a senha interativamente, configura o grupo primário conforme a política.
+
+A confusão clássica: `sudo useradd joao` cria uma conta que não tem diretório pessoal e cujo login falha por falta de senha. Quem esperava o comportamento do `adduser` acha que "não funcionou". Os dois funcionam — em níveis diferentes.
+
+```bash
+# baixo nivel, explicito, ideal para scripts:
+sudo useradd -m -s /bin/bash -c "Joao Silva" -G sudo joao
+
+# alto nivel, interativo, ideal para uso manual:
+sudo adduser joao
+```
+
+As opções mais usadas do `useradd`:
+
+| Opção | Efeito |
+|:---:|---|
+| `-m` | cria o diretório pessoal e copia `/etc/skel` |
+| `-s` | define o shell de login |
+| `-c` | preenche o campo GECOS (nome real) |
+| `-G` | grupos suplementares, separados por vírgula |
+| `-g` | grupo primário (nome ou GID) |
+| `-u` | UID específico |
+| `-r` | conta de sistema (UID na faixa baixa, sem `/home`) |
+| `-e` | data de expiração da conta (`AAAA-MM-DD`) |
+| `-D` | mostra ou altera os defaults de `/etc/default/useradd` |
+
+: Opções essenciais do `useradd` {#tbl-opcoes-useradd}
+
+O `/etc/skel` merece nota: é o modelo. Tudo que estiver nele — `.bashrc`, `.profile`, uma pasta `Documentos` — é copiado para o diretório pessoal de cada conta nova criada com `-m`. Personalizar o `/etc/skel` é como padronizar o ambiente inicial de todos os futuros usuários de uma máquina.
+
+## `usermod`: alterar uma conta existente
+
+```bash
+sudo usermod -aG docker joao       # ACRESCENTA joao ao grupo docker
+sudo usermod -s /usr/bin/zsh joao  # troca o shell
+sudo usermod -L joao               # bloqueia a senha (login por senha off)
+sudo usermod -U joao               # desbloqueia
+sudo usermod -e 2026-12-31 joao    # define expiracao da conta
+sudo usermod -l novonome antigo    # renomeia a conta
+sudo usermod -d /home/novo -m joao # move o diretorio pessoal
+```
+
+::: {.callout-warning}
+## O `-a` de `-aG` não é opcional
+
+Já visto em @sec-cap021, mas é o erro que mais destrói acesso, então vale repetir: `usermod -G grupos usuario` **substitui** toda a lista de grupos suplementares. Sem o `-a`, `sudo usermod -G docker joao` remove o `joao` de `sudo`, `adm` e todos os outros grupos, deixando só `docker`. A forma segura de **acrescentar** é sempre `-aG`. Para remover de um grupo, use `sudo gpasswd -d joao docker` ou `sudo deluser joao docker`.
+:::
+
+## Senhas e envelhecimento com `passwd` e `chage`
+
+```bash
+passwd                       # troca a SUA senha
+sudo passwd joao             # define a senha de joao
+sudo passwd -l joao          # bloqueia (poe ! no hash)
+sudo passwd -u joao          # desbloqueia
+sudo passwd -e joao          # expira JA: forca troca no proximo login
+sudo passwd -S joao          # status resumido
+```
+
+O `passwd -S` dá uma leitura rápida do estado da conta:
+
+```text
+joao P 08/01/2026 0 99999 7 -1
+```
+
+Os campos são: nome, status (`P` senha válida, `L` bloqueada, `NP` sem senha), data da última troca e os parâmetros de envelhecimento. Para gerir esse envelhecimento com clareza, a ferramenta dedicada é o `chage` (*change age*):
+
+```bash
+sudo chage -l joao                 # lista a politica de envelhecimento
+sudo chage -M 90 joao              # senha expira a cada 90 dias
+sudo chage -m 7 joao               # minimo 7 dias entre trocas
+sudo chage -W 14 joao              # avisa 14 dias antes de expirar
+sudo chage -E 2026-12-31 joao      # a CONTA expira nesta data
+sudo chage -d 0 joao               # forca troca no proximo login
+```
+
+A distinção que resolve o mistério da abertura deste capítulo: **expirar a senha** (`chage -M`, `passwd -e`) força uma troca de senha mas mantém a conta utilizável; **expirar a conta** (`chage -E`, `usermod -e`) desativa o acesso por completo numa data, independentemente da senha. A conta da abertura tinha um `-E` no passado. Nem o `passwd` nem o `shadow` mostravam isso de forma óbvia; `chage -l` mostraria na hora.
+
+## Remover contas: `userdel` e `deluser`
+
+```bash
+sudo userdel joao          # remove a conta, PRESERVA o /home
+sudo userdel -r joao       # remove a conta E o /home e o spool de e-mail
+sudo deluser joao          # equivalente Debian, mais verboso
+sudo deluser --remove-home joao
+sudo deluser --backup --remove-home joao   # faz um .tar.gz antes de apagar
+```
+
+A decisão entre preservar e apagar o `/home` é de política, não técnica. Preservar mantém os dados de quem saiu — útil para transferir a um sucessor, obrigatório em alguns contextos de conformidade. Apagar libera espaço e evita dados órfãos. O `deluser --backup` é o meio-termo prudente: arquiva antes de remover.
+
+Um cuidado: remover a conta deixa **arquivos órfãos** espalhados pelo sistema — tudo que aquele UID possuía fora do `/home`. É o cenário do `999` de @sec-cap021. Para encontrá-los antes que virem mistério:
+
+```bash
+sudo find / -xdev -nouser -o -nogroup 2>/dev/null
+```
+
+## O PAM: onde a autenticação realmente acontece
+
+Aqui está a peça que amarra tudo. Quando você faz login — por console, por SSH, por `su`, por `sudo` —, o programa que recebe sua senha **não** decide sozinho se você entra. Ele delega ao **PAM**, uma biblioteca modular que consulta um empilhamento de regras configurável. Isso permite trocar a lógica de autenticação (adicionar duplo fator, exigir senha forte, bloquear após tentativas) **sem recompilar** o `sshd`, o `login` ou o `sudo`.
+
+A configuração vive em `/etc/pam.d/`, um arquivo por serviço:
+
+```bash
+ls /etc/pam.d/
+cat /etc/pam.d/sshd
+```
+
+Cada linha tem a forma `tipo   controle   módulo   argumentos`, e o PAM processa quatro **tipos** de tarefa, empilhados. @fig-pam-stack mostra os quatro grupos.
+
+::: {#fig-pam-stack}
+```{.tikz}
+%%| filename: os-quatro-grupos-de-modulo-do-pam
+%%| alt: Fluxo de login passando pelos quatro tipos de modulo PAM auth account password e session empilhados, cada um com sua responsabilidade
+\begin{tikzpicture}[
+    stg/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,minimum width=3.0cm,minimum height=1.0cm,inner sep=3pt},
+    au/.style={stg,draw=manualblue,fill=manualblue!12},
+    ac/.style={stg,draw=manualgreen,fill=manualgreen!14},
+    pw/.style={stg,draw=manualyellow,fill=manualyellow!22},
+    se/.style={stg,draw=manualred,fill=manualred!11},
+    fl/.style={manualgray,thick,-{Stealth[length=5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[au] (a) at (0,0)   {\textbf{auth}\\prova a identidade\\(verifica a senha)};
+  \node[ac] (b) at (3.6,0) {\textbf{account}\\a conta pode entrar?\\(expiração, horário)};
+  \node[pw] (c) at (7.2,0) {\textbf{password}\\troca de senha\\(regras de força)};
+  \node[se] (d) at (10.8,0){\textbf{session}\\prepara o ambiente\\(monta home, log)};
+
+  \draw[fl] (a) -- (b);
+  \draw[fl] (b) -- (c);
+  \draw[fl] (c) -- (d);
+
+  \node[nt,text width=12.5cm] at (5.4,-1.5) {O mistério da abertura mora em \textbf{account}: mesmo com a senha certa (\texttt{auth} passa), o módulo \texttt{pam\_unix} de \texttt{account} recusa uma conta expirada. A senha nunca foi o problema.};
+\end{tikzpicture}
+```
+Os quatro grupos de módulo do PAM; a expiração de conta é decidida no grupo `account`.
+:::
+
+- **auth** — verifica quem você é (senha, chave, biometria, token).
+- **account** — verifica se a conta *pode* ser usada agora: não expirada, dentro do horário permitido, não bloqueada. Foi aqui que a conta da abertura foi barrada.
+- **password** — governa a *troca* de senha: complexidade mínima, histórico, tamanho.
+- **session** — prepara e encerra a sessão: monta o diretório pessoal, registra no log, aplica limites.
+
+A coluna de **controle** diz o peso de cada módulo:
+
+| Controle | Efeito se o módulo falha |
+|:---:|---|
+| `requisite` | falha **imediata**, para o empilhamento na hora |
+| `required` | falha, mas o empilhamento continua (o resultado final é negativo) |
+| `sufficient` | se **passa**, aprova na hora (se falha, ignora e segue) |
+| `optional` | o resultado quase nunca importa |
+
+: Palavras de controle do PAM (forma simples) {#tbl-pam-controle}
+
+::: {.callout-important}
+## Editar PAM é operação de rede sob os pés
+
+Um erro num arquivo de `/etc/pam.d/` pode trancar **todo** o login da máquina, inclusive o seu e o do root — e você só descobre quando já está fora. A regra de ouro: **mantenha uma sessão de root aberta** num segundo terminal enquanto edita PAM, e teste o login numa **nova** sessão antes de fechar a antiga. Se travar, a sessão preservada é a sua única saída sem mídia de recuperação. Nunca edite PAM por SSH sem um plano B.
+:::
+
+## Regras práticas de PAM que você vai encontrar
+
+Você raramente escreve PAM do zero; ajusta o que já existe. Dois módulos concentram o que mais aparece.
+
+**Força de senha — `pam_pwquality`** (pacote `libpam-pwquality`). Configurado em `/etc/security/pwquality.conf`, exige senhas com tamanho e complexidade mínimos na hora da troca:
+
+```bash
+grep -vE '^\s*#|^\s*$' /etc/security/pwquality.conf
+```
+
+```text
+minlen = 12
+dcredit = -1     # exige ao menos 1 digito
+ucredit = -1     # ao menos 1 maiuscula
+ocredit = -1     # ao menos 1 caractere especial
+```
+
+**Bloqueio após tentativas — `pam_faillock`**. Trava a conta temporariamente depois de N senhas erradas, mitigando ataques de força bruta local. Consultar e desbloquear:
+
+```bash
+faillock --user joao               # mostra as falhas registradas
+sudo faillock --user joao --reset  # zera o contador, desbloqueia
+```
+
+E dois utilitários de linha de comando para conferir estado, que valem mais que decorar arquivos:
+
+```bash
+who                  # sessoes ativas agora
+w                    # sessoes + o que cada uma faz
+last                 # historico de logins (le /var/log/wtmp)
+lastb                # historico de logins FALHOS (precisa de sudo)
+lastlog              # ultimo login de cada conta
+```
+
+O `lastb`, em particular, é ouro numa investigação: uma enxurrada de logins falhos de um mesmo IP é a assinatura de um ataque de força bruta em andamento.
+
+## 🐉 No Kali
+
+- **Para o dia a dia, `adduser` poupa dor de cabeça.** Numa VM de estudo, `sudo adduser analista` cria a conta completa — diretório, senha, grupo — de forma interativa. Guarde o `useradd` explícito para scripts de provisionamento, onde a previsibilidade de cada opção importa mais que a conveniência.
+- **`last`, `lastb` e `faillock` são análise de log de autenticação.** Ao periciar uma máquina (sua ou de um alvo autorizado), `last` reconstrói quem entrou e quando, e `sudo lastb` expõe a maré de tentativas falhas que denuncia força bruta. Esses arquivos (`/var/log/wtmp`, `/var/log/btmp`) são também os que um invasor tenta limpar — um `wtmp` truncado é, por si, um indício.
+- **PAM é vetor de persistência avançado — logo, alvo de auditoria.** Um invasor com root pode inserir um módulo PAM malicioso (por exemplo, um `pam_unix` adulterado ou um módulo que aceita uma senha-mestra) para garantir acesso futuro. Auditar `/etc/pam.d/` e os módulos em `/lib/x86_64-linux-gnu/security/` (data de modificação, hash contra um pacote limpo) é parte de uma resposta a incidente. Fazer isso no seu sistema ou num engajamento autorizado é defesa; adulterar PAM alheio é crime (Lei 12.737/2012).
+- **`pam_pwquality` e `pam_faillock` são hardening barato.** Numa máquina Kali exposta (um C2 de laboratório, um servidor de treino), impor senha forte e bloqueio por tentativa reduz a superfície de força bruta local com poucas linhas. É o tipo de configuração que um relatório de teste recomenda ao cliente.
+- **A conta `kali` e o `/etc/skel` definem o ambiente padrão.** Personalizações que você quer em toda conta nova de um laboratório multiusuário (um `.zshrc` com aliases de ferramentas, uma pasta de wordlists) vão no `/etc/skel` antes de criar as contas.
+- **Cuidado ao expirar a própria conta em teste.** `chage -E` ou `usermod -e` com data passada trava o login na próxima sessão. Em VM descartável, sem problema; numa máquina que importa, é o tipo de "experimento" que exige a sessão de root aberta em paralelo, como no aviso sobre PAM.
+
+> **Nota sobre a família RHEL.** As ferramentas de conta (`useradd`, `usermod`, `userdel`, `chage`) são idênticas — vêm do mesmo `shadow-utils`. Duas diferenças: (1) o RHEL não tem o `adduser`/`deluser` do Debian; lá `useradd` é a ferramenta padrão e já cria o `/home` por default de fábrica, sem exigir `-m` na maioria das configs. (2) A stack PAM tem nomes de arquivo próprios (`system-auth`, `password-auth`) gerados pela ferramenta `authselect` (antiga `authconfig`), em vez da edição manual comum no Debian. Os módulos (`pam_unix`, `pam_pwquality`, `pam_faillock`) são os mesmos. O log de autenticação vai para `/var/log/secure`.
+
+## 🧪 Laboratório
+
+Roteiro em VM descartável. Cria e remove contas de teste; o passo final limpa tudo.
+
+1. **Veja a diferença entre `useradd` cru e o esperado.**
+
+   ```bash
+   sudo useradd lab025a
+   getent passwd lab025a
+   ls -ld /home/lab025a 2>&1
+   sudo passwd -S lab025a
+   ```
+
+   Esperado: a conta existe, mas **não** há `/home/lab025a` e o status é `L` ou `NP` — sem `-m` e sem senha, o login não funcionaria.
+
+2. **Crie uma conta completa do jeito explícito.**
+
+   ```bash
+   sudo useradd -m -s /bin/bash -c "Conta de teste" -G sudo lab025b
+   getent passwd lab025b
+   ls -ld /home/lab025b
+   ls -a /home/lab025b
+   ```
+
+   Esperado: diretório pessoal criado e povoado com os arquivos vindos de `/etc/skel` (`.bashrc`, `.profile`).
+
+3. **Confirme o papel do `/etc/skel`.**
+
+   ```bash
+   ls -a /etc/skel
+   echo "alias ll='ls -la'" | sudo tee -a /etc/skel/.bash_aliases
+   sudo useradd -m lab025c
+   cat /home/lab025c/.bash_aliases
+   sudo rm /etc/skel/.bash_aliases
+   ```
+
+   Esperado: a conta `lab025c`, criada **depois** da edição, herdou o `.bash_aliases`; contas anteriores não.
+
+4. **Defina uma senha e leia o status.**
+
+   ```bash
+   echo 'lab025b:SenhaForte#2026' | sudo chpasswd
+   sudo passwd -S lab025b
+   sudo getent shadow lab025b | cut -d: -f2 | cut -c1-4
+   ```
+
+   Esperado: status `P` (senha válida) e o prefixo de hash (`$y$`). O `chpasswd` define senha sem interação, útil em script.
+
+5. **Explore o envelhecimento com `chage`.**
+
+   ```bash
+   sudo chage -l lab025b
+   sudo chage -M 90 -m 7 -W 14 lab025b
+   sudo chage -l lab025b
+   ```
+
+   Esperado: os valores de "máximo de dias", "mínimo" e "aviso" mudam na segunda listagem.
+
+6. **Reproduza o mistério da abertura: conta expirada.**
+
+   ```bash
+   sudo chage -E 2020-01-01 lab025b       # data no passado
+   sudo chage -l lab025b | grep -i "expira\|expires"
+   sudo su - lab025b 2>&1 | head -3
+   ```
+
+   Esperado: a troca de usuário é recusada com "account has expired" ou equivalente — a senha está certa, mas o grupo `account` do PAM barra. Exatamente o cenário da abertura.
+
+7. **Conserte a expiração.**
+
+   ```bash
+   sudo chage -E -1 lab025b               # -1 remove a expiracao
+   sudo chage -l lab025b | grep -i "expira\|expires"
+   sudo su - lab025b -c 'whoami'
+   ```
+
+   Esperado: com a expiração removida (`-1` = nunca), o login volta a funcionar.
+
+8. **Force uma troca de senha no próximo login.**
+
+   ```bash
+   sudo chage -d 0 lab025b
+   sudo passwd -S lab025b
+   ```
+
+   Esperado: o status mostra a data da última troca zerada — no próximo login interativo, o sistema exigiria nova senha antes de prosseguir.
+
+9. **Entenda a substituição de grupos.**
+
+   ```bash
+   sudo usermod -aG adm lab025b
+   id lab025b
+   sudo usermod -G lab025b lab025b       # SEM -a: substitui tudo
+   id lab025b
+   sudo usermod -aG sudo,adm lab025b     # recompoe
+   id lab025b
+   ```
+
+   Esperado: depois do `usermod -G` sem `-a`, os grupos `sudo` e `adm` somem, restando só o primário. É a demonstração do porquê o `-a` é obrigatório.
+
+10. **Bloqueie e desbloqueie a conta.**
+
+    ```bash
+    sudo usermod -L lab025b
+    sudo passwd -S lab025b               # status L
+    sudo getent shadow lab025b | cut -d: -f2 | cut -c1
+    sudo usermod -U lab025b
+    sudo passwd -S lab025b               # status P
+    ```
+
+    Esperado: o `L` no status e o `!` no início do hash quando bloqueada; ambos revertem no desbloqueio.
+
+11. **Inspecione a stack PAM de um serviço.**
+
+    ```bash
+    grep -vE '^\s*#|^\s*$' /etc/pam.d/sshd
+    grep -rl pam_unix /etc/pam.d/ | head
+    ls /lib/*/security/pam_unix.so 2>/dev/null || ls /usr/lib/*/security/pam_unix.so
+    ```
+
+    Esperado: as linhas `auth`, `account`, `password`, `session` e o caminho do módulo `pam_unix.so`. **Não edite** nada aqui neste laboratório.
+
+12. **Leia os logs de autenticação.**
+
+    ```bash
+    last -n 5
+    sudo lastb -n 5 2>/dev/null || echo "sem btmp ou vazio"
+    who
+    w
+    ```
+
+    Esperado: `last` mostra logins recentes; `lastb`, os falhos (se houver). São as fontes de uma triagem de acesso.
+
+13. **Encontre arquivos que ficarão órfãos.**
+
+    ```bash
+    sudo -u lab025b touch /tmp/orfao-lab025b
+    sudo find /tmp -user lab025b 2>/dev/null
+    ```
+
+    Esperado: o arquivo aparece; depois da remoção da conta, ele vira `-nouser`.
+
+14. **Remova as contas com backup.**
+
+    ```bash
+    sudo deluser --backup --backup-to /tmp --remove-home lab025b 2>/dev/null \
+      || sudo userdel -r lab025b
+    ls /tmp/lab025b*.tar.* 2>/dev/null
+    sudo find / -xdev -nouser 2>/dev/null | grep orfao
+    ```
+
+    Esperado: o `.tar` de backup do `/home` (se o `deluser` estiver disponível) e o `/tmp/orfao-lab025b` agora listado como `-nouser`.
+
+15. **Limpe o resto.**
+
+    ```bash
+    sudo userdel -r lab025a 2>/dev/null
+    sudo userdel -r lab025c 2>/dev/null
+    sudo rm -f /tmp/orfao-lab025b /tmp/lab025b*.tar.*
+    getent passwd lab025a lab025b lab025c; echo "codigo: $?"
+    ```
+
+    Esperado: nenhuma saída e código diferente de zero — todas as contas de teste desapareceram.
+
+## Resumo
+
+- **`useradd` é baixo nível; `adduser` é alto nível.** `useradd` sozinho só escreve em `/etc/passwd` — sem `-m` não há `/home`, sem senha não há login. `adduser` (Debian/Kali) orquestra tudo interativamente. Para scripts, `useradd` explícito; para uso manual, `adduser`.
+- **`/etc/skel` é o modelo** copiado para cada `/home` novo criado com `-m`. Personalizá-lo padroniza o ambiente inicial de todas as contas futuras.
+- **`usermod -aG` acrescenta; `usermod -G` substitui.** Esquecer o `-a` remove a conta de todos os outros grupos — o erro que mais destrói acesso.
+- **Expirar senha ≠ expirar conta.** `chage -M`/`passwd -e` forçam troca de senha; `chage -E`/`usermod -e` desativam a conta numa data. `chage -l` revela o que `passwd -S` esconde.
+- **`userdel` preserva o `/home`; `userdel -r` o apaga.** `deluser --backup` arquiva antes. Remover conta deixa arquivos órfãos (`-nouser`) fora do `/home`, encontráveis com `find -nouser`.
+- **O PAM decide a autenticação**, não o `sshd`/`login`/`sudo` sozinhos. Quatro grupos empilhados: `auth` (identidade), `account` (pode entrar agora?), `password` (troca), `session` (ambiente). Expiração de conta é barrada no grupo `account`.
+- **Editar `/etc/pam.d/` é arriscado**: um erro tranca todo o login. Sempre mantenha uma sessão de root aberta e teste numa sessão nova antes de fechar.
+- **`pam_pwquality` impõe senha forte, `pam_faillock` bloqueia força bruta.** `last`, `lastb`, `who`, `w` e `lastlog` leem o estado e o histórico de autenticação — base de qualquer triagem de acesso.

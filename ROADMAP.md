@@ -39,12 +39,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 4 — Usuários, Grupos e Permissões
 
-- [ ] **cap 021** - Usuários, grupos e o arquivo /etc/passwd - `vol04/cap021-usuarios-grupos-e-o-arquivo-etc-passwd.qmd`
-- [ ] **cap 022** - O root, sudo e a elevação de privilégios - `vol04/cap022-o-root-sudo-e-a-elevacao-de-privilegios.qmd`
-- [ ] **cap 023** - Permissões especiais: SUID, SGID e sticky bit - `vol04/cap023-permissoes-especiais-suid-sgid-e-sticky-bit.qmd`
-- [ ] **cap 024** - ACLs e atributos estendidos de arquivo - `vol04/cap024-acls-e-atributos-estendidos-de-arquivo.qmd`
-- [ ] **cap 025** - Gerenciamento de usuários, senhas e o PAM - `vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd`
-- [ ] **cap 026** - Trabalhando como root no Kali com segurança - `vol04/cap026-trabalhando-como-root-no-kali-com-seguranca.qmd`
+- [x] **cap 021** - Usuários, grupos e o arquivo /etc/passwd - `vol04/cap021-usuarios-grupos-e-o-arquivo-etc-passwd.qmd`
+- [x] **cap 022** - O root, sudo e a elevação de privilégios - `vol04/cap022-o-root-sudo-e-a-elevacao-de-privilegios.qmd`
+- [x] **cap 023** - Permissões especiais: SUID, SGID e sticky bit - `vol04/cap023-permissoes-especiais-suid-sgid-e-sticky-bit.qmd`
+- [x] **cap 024** - ACLs e atributos estendidos de arquivo - `vol04/cap024-acls-e-atributos-estendidos-de-arquivo.qmd`
+- [x] **cap 025** - Gerenciamento de usuários, senhas e o PAM - `vol04/cap025-gerenciamento-de-usuarios-senhas-e-o-pam.qmd`
+- [x] **cap 026** - Trabalhando como root no Kali com segurança - `vol04/cap026-trabalhando-como-root-no-kali-com-seguranca.qmd`
 
 ## Fase 2 — Administração do Sistema
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (20 concluidos).
+**Total:** 103 capitulos em 16 volumes (26 concluidos).
 

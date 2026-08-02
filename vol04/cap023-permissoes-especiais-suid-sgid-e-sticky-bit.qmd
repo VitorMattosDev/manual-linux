@@ -1,3 +1,380 @@
 # Permissões especiais: SUID, SGID e sticky bit {#sec-cap023}
 
-*(em elaboracao)*
+Um usuário comum não pode ler `/etc/shadow` — o arquivo é `640`, dono `root` (@sec-cap021). E mesmo assim, esse mesmo usuário troca a própria senha, o que **grava** em `/etc/shadow`, sem ser root e sem `sudo`:
+
+```bash
+ls -l /usr/bin/passwd
+```
+
+```text
+-rwsr-xr-x 1 root root 68208 mar 22  2024 /usr/bin/passwd
+```
+
+O `s` no lugar do `x` do dono é a explicação inteira. Ele é o bit **SUID**, e transforma o `passwd` num programa que roda com a identidade do **dono do arquivo** — `root` — em vez da identidade de quem o executa. É como o kernel resolve um paradoxo real: algumas operações legítimas exigem privilégio, mas você não quer dar `sudo` do arquivo inteiro para cada uma delas.
+
+Este capítulo cobre os três bits que ficam "acima" dos nove bits comuns de permissão: SUID, SGID e sticky. Eles aparecem como um quarto dígito octal e mudam quem um processo **é** ou quem é **dono** do que ele cria. São poderosos, e por isso são também a primeira coisa que um atacante procura numa máquina.
+
+## O quarto dígito octal
+
+Os modos que você viu até aqui têm três dígitos (`755`, `644`). Existe um quarto, à esquerda, quase sempre omitido porque vale zero:
+
+::: {#fig-quarto-digito}
+```{.tikz}
+%%| filename: quarto-digito-octal-dos-bits-especiais
+%%| alt: Modo octal de quatro digitos com o primeiro digito destacado e seus tres bits SUID valendo 4 SGID valendo 2 e sticky valendo 1
+\begin{tikzpicture}[
+    dg/.style={rounded corners=3pt,font=\large\ttfamily,minimum width=0.95cm,minimum height=0.95cm,thick},
+    esp/.style={dg,draw=manualred,fill=manualred!12},
+    com/.style={dg,draw=manualgray,fill=manualgray!12},
+    bit/.style={rounded corners=2pt,font=\scriptsize\ttfamily,minimum width=1.5cm,minimum height=0.6cm,thick,draw=manualred,fill=manualred!8},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    lb/.style={font=\scriptsize\bfseries,align=center}
+  ]
+  \node[esp] (d0) at (0,0)   {4};
+  \node[com] (d1) at (1.05,0) {7};
+  \node[com] (d2) at (2.1,0)  {5};
+  \node[com] (d3) at (3.15,0) {5};
+
+  \node[lb,manualred] at (0,0.85) {especiais};
+  \node[nt] at (2.1,-0.85) {dono \quad grupo \quad outros};
+
+  \node[bit] (b1) at (6.0,0.7)   {SUID = 4};
+  \node[bit] (b2) at (6.0,0.0)   {SGID = 2};
+  \node[bit] (b3) at (6.0,-0.7)  {sticky = 1};
+
+  \draw[manualred,thick,-{Stealth[length=4pt]}] (d0.east) to[out=20,in=180] (b1.west);
+  \draw[manualred,thick,-{Stealth[length=4pt]}] (d0.east) to[out=0,in=180]  (b2.west);
+  \draw[manualred,thick,-{Stealth[length=4pt]}] (d0.east) to[out=-20,in=180] (b3.west);
+
+  \node[nt,align=left,text width=5.0cm] at (10.5,0) {Somam-se como qualquer octal: \texttt{4}=SUID, \texttt{2}=SGID, \texttt{1}=sticky. \texttt{chmod 4755} liga SUID; \texttt{chmod 2755} liga SGID; \texttt{chmod 1777} liga sticky.};
+\end{tikzpicture}
+```
+O primeiro dígito octal carrega os três bits especiais: SUID (4), SGID (2) e sticky (1).
+:::
+
+Esses bits **reaproveitam** a posição do `x` no `ls -l`, o que gera a notação com letras:
+
+| No `ls -l` | Bit | Significado |
+|:---:|---|---|
+| `s` no dono | SUID | com `x`: roda como o dono do arquivo |
+| `S` no dono | SUID | **sem** `x`: bit ligado, arquivo não executável (quase sempre erro) |
+| `s` no grupo | SGID | com `x`: roda com o grupo do arquivo / diretório herda grupo |
+| `S` no grupo | SGID | sem `x`: bit ligado sem execução |
+| `t` em outros | sticky | com `x`: só o dono apaga (em diretório) |
+| `T` em outros | sticky | sem `x`: bit ligado sem execução |
+
+: Como os bits especiais aparecem no `ls -l` {#tbl-letras-especiais}
+
+A regra da caixa-alta: **minúscula** (`s`, `t`) significa que o bit `x` correspondente também está aceso; **maiúscula** (`S`, `T`) significa que o especial está ligado mas o `x` não — situação que quase sempre indica um `chmod` mal feito.
+
+## SUID: rodar como o dono do arquivo
+
+Quando um binário SUID é executado, o kernel define o **UID efetivo** do processo como o do dono do arquivo, não o de quem chamou. É o UID efetivo que entra na decisão de permissão (@sec-cap020). Por isso o `passwd`, dono `root` e SUID, escreve em `/etc/shadow`: durante a execução, ele **é** root.
+
+@fig-suid-efetivo mostra a distinção entre UID real e efetivo, que é o coração do mecanismo.
+
+::: {#fig-suid-efetivo}
+```{.tikz}
+%%| filename: uid-real-versus-efetivo-no-suid
+%%| alt: Usuario kali executa o binario passwd com bit SUID, o processo resultante mantem UID real 1000 mas ganha UID efetivo 0 do dono root, e por isso escreve em etc shadow
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt},
+    u/.style={bx,draw=manualblue,fill=manualblue!12,text width=2.5cm},
+    f/.style={bx,draw=manualred,fill=manualred!11,text width=3.0cm},
+    proc/.style={bx,draw=manualgreen,fill=manualgreen!14,text width=3.2cm},
+    tgt/.style={bx,draw=manualgray,fill=manualgray!12,text width=2.6cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \node[u] (u) at (0,0) {usuário \texttt{kali}\\UID real \texttt{1000}};
+  \node[f] (f) at (0,-2.0) {\texttt{/usr/bin/passwd}\\\texttt{-rwsr-xr-x root}\\bit \textbf{SUID}};
+  \node[proc] (p) at (4.6,-1.0) {processo em execução\\UID real \texttt{1000}\\UID efetivo \textbf{0}};
+  \node[tgt] (t) at (9.2,-1.0) {escreve em\\\texttt{/etc/shadow}\\(\texttt{640 root})};
+
+  \draw[fl] (u) -- (p);
+  \draw[fl] (f) -- (p);
+  \draw[fl] (p) -- (t);
+
+  \node[nt,align=left,text width=5.0cm] at (2.3,-3.6) {O \textbf{real} lembra quem chamou (para logs e sinais). O \textbf{efetivo} é quem o kernel considera na hora de checar permissão.};
+  \node[nt,align=left,text width=4.8cm] at (9.2,-3.2) {Efetivo \texttt{0} = a checagem de permissão é a do root. Por isso o arquivo \texttt{640} é acessível.};
+\end{tikzpicture}
+```
+Um binário SUID mantém o UID real de quem chamou, mas ganha o UID efetivo do dono.
+:::
+
+Ligar e conferir o bit:
+
+```bash
+chmod u+s programa          # simbolico
+chmod 4755 programa         # octal: o 4 na frente
+ls -l programa              # -rwsr-xr-x
+stat -c '%a %A %U' programa # 4755 -rwsr-xr-x root
+```
+
+::: {.callout-important}
+## SUID é a maior fonte de escalada de privilégio local
+
+Um binário SUID de dono root que contenha uma falha — ou que permita executar outro programa — entrega root a quem o explora. Foi assim em vulnerabilidades célebres do `sudo`, do `pkexec` e de utilitários menores. Por isso, criar seus **próprios** binários SUID é quase sempre um erro: você assume a responsabilidade de que aquele programa é perfeitamente seguro contra qualquer entrada.
+
+O SUID **não funciona em scripts** na maioria dos kernels Linux modernos, exatamente porque um script SUID é impossível de tornar seguro (há uma janela de corrida entre ler o shebang e executar o interpretador). Se precisa dar privilégio pontual a um script, o caminho é uma regra restrita de `sudo` (@sec-cap022) ou capabilities (Volume 14) — nunca `chmod u+s script.sh`.
+:::
+
+O inventário dos binários SUID de um sistema é uma verificação de segurança rotineira:
+
+```bash
+find / -xdev -perm -4000 -type f 2>/dev/null
+find / -xdev -perm -4000 -type f -exec ls -l {} \; 2>/dev/null
+```
+
+Numa instalação saudável, essa lista é curta e previsível: `passwd`, `su`, `sudo`, `mount`, `umount`, `ping`, `chsh`, `newgrp`, `pkexec`. Qualquer coisa fora do esperado — um `find`, um `python`, um binário num diretório de usuário — merece investigação imediata. O **GTFOBins** lista quais binários SUID conhecidos permitem escapar para root.
+
+## SGID: o grupo, e a mágica dos diretórios
+
+O SGID tem dois comportamentos, dependendo de onde é aplicado.
+
+**Em um executável**, é o análogo do SUID para o grupo: o processo roda com o GID efetivo do grupo do arquivo. É o que permite ao `wall` escrever nos terminais de outros usuários (grupo `tty`) sem ser root.
+
+**Em um diretório**, o SGID faz algo diferente e extremamente útil: todo arquivo criado ali **herda o grupo do diretório**, em vez de receber o grupo primário de quem o criou. Sem SGID, um arquivo novo pertence ao grupo primário do autor; com SGID, pertence ao grupo do diretório-pai. Além disso, subdiretórios criados dentro herdam o próprio bit SGID, propagando o comportamento para baixo.
+
+Esse é o mecanismo canônico de **diretório compartilhado por uma equipe**:
+
+```bash
+sudo groupadd projeto
+sudo mkdir /srv/projeto
+sudo chgrp projeto /srv/projeto
+sudo chmod 2775 /srv/projeto      # o 2 liga SGID; drwxrwsr-x
+```
+
+Agora qualquer membro do grupo `projeto` que crie um arquivo em `/srv/projeto` produz um arquivo do grupo `projeto`, legível e gravável pelos colegas — sem que ninguém precise lembrar de rodar `chgrp` a cada arquivo. Combinado com um `umask 002` (@sec-cap020), o grupo ganha escrita automaticamente.
+
+```bash
+chmod g+s diretorio         # simbolico
+chmod 2775 diretorio        # octal
+ls -ld diretorio            # drwxrwsr-x
+```
+
+## Sticky bit: a trava de remoção em diretório compartilhado
+
+O sticky bit, hoje, só tem efeito em **diretórios**. Ele resolve o problema que o `w` num diretório cria: como visto em @sec-cap020, ter `w` num diretório permite apagar **qualquer** arquivo dele, inclusive dos outros, porque apagar é editar a tabela de nomes, não o arquivo.
+
+O `/tmp` precisa ser gravável por todos, para que qualquer processo crie arquivos temporários. Sem proteção, qualquer usuário apagaria os arquivos temporários de qualquer outro. O sticky bit restringe a remoção: num diretório com sticky, **só o dono do arquivo** (ou o dono do diretório, ou o root) pode apagá-lo ou renomeá-lo.
+
+```bash
+ls -ld /tmp
+```
+
+```text
+drwxrwxrwt 20 root root 4096 ago  1 09:14 /tmp
+```
+
+O `t` final é o sticky. O modo é `1777` — o `1` do primeiro dígito.
+
+```bash
+chmod +t diretorio          # simbolico
+chmod 1777 diretorio        # octal
+ls -ld diretorio            # drwxrwxrwt
+```
+
+@fig-sticky-tmp ilustra o efeito.
+
+::: {#fig-sticky-tmp}
+```{.tikz}
+%%| filename: efeito-do-sticky-bit-na-remocao
+%%| alt: Diretorio tmp gravavel por todos, usuario bruno tenta apagar arquivo do usuario ana e e barrado pelo sticky bit, mas consegue apagar o proprio arquivo
+\begin{tikzpicture}[
+    dir/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,draw=manualgray,fill=manualgray!10,text width=3.4cm,inner sep=5pt},
+    file/.style={rounded corners=2pt,font=\scriptsize\ttfamily,align=center,thick,inner sep=3pt,minimum width=2.2cm},
+    fa/.style={file,draw=manualblue,fill=manualblue!12},
+    fb/.style={file,draw=manualgreen,fill=manualgreen!13},
+    ok/.style={manualgreen,thick,-{Stealth[length=4pt]}},
+    no/.style={manualred,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,align=center}
+  ]
+  \node[dir] (d) at (0,0) {\texttt{/tmp}\\\texttt{drwxrwxrwt}\\sticky bit ligado};
+  \node[fa] (fa) at (4.4,0.8)  {ana.tmp\\(dono: ana)};
+  \node[fb] (fb) at (4.4,-0.8) {bruno.tmp\\(dono: bruno)};
+
+  \draw[manualgray,thick] (d) -- (fa);
+  \draw[manualgray,thick] (d) -- (fb);
+
+  \node[nt,manualred,text width=3.4cm] at (9.0,0.8) {bruno tenta \texttt{rm ana.tmp}\\\textbf{barrado}: não é o dono};
+  \node[nt,manualgreen,text width=3.4cm] at (9.0,-0.8) {bruno faz \texttt{rm bruno.tmp}\\\textbf{permitido}: é o dono};
+
+  \draw[no] (fa.east) -- (7.0,0.8);
+  \draw[ok] (fb.east) -- (7.0,-0.8);
+
+  \node[nt,manualgray,align=left,text width=11.5cm] at (4.2,-2.4) {Sem o sticky, o \texttt{w} de ``outros'' em \texttt{/tmp} deixaria bruno apagar o arquivo de ana. O \texttt{t} restringe a remoção ao dono de cada arquivo.};
+\end{tikzpicture}
+```
+Em um diretório com sticky bit, só o dono de cada arquivo pode removê-lo.
+:::
+
+Um detalhe de história que ainda aparece em provas de certificação: o nome "sticky" vem de um uso antigo em **arquivos executáveis**, onde o bit mandava o Unix manter o programa "grudado" na memória de troca para carregar mais rápido. Esse comportamento foi abandonado há décadas; em arquivo, o sticky bit hoje é simplesmente ignorado pelo Linux.
+
+## 🐉 No Kali
+
+- **O inventário de SUID é o primeiro passo de uma enumeração de privilégio local.** Ao obter uma sessão de usuário comum num alvo autorizado, `find / -perm -4000 -type f 2>/dev/null` mapeia todos os binários que rodam como o dono. Um binário SUID inesperado, ou um da lista do GTFOBins, costuma ser o caminho mais curto para root. Ferramentas como `LinPEAS` e `linux-exploit-suggester` automatizam essa varredura. Tudo isso pressupõe autorização escrita: rodar contra sistema de terceiros sem contrato é crime (Lei 12.737/2012).
+- **Faça a mesma varredura no seu próprio sistema, como defesa.** Guarde uma linha de base logo após instalar o Kali (`find / -xdev -perm -4000 -type f 2>/dev/null | sort > /root/suid-baseline.txt`) e compare periodicamente. Um binário SUID que apareceu sozinho é um dos sinais mais claros de comprometimento.
+- **Nunca dê SUID a um binário que você compilou por conveniência.** A tentação de fazer `chmod u+s` num utilitário próprio para evitar `sudo` é o erro clássico que abre a porta. Se um script precisa de privilégio pontual, use regra de `sudo` restrita ou capability — nunca SUID, que aliás é ignorado em scripts.
+- **SGID em diretório é a forma correta de montar uma pasta de equipe no lab.** Ao trabalhar em grupo num engajamento, `chmod 2775` mais `chgrp` num diretório compartilhado garante que os artefatos coletados fiquem acessíveis a todos do time sem `chown` manual. Combine com `umask 002` na sessão.
+- **`/tmp` e `/var/tmp` dependem do sticky, e ferramentas contam com isso.** Muitas ferramentas do Kali escrevem temporários em `/tmp`; o sticky bit é o que impede que processos de usuários diferentes na mesma máquina interfiram nos arquivos uns dos outros. Ainda assim, `mktemp` continua sendo a forma correta de criar temporário em script.
+- **`pkexec` é um SUID que já teve escaladas graves.** O `pkexec` (parte do PolicyKit) é SUID root e foi alvo de vulnerabilidades sérias de escalada local. Mantenha o pacote `polkit` atualizado; num teste, a versão dele é uma das primeiras a checar.
+
+> **Nota sobre a família RHEL.** Os três bits são POSIX e idênticos. A diferença prática vem de novo dos *user private groups*: como no RHEL cada usuário tem um grupo próprio, o SGID em diretório compartilhado é ainda mais necessário para forçar um grupo comum, e o `umask 002` padrão do RHEL já combina com esse arranjo. O SELinux acrescenta uma camada sobre tudo isso: um binário SUID pode ser barrado por um tipo SELinux mesmo tendo o bit ligado, e `ls -lZ` mostra o contexto que decide.
+
+## 🧪 Laboratório
+
+Roteiro em `/tmp`, com um segundo usuário para os passos de grupo. Onde ele não existir, `sudo -u nobody` demonstra o efeito.
+
+1. **Encontre os SUID do seu sistema.**
+
+   ```bash
+   find /usr/bin -perm -4000 -type f 2>/dev/null
+   ls -l /usr/bin/passwd /usr/bin/sudo /bin/mount
+   ```
+
+   Esperado: uma lista curta e conhecida; o `s` no lugar do `x` do dono em cada um.
+
+2. **Veja o SUID em ação sem privilégio.**
+
+   ```bash
+   ls -l /etc/shadow
+   cat /etc/shadow                # Permission denied
+   passwd --version               # roda: o binario e SUID
+   ```
+
+   Esperado: você não lê `/etc/shadow` diretamente, mas o `passwd` (que escreve nele) executa normalmente porque roda como root.
+
+3. **Construa um demonstrador de UID efetivo.**
+
+   ```bash
+   mkdir -p /tmp/lab023 && cd /tmp/lab023
+   cat > quemsou.c <<'EOF'
+   #include <stdio.h>
+   #include <unistd.h>
+   int main(void){
+       printf("UID real=%d  UID efetivo=%d\n", getuid(), geteuid());
+       return 0;
+   }
+   EOF
+   cc -o quemsou quemsou.c
+   ./quemsou
+   ```
+
+   Esperado: real e efetivo iguais ao seu UID — nenhum bit especial ainda.
+
+4. **Ligue o SUID e observe a diferença.**
+
+   ```bash
+   sudo chown root quemsou
+   sudo chmod 4755 quemsou
+   ls -l quemsou
+   ./quemsou
+   ```
+
+   Esperado: `-rwsr-xr-x` e, na execução, `UID real=1000  UID efetivo=0`. O processo é seu, mas o kernel o trata como root.
+
+   ::: {.callout-warning}
+   Este binário SUID de root é um demonstrador didático dentro de uma VM de estudo. Ele imprime IDs e nada mais — mas um SUID root com **qualquer** funcionalidade a mais seria um buraco de segurança real. O passo 12 o remove; não deixe binários assim num sistema que importa.
+   :::
+
+5. **Confirme que SUID é ignorado em script.**
+
+   ```bash
+   printf '#!/bin/bash\nid\n' > script.sh
+   chmod 4755 script.sh
+   ls -l script.sh
+   ./script.sh
+   ```
+
+   Esperado: o `ls` mostra o `s`, mas o `id` reporta o **seu** UID, não root. O kernel ignora SUID em scripts por segurança.
+
+6. **Distinga `s` de `S`.**
+
+   ```bash
+   touch semx; sudo chown root semx
+   sudo chmod 4644 semx           # SUID sem x no dono
+   ls -l semx                     # -rwSr--r--: S maiusculo
+   sudo chmod 4744 semx
+   ls -l semx                     # -rwsr--r--: s minusculo
+   ```
+
+   Esperado: `S` maiúsculo quando falta o `x`, `s` minúsculo quando o `x` está presente. O `S` quase sempre indica um `chmod` incompleto.
+
+7. **Monte um diretório de equipe com SGID.**
+
+   ```bash
+   sudo groupadd lab023grp 2>/dev/null
+   sudo mkdir -p compartilhado
+   sudo chgrp lab023grp compartilhado
+   sudo chmod 2775 compartilhado
+   ls -ld compartilhado           # drwxrwsr-x
+   ```
+
+   Esperado: o `s` no campo do grupo indica SGID ligado no diretório.
+
+8. **Prove a herança de grupo.**
+
+   ```bash
+   sudo usermod -aG lab023grp "$USER"
+   sg lab023grp -c 'touch compartilhado/arquivo-sgid'
+   ls -l compartilhado/arquivo-sgid
+   touch semsgid.txt; ls -l semsgid.txt
+   ```
+
+   Esperado: `arquivo-sgid` pertence ao grupo `lab023grp` (herdado do diretório), enquanto `semsgid.txt` pertence ao seu grupo primário. O `sg` roda um comando com o grupo indicado, contornando a espera por novo login.
+
+9. **Veja a propagação do SGID a subdiretórios.**
+
+   ```bash
+   sg lab023grp -c 'mkdir compartilhado/sub'
+   ls -ld compartilhado/sub
+   ```
+
+   Esperado: `sub` já nasce com o `s` do grupo — o SGID se propaga para os diretórios criados dentro.
+
+10. **Demonstre o sticky bit.**
+
+    ```bash
+    mkdir -p aberto && chmod 1777 aberto
+    ls -ld aberto                  # drwxrwxrwt
+    echo meu > aberto/meu.txt
+    sudo -u nobody sh -c 'echo dele > /tmp/lab023/aberto/dele.txt' 2>/dev/null
+    ls -l aberto
+    sudo -u nobody rm /tmp/lab023/aberto/meu.txt   # barrado pelo sticky
+    ```
+
+    Esperado: o `nobody` cria o próprio arquivo, mas é impedido de apagar o seu — o sticky restringe a remoção ao dono.
+
+11. **Compare com o mesmo diretório sem sticky.**
+
+    ```bash
+    mkdir -p semsticky && chmod 0777 semsticky
+    echo meu > semsticky/meu.txt
+    sudo -u nobody rm /tmp/lab023/semsticky/meu.txt   # agora funciona
+    ls -l semsticky
+    ```
+
+    Esperado: sem o `t`, o `nobody` apaga o arquivo de outro dono sem obstáculo. É exatamente o buraco que o sticky fecha.
+
+12. **Limpe.**
+
+    ```bash
+    cd /tmp
+    sudo gpasswd -d "$USER" lab023grp 2>/dev/null
+    sudo groupdel lab023grp 2>/dev/null
+    sudo rm -rf /tmp/lab023
+    ```
+
+    Esperado: o grupo de teste e todos os artefatos somem. Saia e entre de novo para que sua sessão pare de listar `lab023grp`.
+
+## Resumo
+
+- **Os bits especiais formam um quarto dígito octal**: SUID vale 4, SGID vale 2, sticky vale 1. `chmod 4755`, `2775` e `1777` os ligam.
+- **SUID faz um executável rodar com o UID do dono do arquivo**, não de quem chamou — é o que permite ao `passwd` (dono root) gravar em `/etc/shadow` sem `sudo`. No `ls -l` aparece como `s` no lugar do `x` do dono.
+- **UID real preserva quem chamou; UID efetivo é quem o kernel considera na checagem.** O SUID iguala o efetivo ao do dono.
+- **SUID é a principal via de escalada de privilégio local.** Não crie binários SUID próprios; ele é ignorado em scripts justamente porque scripts SUID são impossíveis de tornar seguros. Prefira `sudo` restrito ou capabilities.
+- **SGID em executável eleva o grupo; SGID em diretório faz os arquivos herdarem o grupo do diretório** e propaga o bit a subdiretórios — a base de uma pasta compartilhada por equipe, com `chmod 2775` e `umask 002`.
+- **O sticky bit em diretório restringe a remoção ao dono de cada arquivo**, resolvendo o problema de o `w` num diretório permitir apagar arquivos alheios. É o que protege `/tmp` (`1777`, `drwxrwxrwt`).
+- **Minúscula (`s`, `t`) indica o `x` também aceso; maiúscula (`S`, `T`) indica o especial ligado sem `x`** — quase sempre um `chmod` incompleto.
+- **Inventariar SUID é rotina de segurança**: `find / -perm -4000 -type f`. Guarde uma linha de base e investigue qualquer binário SUID que apareça fora dela.

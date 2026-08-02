@@ -1,3 +1,289 @@
 # Trabalhando como root no Kali com segurança {#sec-cap026}
 
-*(em elaboracao)*
+Até 2019, abrir um terminal no Kali Linux te deixava direto como `root`. Era assim de propósito: a distribuição nasceu como um ambiente de trabalho de segurança, e naquela época quase toda ferramenta que interessava — capturar tráfego, forjar pacotes, escanear portas com SYN — exigia privilégio. Dar root de saída era pragmático.
+
+No fim de 2019, o projeto Kali mudou de ideia. A versão 2020.1 passou a instalar um usuário comum por padrão, com root bloqueado, exatamente como qualquer Debian. A justificativa foi honesta: a maioria dos usuários do Kali não precisava de root o tempo todo, viver como root é perigoso, e a fama de "distro que roda tudo como root" tinha virado um argumento contra levá-la a sério.
+
+Este capítulo fecha o Volume 4 amarrando tudo o que veio antes — usuários, `sudo`, permissões especiais, PAM — num tema prático: **como conduzir trabalho de segurança no Kali sem viver logado como root**, quando a elevação é realmente necessária, e como fazê-la de forma auditável. É menos sobre comandos novos e mais sobre juízo.
+
+## Por que o Kali abandonou o root permanente
+
+O modelo antigo tinha três problemas concretos, e vale entendê-los porque explicam a postura recomendada hoje.
+
+**Todo erro era fatal.** Como root, não há a rede de segurança das permissões (@sec-cap022). Um `rm` no diretório errado, um script de terceiros que faz mais do que promete, um comando colado às pressas — tudo executa sem uma única pergunta. Como usuário comum, os mesmos deslizes esbarram num `Permission denied` que dá a chance de perceber o engano.
+
+**Toda ferramenta rodava com poder máximo.** Um navegador aberto como root, um cliente de e-mail como root, um PDF suspeito aberto como root — cada um desses é uma superfície de ataque com privilégio total. Se qualquer um for comprometido, o comprometimento já nasce sendo root. Rodar o navegador como usuário comum significa que uma falha nele alcança só o que aquele usuário alcança.
+
+**Nada era auditável.** Se tudo é root, o log não distingue quem fez o quê. Numa máquina de equipe, ou numa investigação posterior, "foi o root" não responde nada.
+
+A mudança alinhou o Kali ao princípio do **menor privilégio**: rode como usuário comum, eleve o comando específico que precisa de mais, e deixe cada elevação registrada.
+
+## O modelo atual: usuário `kali`, root pelo `sudo`
+
+A instalação padrão hoje cria:
+
+- um usuário comum, tipicamente `kali`, UID 1000, no grupo `sudo`;
+- a conta root com a **senha bloqueada** (`!` no `/etc/shadow`, @sec-cap021), o que impede `su -` e login direto de root.
+
+Todo o privilégio passa pelo `sudo`, autenticado com a senha do próprio `kali`. Confirme o seu estado:
+
+```bash
+whoami                 # kali
+id -Gn | tr ' ' '\n' | grep -x sudo   # confirma o grupo sudo
+sudo passwd -S root    # root deve aparecer como L (locked)
+sudo -l                # o que voce pode rodar
+```
+
+@fig-fluxo-trabalho-kali resume o fluxo recomendado de trabalho.
+
+::: {#fig-fluxo-trabalho-kali}
+```{.tikz}
+%%| filename: fluxo-de-trabalho-de-menor-privilegio-no-kali
+%%| alt: Fluxo mostrando o usuario kali como base, tarefas cotidianas rodando sem privilegio e apenas comandos especificos sendo elevados por sudo, com a sessao de root desencorajada
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt},
+    base/.style={bx,draw=manualblue,fill=manualblue!12,text width=3.2cm,minimum height=0.9cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!14,text width=3.4cm},
+    ele/.style={bx,draw=manualyellow,fill=manualyellow!22,text width=3.4cm},
+    bad/.style={bx,draw=manualred,fill=manualred!11,text width=3.4cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[base] (u) at (0,0) {sessão como\\\textbf{usuário kali}\\(sem privilégio)};
+
+  \node[ok]  (t1) at (5.0,1.7)  {navegar, editar, ler docs,\\escrever scripts, git};
+  \node[ele] (t2) at (5.0,0.0)  {\texttt{sudo nmap -sS},\\\texttt{sudo tcpdump} ---\\eleva \emph{um} comando};
+  \node[bad] (t3) at (5.0,-1.7) {\texttt{sudo -i} a sessão inteira\\\textbf{desencorajado}};
+
+  \draw[fl] (u) -- (t1);
+  \draw[fl] (u) -- (t2);
+  \draw[fl,manualred] (u) -- (t3);
+
+  \node[nt,text width=4.4cm] at (10.4,1.7)  {\textbf{Regra:} a base é sempre sem privilégio.};
+  \node[nt,text width=4.4cm] at (10.4,0.0)  {Eleve por comando; cada uso vira log auditável.};
+  \node[nt,text width=4.4cm] at (10.4,-1.7) {Um shell de root persistente devolve todos os problemas do modelo antigo.};
+\end{tikzpicture}
+```
+O fluxo de menor privilégio: base sem privilégio, elevação por comando, sessão de root evitada.
+:::
+
+## Quando o root é realmente necessário — e por quê
+
+Boa parte das ferramentas ofensivas exige privilégio, e não por capricho: elas tocam recursos que o kernel reserva. Conhecer o motivo ajuda a decidir entre `sudo`, capability e contêiner.
+
+| Ferramenta | Por que precisa de privilégio |
+|---|---|
+| `nmap -sS`, `-sU` | *raw sockets* para forjar pacotes SYN/UDP |
+| `tcpdump`, `wireshark` | modo promíscuo e captura na interface (`CAP_NET_RAW`) |
+| `aircrack-ng`, `airmon-ng` | modo monitor no adaptador Wi-Fi |
+| `arpspoof`, `ettercap`, `responder` | injeção na camada de enlace, *spoofing* |
+| `masscan` | pilha TCP/IP própria sobre *raw socket* |
+| `hcitool`, ataques BLE | acesso direto ao controlador Bluetooth |
+| montar imagens, `losetup` | manipular dispositivos de bloco |
+
+: Ferramentas comuns do Kali que exigem privilégio, e a razão técnica {#tbl-ferramentas-root}
+
+A leitura correta da tabela: o que essas ferramentas precisam é de uma **capability** específica (quase sempre `CAP_NET_RAW` ou `CAP_NET_ADMIN`), não de root inteiro. Rodar com `sudo` concede root inteiro por conveniência, mas o mecanismo mais preciso são as capabilities (Volume 14). É por isso que o `dumpcap` do Wireshark no Kali vem configurado com `CAP_NET_RAW` e um grupo `wireshark` — permitindo captura **sem** `sudo` para quem está no grupo. O modelo a imitar é esse: privilégio mínimo, não máximo.
+
+## Elevar bem: os padrões que evitam problema
+
+**Eleve o comando, não a sessão.** `sudo nmap ...` é preferível a `sudo -i` seguido de vários comandos. Cada `sudo` vira uma linha de log (@sec-cap022); um shell de root apaga essa granularidade e reabre a janela de erro fatal.
+
+**Quando precisar mesmo de um shell de root, use `sudo -i` e feche-o cedo.** Para uma sequência longa de manutenção de sistema (particionar, instalar, configurar), um shell de root é legítimo. Use `sudo -i` (ambiente limpo de root, @sec-cap022), faça o que precisa, e saia com `exit` assim que terminar. Não deixe um terminal de root aberto "para o caso de precisar".
+
+**Nunca `curl ... | sudo bash`.** O padrão de instalar coisas canalizando um script remoto direto para um shell privilegiado concentra todos os riscos: você executa, como root, um código que não leu, vindo de uma fonte que pode ter sido comprometida. O fluxo correto tem três passos:
+
+```bash
+curl -fsSL https://exemplo.com/instala.sh -o instala.sh
+less instala.sh          # LEIA o que ele faz
+sudo bash instala.sh     # so entao execute, se estiver seguro
+```
+
+**Trave o `sudo` ao se afastar.** O cache de credenciais de 15 minutos (@sec-cap022) é conveniência e risco: um terminal deixado aberto é root disponível para quem sentar ali. `sudo -k` invalida o cache na hora; bloquear a tela também.
+
+::: {.callout-warning}
+## Comandos destrutivos exigem um ensaio antes
+
+Vários comandos de trabalho no Kali são irreversíveis quando rodados como root: `dd` sobre um dispositivo, `mkfs` numa partição, `cryptsetup luksFormat` num disco, `wipefs`. Um `of=` ou um `/dev/sdX` trocado destrói dados sem confirmação.
+
+Antes de rodar qualquer um deles num dispositivo real, ensaie com um **arquivo-imagem** via `losetup`, que se comporta como um disco mas é só um arquivo descartável:
+
+```bash
+truncate -s 1G /tmp/teste.img
+sudo losetup -fP /tmp/teste.img          # vira /dev/loopN
+lsblk /dev/loop0                          # confira o alvo
+# ... pratique mkfs, mount, cryptsetup em /dev/loop0 ...
+sudo losetup -d /dev/loop0               # solta
+rm /tmp/teste.img
+```
+
+Confirme sempre o dispositivo-alvo com `lsblk` **imediatamente antes** do comando destrutivo. Estes temas — particionamento, formatação, LUKS — são o Volume 8; aqui fica o princípio.
+:::
+
+## Isolamento: uma camada além do usuário
+
+Menor privilégio não termina no `sudo`. Para trabalho de segurança, há duas camadas adicionais que valem o hábito.
+
+**Contêineres para ferramentas arriscadas.** Rodar uma ferramenta desconhecida, ou analisar um artefato suspeito, dentro de um contêiner Docker limita o estrago a esse contêiner. O Kali oferece imagens oficiais (`kalilinux/kali-rolling`) e o `kali-docker`. Lembre, porém, do alerta de @sec-cap021: pertencer ao grupo `docker` **é** equivalente a root no hospedeiro, então o isolamento protege contra a ferramenta, não substitui o cuidado com quem pode falar com o *daemon*. Contêineres e seus namespaces são o Volume 16.
+
+**VMs descartáveis para o alvo e para o risco maior.** O padrão-ouro de um laboratório é separar a máquina de ataque (o Kali) da máquina alvo, ambas em VMs, numa rede isolada. Um *snapshot* antes de cada experimento permite voltar ao estado limpo em segundos. É também a única forma segura de estudar malware. A montagem desse laboratório é tema recorrente do livro; o princípio, de novo, é conter o privilégio e o dano dentro de fronteiras que você controla.
+
+## Higiene de uma VM Kali nova
+
+Uma checklist curta, aplicando o que os capítulos anteriores estabeleceram, para os primeiros minutos de uma instalação:
+
+```bash
+# 1. trocar a senha padrao (kali:kali e conhecida do mundo todo)
+passwd
+
+# 2. atualizar o sistema (repositorio rolling, @sec futuro do Vol 6)
+sudo apt update && sudo apt full-upgrade -y
+
+# 3. conferir que root esta bloqueado e nao ha UID 0 extra
+sudo passwd -S root
+awk -F: '$3==0 {print $1}' /etc/passwd
+
+# 4. conferir contas sem senha e SUID inesperados
+sudo awk -F: '$2=="" {print "SEM SENHA:", $1}' /etc/shadow
+find / -xdev -perm -4000 -type f 2>/dev/null | sort > ~/suid-baseline.txt
+
+# 5. revisar o que o seu usuario pode fazer com sudo
+sudo -l
+```
+
+O `suid-baseline.txt` (@sec-cap023) é a referência para comparações futuras: um SUID que aparecer fora dessa lista depois é sinal de alerta. Numa máquina exposta em rede, some a isso o hardening de senha do capítulo 025 (`pam_pwquality`, `pam_faillock`).
+
+## 🐉 No Kali
+
+- **A senha `kali:kali` é pública; trocá-la é o passo zero.** Toda instalação padrão nasce com esse par, documentado e conhecido. Uma VM Kali alcançável na rede com a senha padrão é, na prática, de quem chegar primeiro. `passwd` no primeiro login, sem exceção.
+- **Deixe o root bloqueado.** A recomendação do próprio projeto Kali é não definir senha de root. Todo o trabalho privilegiado cabe no `sudo`, que é auditável e revogável. Só desbloqueie root para um procedimento específico que comprovadamente exija, e rebloqueie depois (`sudo passwd -l root`).
+- **Prefira capability a `sudo` para captura de tráfego.** O `dumpcap` já vem com `CAP_NET_RAW` e o grupo `wireshark`; adicionar-se a esse grupo (`sudo usermod -aG wireshark kali`, novo login) permite capturar sem `sudo`, com privilégio mínimo em vez de root inteiro. É o modelo que as ferramentas modernas do Kali seguem, e o que você deve imitar ao configurar as suas.
+- **`sudo -l` em você mesmo é autoavaliação; num alvo, é reconhecimento.** Rodar `sudo -l` na sua conta mostra o que você concedeu a si; a mesma linha, obtida numa conta comprometida de um alvo autorizado, é o primeiro passo para achar uma escalada por `NOPASSWD` mal configurado (@sec-cap022). Fora de engajamento com escopo escrito, testar isso em sistema alheio é crime (Lei 12.737/2012).
+- **Não conduza a navegação e o e-mail do dia a dia na VM de ataque como root.** Mesmo com o modelo novo, resista a `sudo -i` para "facilitar". Abrir o navegador, ler um PDF de relatório, clonar um repositório — tudo isso como usuário comum. O root fica para o comando que toca a rede em modo raw, e só.
+- **Persistência live e WSL mudam o quadro.** No Kali live com persistência, o usuário e a senha vêm dos parâmetros de boot; no WSL, a autenticação passa pelo Windows e o `sudo` pode estar sem senha por padrão — cheque com `sudo -l` e trate a máquina conforme sua exposição.
+
+> **Nota sobre a família RHEL.** A filosofia de menor privilégio é idêntica; o que muda é o ponto de partida. O RHEL **define** senha de root na instalação por padrão, então `su -` funciona de saída e a tentação de trabalhar como root é maior — a disciplina de usar `sudo` (grupo `wheel`) fica por conta do administrador. O RHEL não é uma distribuição ofensiva, então não há o problema histórico do Kali; mas o SELinux acrescenta uma contenção que o Kali (sem SELinux por padrão) não tem: mesmo um processo de root age dentro da política, o que reduz o estrago de um comprometimento. Em ambiente de produção RHEL, essa camada é parte central do hardening (Volume 14).
+
+## 🧪 Laboratório
+
+Roteiro em VM Kali descartável. Nenhum passo é destrutivo; o de `losetup` usa arquivo-imagem.
+
+1. **Confirme o modelo de conta atual.**
+
+   ```bash
+   whoami
+   id
+   sudo passwd -S root
+   sudo -l | tail -3
+   ```
+
+   Esperado: você é `kali` (UID 1000, no grupo `sudo`), o root aparece como `L` (bloqueado), e `sudo -l` lista suas permissões.
+
+2. **Prove que `su -` não funciona com root bloqueado.**
+
+   ```bash
+   su - 2>&1 | head -2
+   sudo -i whoami
+   ```
+
+   Esperado: `su -` é recusado (sem senha de root válida); `sudo -i` funciona. Todo o privilégio passa pelo `sudo`.
+
+3. **Contraste elevar o comando com elevar a sessão.**
+
+   ```bash
+   id -u                      # seu UID
+   sudo id -u                 # 0, so para este comando
+   id -u                      # de volta ao seu UID
+   ```
+
+   Esperado: o `sudo` eleva apenas aquele `id`; a sessão continua sem privilégio. É o padrão a seguir.
+
+4. **Veja a auditoria acontecer.**
+
+   ```bash
+   sudo apt --version >/dev/null
+   sudo whoami >/dev/null
+   sudo journalctl _COMM=sudo --no-pager | tail -4
+   ```
+
+   Esperado: cada `sudo` do passo virou uma linha de log com `USER=root` e o `COMMAND=` — a granularidade que um shell de root apagaria.
+
+5. **Confirme o cache e o `-k`.**
+
+   ```bash
+   sudo -k
+   sudo true                  # pede senha
+   sudo true                  # nao pede: cache
+   sudo -k
+   sudo -n true 2>&1          # -n: nao interativo; deve falhar apos -k
+   ```
+
+   Esperado: depois de `sudo -k`, o `sudo -n` falha com "a password is required" — prova de que o cache foi invalidado. Use isso ao se afastar.
+
+6. **Verifique a captura com privilégio mínimo.**
+
+   ```bash
+   getcap /usr/bin/dumpcap 2>/dev/null
+   getent group wireshark
+   ls -l /usr/bin/dumpcap
+   ```
+
+   Esperado: o `dumpcap` tem `cap_net_raw` (e talvez `cap_net_admin`) e um grupo `wireshark` — captura sem root, o modelo de menor privilégio em ação.
+
+7. **Pratique o fluxo seguro de script remoto (simulado localmente).**
+
+   ```bash
+   printf '#!/bin/bash\necho "eu poderia fazer qualquer coisa como root"\n' > /tmp/instala.sh
+   less /tmp/instala.sh        # o passo que "curl | sudo bash" pula
+   bash /tmp/instala.sh        # sem sudo: so imprime
+   rm /tmp/instala.sh
+   ```
+
+   Esperado: você **lê** antes de executar. O ponto é o hábito: nunca canalizar um script remoto direto para um shell privilegiado.
+
+8. **Ensaie um comando destrutivo com segurança.**
+
+   ```bash
+   truncate -s 512M /tmp/teste.img
+   sudo losetup -fP /tmp/teste.img
+   losetup -a | grep teste
+   loop=$(losetup -j /tmp/teste.img | cut -d: -f1)
+   lsblk "$loop"
+   sudo mkfs.ext4 -q "$loop"          # inofensivo: e so o arquivo-imagem
+   sudo losetup -d "$loop"
+   rm /tmp/teste.img
+   ```
+
+   Esperado: você formatou um "disco" que era só um arquivo descartável. É assim que se pratica `mkfs`, `dd` e `cryptsetup` sem arriscar dados reais — sempre confirmando o alvo com `lsblk` antes.
+
+9. **Rode a checklist de higiene (sem alterar nada).**
+
+   ```bash
+   sudo passwd -S root
+   awk -F: '$3==0 {print $1}' /etc/passwd
+   sudo awk -F: '$2=="" {print "SEM SENHA:", $1}' /etc/shadow
+   find / -xdev -perm -4000 -type f 2>/dev/null | sort | head
+   ```
+
+   Esperado: root bloqueado, uma única linha `root` para UID 0, nenhuma conta sem senha, e uma lista curta e conhecida de SUID.
+
+10. **Salve a linha de base de SUID.**
+
+    ```bash
+    find / -xdev -perm -4000 -type f 2>/dev/null | sort > ~/suid-baseline.txt
+    wc -l ~/suid-baseline.txt
+    diff <(find / -xdev -perm -4000 -type f 2>/dev/null | sort) ~/suid-baseline.txt && echo "sem mudancas"
+    ```
+
+    Esperado: o `diff` não acusa diferença agora. Guardado o arquivo, qualquer SUID novo que surgir depois aparecerá aqui — um dos sinais mais claros de comprometimento.
+
+## Resumo
+
+- **O Kali abandonou o root permanente em 2020.1** e passou a instalar um usuário comum (`kali`, UID 1000, grupo `sudo`) com root bloqueado, alinhando-se ao menor privilégio como qualquer Debian.
+- **O modelo antigo tinha três defeitos**: todo erro era fatal, toda ferramenta rodava com poder máximo, e nada era auditável. O modelo atual corrige os três.
+- **Eleve o comando, não a sessão.** `sudo ferramenta` é preferível a `sudo -i`; cada `sudo` vira log, um shell de root apaga essa granularidade e reabre a janela de erro fatal.
+- **Ferramentas ofensivas precisam de uma capability específica** (quase sempre `CAP_NET_RAW`), não de root inteiro. O `dumpcap` com `CAP_NET_RAW` e o grupo `wireshark` é o modelo a imitar: privilégio mínimo, não máximo.
+- **Nunca `curl ... | sudo bash`.** Baixe, **leia** com `less`, e só então execute. Trave o `sudo` com `sudo -k` ao se afastar do terminal.
+- **Comandos destrutivos (`dd`, `mkfs`, `cryptsetup`) exigem ensaio** com arquivo-imagem via `losetup` e confirmação do alvo com `lsblk` imediatamente antes.
+- **Isolamento é a camada além do `sudo`**: contêineres para ferramentas arriscadas, VMs descartáveis com *snapshot* para o alvo e para malware. Pertencer ao grupo `docker`, porém, já equivale a root no hospedeiro.
+- **Numa VM Kali nova**: troque a senha padrão, atualize, confirme root bloqueado e UID 0 único, cheque contas sem senha, e guarde uma linha de base de SUID para detecção futura.
