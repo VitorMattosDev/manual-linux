@@ -1,3 +1,442 @@
 # O que é um processo: PID, estados e a árvore de processos {#sec-cap027}
 
-*(em elaboracao)*
+O ventilador da máquina acelera do nada. O sistema fica pesado, o cursor engasga, e você abre um terminal para descobrir o culpado. Antes de digitar qualquer comando de diagnóstico, vale entender o que exatamente você está procurando: não um programa, mas um **processo** — uma instância viva daquele programa, com número próprio, dono, diretório de trabalho, arquivos abertos e um pedaço de memória só dela.
+
+A distinção parece acadêmica e não é. `/usr/bin/firefox` é um arquivo em disco: bytes parados, iguais aos de ontem. No momento em que você o executa, o kernel cria uma entidade nova — carrega o código, reserva memória, atribui um número, registra quem é o dono, abre os descritores padrão. Essa entidade é o processo. Um mesmo programa pode ter vinte processos rodando ao mesmo tempo, cada um com estado independente. Este capítulo é sobre como o Linux representa, identifica, organiza e observa essas entidades — a base de tudo o que vem nos próximos capítulos deste volume.
+
+## Programa, processo e o modelo de execução
+
+Um processo, para o kernel, é uma entrada numa tabela interna com tudo o que descreve uma execução em andamento:
+
+- **PID** (*Process ID*): o número que identifica o processo. Único enquanto ele vive.
+- **PPID** (*Parent PID*): o PID de quem o criou. Todo processo tem um pai.
+- **UID/GID real e efetivo**: quem o processo é para efeito de permissão (@sec-cap023).
+- **Diretório de trabalho** (`cwd`) e **diretório raiz** (`root`, alterável por `chroot`).
+- **Tabela de descritores de arquivo**: 0 (stdin), 1 (stdout), 2 (stderr) e o que mais tiver aberto (@sec-cap012).
+- **Ambiente**: as variáveis herdadas, mais a linha de comando que o invocou.
+- **Espaço de memória**: código, dados, pilha, heap e mapeamentos.
+- **Estado atual**, prioridade, contadores de tempo de CPU, máscara de sinais.
+
+O PID é um inteiro alocado sequencialmente. O teto padrão está em `/proc/sys/kernel/pid_max` — historicamente 32768, hoje frequentemente 4194304 em sistemas de 64 bits. Quando o contador chega no teto, ele volta ao início e reaproveita os números livres. Isso tem uma consequência prática: **PID não é identificador permanente**. Um script que guarda um PID e o usa minutos depois pode estar mirando em outro processo — o motivo pelo qual arquivos de PID de serviços sérios são acompanhados de verificação de nome, e pelo qual o `systemd` prefere rastrear serviços por *cgroup* em vez de por PID, assunto do Volume 7.
+
+## fork e exec: como um processo nasce
+
+O Unix criou processos novos de um jeito peculiar, que sobreviveu intacto até hoje: em vez de "execute este programa", a chamada de sistema básica é "**duplique-se**". A `fork()` cria uma cópia quase idêntica do processo que a chamou — mesmo código, mesma memória, mesmos descritores abertos. A única diferença visível é o valor de retorno: no pai, `fork()` devolve o PID do filho; no filho, devolve `0`. É por esse número que cada um descobre quem é.
+
+Sozinha, a `fork()` só multiplica cópias do mesmo programa. O segundo passo é a família `exec()`: ela **substitui** a imagem do processo atual pela de outro programa, preservando o PID, os descritores e boa parte do contexto. O par `fork` + `exec` é o mecanismo universal de execução no Linux.
+
+::: {#fig-fork-exec}
+```{.tikz}
+%%| filename: fork-exec-ciclo-de-criacao-de-processo
+%%| alt: Diagrama do ciclo fork exec wait exit, mostrando o shell duplicando-se com fork, o filho trocando de imagem com exec, e o pai esperando com wait o codigo de saida
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,text width=2.7cm},
+    pai/.style={bx,draw=manualblue,fill=manualblue!12},
+    fil/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    novo/.style={bx,draw=manualyellow,fill=manualyellow!12},
+    fim/.style={bx,draw=manualgray,fill=manualgray!12},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize\ttfamily,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[pai] (p0) at (0,0) {\texttt{bash}\\PID 2140};
+  \node[pai] (p1) at (4.6,1.0) {\texttt{bash} (pai)\\aguarda em \texttt{wait()}};
+  \node[fil] (c0) at (4.6,-1.0) {cópia do \texttt{bash}\\PID 2311};
+  \node[novo] (c1) at (8.8,-1.0) {\texttt{ls}\\PID 2311};
+  \node[fim] (e0) at (12.6,-1.0) {termina\\código de saída 0};
+
+  \draw[fl] (p0.east) to[out=25,in=180] node[lb,above,pos=0.55]{fork()} (p1.west);
+  \draw[fl] (p0.east) to[out=-25,in=180] (c0.west);
+  \draw[fl] (c0) -- node[lb,above]{exec()} (c1);
+  \draw[fl] (c1) -- (e0);
+  \draw[fl,manualred] (e0.north) to[out=90,in=0] node[lb,manualred,above,pos=0.6]{SIGCHLD} (p1.east);
+  \node[nt,text width=12.5cm] at (6.0,-3.1) {O \texttt{fork()} duplica o processo: os dois continuam do mesmo ponto, e o retorno (PID do filho no pai, zero no filho) diz a cada um quem ele é. O \texttt{exec()} troca a imagem do filho pelo novo programa, \textbf{mantendo o PID}. O pai é avisado do fim pelo sinal \texttt{SIGCHLD} e colhe o código de saída com \texttt{wait()}.};
+\end{tikzpicture}
+```
+O ciclo `fork` → `exec` → `exit` → `wait`, base de toda execução de comando no shell.
+:::
+
+Isso explica coisas que você já observou sem entender. Quando o shell executa `ls`, ele não vira `ls` — ele se duplica, e a **cópia** vira `ls`. É por isso que o shell continua existindo depois que o comando termina. Quando você executa `exec ls` explicitamente, pula-se o `fork`: o shell **é** substituído, e o terminal fecha ao fim do `ls`. E quando você define uma variável dentro de um subshell, ela não aparece no shell pai — porque um subshell é um processo filho com sua própria cópia da memória, e alterações do filho não voltam para o pai.
+
+A cópia da memória no `fork()` é conceitual, não literal: o kernel usa *copy-on-write*, marcando as páginas como somente leitura e duplicando de verdade apenas as que forem modificadas. É o que torna viável duplicar um processo de gigabytes em microssegundos.
+
+## PID 1 e a árvore de processos
+
+Se todo processo tem um pai, existe um começo. No boot, o kernel inicializa e executa um único processo em espaço de usuário: o **PID 1**, que em praticamente toda distribuição moderna é o `systemd` — tema do Volume 7. Todos os demais descendem dele, direta ou indiretamente. O resultado é uma **árvore**, não uma lista.
+
+```bash
+pstree -p | head -20
+```
+
+```text
+systemd(1)-+-NetworkManager(612)-+-{NetworkManager}(628)
+           |                     `-{NetworkManager}(631)
+           |-cron(645)
+           |-dbus-daemon(650)
+           |-lightdm(701)-+-Xorg(725)
+           |              `-lightdm(812)---xfce4-session(901)-+-xfwm4(945)
+           |                                                  `-xfce4-panel(953)
+           |-sshd(729)
+           `-systemd(1102)---(sd-pam)(1104)
+```
+
+::: {#fig-arvore-processos}
+```{.tikz}
+%%| filename: arvore-de-processos-a-partir-do-pid-1
+%%| alt: Arvore de processos com systemd PID 1 na raiz, ramificando em servicos do sistema e na sessao grafica que chega ate o terminal, o shell e o comando em execucao
+\begin{tikzpicture}[
+    nd/.style={rounded corners=2pt,font=\scriptsize\ttfamily,align=center,thick,inner sep=3pt,minimum height=0.55cm},
+    raiz/.style={nd,draw=manualred,fill=manualred!12},
+    serv/.style={nd,draw=manualgray,fill=manualgray!12},
+    ses/.style={nd,draw=manualblue,fill=manualblue!12},
+    usr/.style={nd,draw=manualgreen,fill=manualgreen!13},
+    li/.style={manualgray,thick},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[raiz] (init) at (0,0) {systemd (1)};
+
+  \node[serv] (nm)   at (3.8,1.9)  {NetworkManager (612)};
+  \node[serv] (cron) at (3.8,1.0)  {cron (645)};
+  \node[serv] (sshd) at (3.8,0.1)  {sshd (729)};
+  \node[ses]  (ldm)  at (3.8,-1.1) {lightdm (701)};
+
+  \node[ses] (xses) at (8.2,-1.1) {xfce4-session (901)};
+  \node[ses] (term) at (8.2,-2.3) {xfce4-terminal (1330)};
+  \node[usr] (sh)   at (11.9,-2.3) {bash (1342)};
+  \node[usr] (cmd)  at (11.9,-3.4) {find (1501)};
+
+  \draw[li] (init.east) to[out=0,in=180] (nm.west);
+  \draw[li] (init.east) to[out=0,in=180] (cron.west);
+  \draw[li] (init.east) to[out=0,in=180] (sshd.west);
+  \draw[li] (init.east) to[out=0,in=180] (ldm.west);
+  \draw[li] (ldm.east)  to[out=0,in=180] (xses.west);
+  \draw[li] (xses.south) to[out=-90,in=180] (term.west);
+  \draw[li] (term.east) to[out=0,in=180] (sh.west);
+  \draw[li] (sh.south)  to[out=-90,in=180] (cmd.west);
+
+  \node[nt,text width=12cm] at (5.2,-4.8) {Todo processo desce do PID 1. O caminho da raiz até o \texttt{find} explica quem o iniciou, de quem ele herdou ambiente e variáveis, e para onde vai o \texttt{SIGHUP} quando o terminal fechar --- assunto do capítulo sobre \texttt{nohup} e \texttt{disown}.};
+\end{tikzpicture}
+```
+A árvore de processos enraizada no PID 1, do serviço de sessão até o comando digitado.
+:::
+
+Ler essa árvore é um hábito diagnóstico valioso. Um processo suspeito cujo pai é o `sshd` chegou por uma sessão remota. Um cujo pai é o `cron` foi disparado por agendamento. Um `bash` cujo pai é um servidor web é um sinal de alerta clássico de comprometimento. O `pstree` responde "quem chamou isso?" muito mais rápido do que qualquer outra ferramenta:
+
+```bash
+pstree -p            # com PIDs
+pstree -u            # marca as trocas de usuario
+pstree -a            # mostra os argumentos da linha de comando
+pstree -s 1501       # so a linha ancestral do PID 1501 ate a raiz
+pstree -p kali       # so a subarvore do usuario kali
+```
+
+## O sistema de arquivos /proc
+
+O Linux expõe a tabela de processos como diretórios. O `/proc` é um sistema de arquivos virtual: nada dele existe em disco, cada leitura é atendida pelo kernel na hora. Para cada processo vivo existe `/proc/<PID>/`, e ali dentro está tudo o que `ps`, `top` e `htop` exibem — essas ferramentas são, essencialmente, formatadores bonitos de `/proc`.
+
+```bash
+ls /proc/self/       # o diretorio do processo que esta lendo
+```
+
+Os arquivos que mais rendem:
+
+| Caminho | Conteúdo |
+|---|---|
+| `/proc/<PID>/status` | resumo legível: nome, estado, PPID, UIDs, memória, threads |
+| `/proc/<PID>/cmdline` | linha de comando completa, campos separados por byte nulo |
+| `/proc/<PID>/exe` | link simbólico para o binário em execução |
+| `/proc/<PID>/cwd` | link simbólico para o diretório de trabalho atual |
+| `/proc/<PID>/root` | link simbólico para a raiz vista pelo processo |
+| `/proc/<PID>/fd/` | um link por descritor de arquivo aberto |
+| `/proc/<PID>/environ` | variáveis de ambiente, também separadas por byte nulo |
+| `/proc/<PID>/limits` | limites de recurso em vigor |
+| `/proc/<PID>/task/` | um subdiretório por *thread* do processo |
+
+: Arquivos úteis em `/proc/<PID>/` {#tbl-proc-pid}
+
+Como `cmdline` e `environ` usam byte nulo como separador, o `cat` os mostra grudados. O `tr` resolve:
+
+```bash
+tr '\0' '\n' < /proc/1234/cmdline
+tr '\0' '\n' < /proc/1234/environ | sort
+```
+
+Os links simbólicos são o truque mais útil de todos. `ls -l /proc/<PID>/exe` revela o binário real mesmo que o processo tenha mudado o nome exibido — e mostra `(deleted)` quando o binário foi apagado do disco depois de iniciado, um sinal forte de atividade maliciosa. E `/proc/<PID>/fd/` permite recuperar um arquivo que ainda está aberto por um processo mesmo depois de removido, porque o inode só é liberado quando o último descritor fecha (@sec-cap015).
+
+```bash
+ls -l /proc/1234/exe
+ls -l /proc/1234/fd/
+```
+
+::: {.callout-note}
+## `/proc/self`
+
+O caminho `/proc/self` sempre aponta para o processo que está fazendo a leitura. Isso torna possível escrever `cat /proc/self/status` sem saber o próprio PID — cada processo vê um alvo diferente ao ler o mesmo caminho. É o mecanismo por trás de `$$` no shell e de várias verificações de autoconhecimento em scripts.
+:::
+
+## Os estados de um processo
+
+Um processo passa a maior parte da vida **não** usando CPU. A coluna `S` ou `STAT` do `ps` mostra em que estado ele está, e interpretar essa letra evita muito diagnóstico errado.
+
+| Letra | Estado | Significado |
+|:---:|---|---|
+| `R` | *running / runnable* | executando ou pronto para executar, na fila do escalonador |
+| `S` | *interruptible sleep* | esperando um evento (E/S, sinal, temporizador); acorda com sinal |
+| `D` | *uninterruptible sleep* | esperando E/S que não pode ser interrompida; **não responde a sinais** |
+| `T` | *stopped* | parado por `SIGSTOP` ou `SIGTSTP` |
+| `t` | *tracing stop* | parado por um depurador (`gdb`, `strace`) |
+| `Z` | *zombie* | terminou, mas o pai ainda não colheu o código de saída |
+| `I` | *idle* | thread de kernel ociosa (não conta para o load average) |
+
+: Estados de processo na coluna `STAT` {#tbl-estados}
+
+::: {#fig-estados-processo}
+```{.tikz}
+%%| filename: maquina-de-estados-de-um-processo
+%%| alt: Maquina de estados de um processo Linux com transicoes entre executando, dormindo interrompivel, dormindo ininterrompivel, parado e zumbi ate a coleta pelo pai
+\begin{tikzpicture}[
+    st/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,text width=2.5cm,minimum height=1.0cm},
+    exec/.style={st,draw=manualgreen,fill=manualgreen!14},
+    dorm/.style={st,draw=manualblue,fill=manualblue!12},
+    trav/.style={st,draw=manualred,fill=manualred!11},
+    par/.style={st,draw=manualyellow,fill=manualyellow!12},
+    zum/.style={st,draw=manualgray,fill=manualgray!14},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize,manualgray},
+    leg/.style={font=\scriptsize,align=left,manualgray}
+  ]
+  \node[exec] (R)  at (0,0)      {\texttt{\textbf{R}}\\executando ou pronto};
+  \node[dorm] (S)  at (5.6,2.6)  {\texttt{\textbf{S}}\\sono interrompível};
+  \node[trav,text width=3.1cm] (D) at (5.6,-2.6) {\texttt{\textbf{D}}\\sono ininterrompível};
+  \node[par]  (T)  at (-5.2,0)   {\texttt{\textbf{T}}\\parado};
+  \node[zum]  (Z)  at (11.2,0)   {\texttt{\textbf{Z}}\\zumbi};
+
+  \draw[fl] (R) to[bend left=16]  node[lb,above,sloped,pos=0.5]{espera evento} (S);
+  \draw[fl] (S) to[bend left=16]  node[lb,below,sloped,pos=0.5]{evento chegou} (R);
+  \draw[fl] (R) to[bend right=16] node[lb,below,sloped,pos=0.5]{E/S de disco} (D);
+  \draw[fl] (D) to[bend right=16] node[lb,above,sloped,pos=0.5]{E/S concluída} (R);
+  \draw[fl] (R) to[bend right=22] node[lb,above,sloped,pos=0.5]{SIGSTOP} (T);
+  \draw[fl] (T) to[bend right=22] node[lb,below,sloped,pos=0.5]{SIGCONT} (R);
+  \draw[fl] (R) -- node[lb,above,pos=0.5]{exit()} (Z);
+  \draw[fl,manualred] (S) to[bend left=14] node[lb,manualred,above=2pt,sloped,pos=0.45]{SIGKILL} (Z);
+
+  \node[leg,text width=15cm] at (3.0,-4.6) {O estado \texttt{D} é o único de onde nenhum sinal tira o processo --- nem \texttt{SIGKILL}. Um processo travado em \texttt{D} está preso em E/S de kernel (disco com defeito, NFS fora do ar) e só sai quando a operação retorna. Do \texttt{Z} o processo sai quando o pai chama \texttt{wait()} e lê o código de saída.};
+\end{tikzpicture}
+```
+Transições entre os estados de um processo e os eventos que as disparam.
+:::
+
+Duas letras merecem atenção especial, porque são as que aparecem em problema real.
+
+**`D` — sono ininterrompível.** O processo pediu ao kernel uma operação de E/S e está bloqueado até ela retornar. Nesse estado ele **ignora todos os sinais**, inclusive `SIGKILL`. É a resposta para a pergunta "por que `kill -9` não mata?": o processo não está se recusando a morrer, ele simplesmente não está em condição de receber a ordem. As causas típicas são disco com setores defeituosos, montagem NFS cuja rede caiu e drivers com problema. A solução não é insistir no `kill`; é resolver a E/S ou reiniciar. Vários processos em `D` inflam o load average sem que a CPU esteja ocupada — assunto de @sec-cap032.
+
+**`Z` — zumbi.** Quando um processo termina, o kernel não descarta imediatamente a entrada na tabela: ele guarda o código de saída para que o pai possa lê-lo com `wait()`. Nesse intervalo o processo é um **zumbi**: sem memória, sem código, sem CPU — apenas a entrada e o código de saída. Um zumbi que persiste indica um pai mal escrito, que não colhe os filhos. Zumbis não consomem recursos além de um PID, mas milhares deles esgotam o `pid_max`.
+
+Não adianta matar um zumbi: ele já está morto. Mata-se, se for o caso, o **pai** — ou envia-se `SIGCHLD` a ele para lembrá-lo de colher. Quando o pai morre, os zumbis são adotados pelo PID 1, que chama `wait()` corretamente e os limpa. Isso conecta com o outro caso:
+
+**Órfãos.** Se o pai morre antes do filho, o filho não morre junto: ele é **reparentado**, e seu PPID passa a ser 1 (ou o *subreaper* mais próximo, um mecanismo que o systemd usa para agrupar serviços). Um processo com PPID 1 que não é serviço do sistema geralmente é um órfão — ou algo que se desassociou do terminal de propósito, tema de @sec-cap030.
+
+## Threads, processos e a visão do kernel
+
+Do ponto de vista do kernel Linux, a distinção entre processo e *thread* é menor do que parece. Ambos são tarefas escalonáveis; a diferença é o quanto compartilham. Um processo criado por `fork()` tem espaço de memória próprio; uma thread criada por `clone()` com as opções certas compartilha memória, descritores e sinais com as irmãs.
+
+Cada thread tem seu próprio identificador, o **TID**. Para o processo principal, TID e PID coincidem. As demais aparecem em `/proc/<PID>/task/`. Ferramentas as escondem por padrão, o que às vezes engana: um processo aparentemente usando 400% de CPU tem, na verdade, quatro threads em quatro núcleos.
+
+```bash
+ps -o pid,tid,comm -L -p 1234    # -L mostra as threads
+grep Threads /proc/1234/status
+ls /proc/1234/task/
+```
+
+No `pstree`, threads aparecem entre chaves — `{NetworkManager}(628)` na saída mostrada antes. No `htop`, a tecla `H` alterna a exibição.
+
+## Identificando processos pelo nome
+
+Buscar PID por nome é tarefa cotidiana, e o `pgrep` faz isso melhor que qualquer combinação de `ps` com `grep`:
+
+```bash
+pgrep sshd                   # PIDs cujo nome casa
+pgrep -l sshd                # PID e nome
+pgrep -a sshd                # PID e linha de comando completa
+pgrep -u kali                # todos do usuario kali
+pgrep -f 'python3 servidor'  # casa contra a linha de comando inteira
+pgrep -c firefox             # so a contagem
+pgrep -n firefox             # o mais recente
+pgrep -P 1342                # filhos diretos do PID 1342
+```
+
+A vantagem sobre `ps aux | grep nome` não é só de digitação: o `grep` aparece na própria lista de processos e casa consigo mesmo, produzindo um resultado a mais que confunde scripts. O `pgrep` nunca casa consigo próprio.
+
+Duas ferramentas complementares descobrem processos por **arquivo** em vez de por nome — imprescindíveis quando algo não deixa desmontar um volume (@sec-cap019):
+
+```bash
+lsof /mnt/dados              # quem tem arquivos abertos ali
+lsof -p 1234                 # tudo o que o PID 1234 abriu
+lsof -i :8080                # quem esta escutando na porta 8080
+fuser -v /mnt/dados          # quem usa o caminho, com verbosidade
+```
+
+::: {.callout-warning}
+## `fuser -k` derruba tudo que toca o caminho
+
+O `fuser -k` envia sinal a **todos** os processos que usam o caminho indicado. Num diretório muito usado — ou por engano em `/` — isso derruba a sessão inteira e pode deixar o sistema inutilizável até o reboot. Rode primeiro sem `-k`, leia a lista, e só então decida.
+:::
+
+## 🐉 No Kali
+
+- **Ler a árvore é o primeiro reflexo de triagem.** Numa máquina que você acabou de comprometer em laboratório autorizado, ou que suspeita estar comprometida, `pstree -pa` responde de imediato de onde veio cada shell. Um `/bin/bash` filho de `nginx`, `apache2` ou de um processo Java é o padrão clássico de execução remota de comando — servidor web não abre shell interativo em operação normal.
+- **`/proc/<PID>/exe` desmascara processo que mente o nome.** Um binário pode alterar o que aparece no `ps` (o campo `comm` e o `argv[0]`). O link `exe` aponta para o inode real, e não há como falsificá-lo em espaço de usuário. Um `exe` marcado `(deleted)` significa que o binário foi apagado depois de iniciado — comportamento comum de *dropper* e raríssimo em software legítimo.
+- **Ferramentas de enumeração automatizam o que este capítulo faz à mão.** `LinPEAS`, `pspy` e `linux-smart-enumeration` observam a tabela de processos ao longo do tempo, capturando comandos disparados por `cron` e por serviços — inclusive senhas passadas na linha de comando, visíveis em `/proc/<PID>/cmdline` para qualquer usuário. Uso apenas em sistema próprio ou com autorização escrita: acesso não autorizado é crime (Lei 12.737/2012).
+- **Nunca passe segredo em argumento de comando.** Essa é a contrapartida defensiva do item anterior. `mysql -p senha`, `curl -u user:senha` e afins expõem a credencial a qualquer usuário do sistema enquanto o processo viver. Use arquivo de credenciais com modo `600`, entrada interativa, ou variável de ambiente com a ressalva de que `/proc/<PID>/environ` é legível pelo dono e pelo root.
+- **Ferramentas do Kali criam árvores profundas, e é isso que se espera.** Um `nmap` dispara scripts NSE; o `metasploit` sobe workers; o `hashcat` cria uma thread por dispositivo. Ao diagnosticar consumo de recursos numa VM do Kali, olhe threads (`ps -L`, `htop` com `H`) antes de concluir que um processo enlouqueceu.
+- **A persistência do Kali em live USB muda o que sobrevive.** Processos não persistem entre boots em nenhum sistema, mas os artefatos que eles deixam — logs, arquivos em `/tmp`, arquivos de PID — desaparecem no Kali live sem persistência. Ao montar laboratório de estudo de processos, prefira instalação em VM com disco.
+
+> **Nota sobre a família RHEL.** Nada muda no modelo de processos: `/proc`, PID, `pstree` e `pgrep` são idênticos. A diferença aparece no confinamento: com SELinux em modo *enforcing*, cada processo carrega um **contexto** além de UID e GID, visível com `ps -eZ`. Um processo pode ser barrado ao acessar um arquivo que as permissões POSIX permitiriam, e o diagnóstico correto passa por `ausearch -m avc` — assunto do Volume 14.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Nada aqui altera o sistema de forma permanente; o passo final remove os artefatos.
+
+1. **Descubra seu próprio processo.**
+
+   ```bash
+   echo "meu shell: $$"
+   ps -p $$ -o pid,ppid,user,stat,comm
+   head -12 /proc/$$/status
+   ```
+
+   Esperado: `$$` é o PID do shell; o `ps` confirma o mesmo número, mostra o PPID (o emulador de terminal) e o estado `Ss`.
+
+2. **Suba pela linha ancestral até o PID 1.**
+
+   ```bash
+   pstree -s $$
+   pstree -sp $$
+   ```
+
+   Esperado: uma cadeia que sai do seu shell, passa pelo terminal e pela sessão gráfica (ou pelo `sshd`) e termina em `systemd(1)`.
+
+3. **Explore o `/proc` de um processo real.**
+
+   ```bash
+   sleep 600 &
+   PID=$!
+   echo "PID do sleep: $PID"
+   ls -l /proc/$PID/exe /proc/$PID/cwd
+   tr '\0' '\n' < /proc/$PID/cmdline
+   grep -E 'State|PPid|Threads' /proc/$PID/status
+   ```
+
+   Esperado: `exe` aponta para `/usr/bin/sleep`, `cwd` para o diretório atual, o `cmdline` mostra `sleep` e `600` em linhas separadas, e o estado é `S (sleeping)`.
+
+4. **Observe o estado mudar.**
+
+   ```bash
+   ps -o pid,stat,comm -p $PID     # S: dormindo
+   kill -STOP $PID
+   ps -o pid,stat,comm -p $PID     # T: parado
+   kill -CONT $PID
+   ps -o pid,stat,comm -p $PID     # S de novo
+   ```
+
+   Esperado: a coluna `STAT` percorre `S` → `T` → `S`, exatamente as transições de @fig-estados-processo.
+
+5. **Veja a diferença entre `fork` e `exec`.**
+
+   ```bash
+   echo "shell atual: $$"
+   bash -c 'echo "subshell: $$; pai: $PPID"'
+   ( echo "subshell por parenteses: $BASHPID; shell: $$" )
+   ```
+
+   Esperado: o `bash -c` roda com PID novo e PPID igual ao do seu shell. Nos parênteses, `$$` continua sendo o shell original, mas `$BASHPID` revela o PID do subshell — a variável `$$` não é atualizada em subshells, por compatibilidade histórica.
+
+6. **Crie um órfão e veja a reparentagem.**
+
+   ```bash
+   bash -c 'sleep 120 & echo "filho: $!"; echo "pai: $$"'
+   sleep 1
+   ps -o pid,ppid,comm -C sleep
+   ```
+
+   Esperado: o `bash -c` termina imediatamente, e o `sleep` que ele deixou passa a ter PPID `1` (ou o PID do `systemd --user`). O processo foi adotado, não morreu junto com o pai.
+
+7. **Fabrique um zumbi.**
+
+   ```bash
+   cat > /tmp/zumbi.sh <<'EOF'
+   #!/bin/bash
+   # o filho morre na hora, mas o pai dorme sem chamar wait: o filho vira zumbi
+   sleep 0 &
+   sleep 45
+   EOF
+   chmod +x /tmp/zumbi.sh
+   /tmp/zumbi.sh &
+   sleep 2
+   ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'
+   ```
+
+   Esperado: uma linha com `STAT` começando em `Z` e o nome do comando marcado como `defunct`. Ele desaparece sozinho quando o pai terminar, em cerca de 45 segundos.
+
+8. **Confirme que zumbi não se mata.**
+
+   ```bash
+   ZPID=$(ps -eo pid,stat | awk '$2 ~ /^Z/ {print $1; exit}')
+   [ -n "$ZPID" ] && kill -9 "$ZPID"
+   ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'
+   ```
+
+   Esperado: o `kill -9` não devolve erro, mas o zumbi continua na lista. Ele já está morto — só o `wait()` do pai o remove.
+
+9. **Conte as threads de um processo real.**
+
+   ```bash
+   PT=$(pgrep -n NetworkManager)
+   grep Threads /proc/$PT/status
+   ls /proc/$PT/task/ | wc -l
+   ps -o pid,tid,comm -L -p $PT | head
+   ```
+
+   Esperado: o número em `Threads:` bate com a quantidade de subdiretórios em `task/` e com as linhas do `ps -L`.
+
+10. **Descubra quem segura um arquivo.**
+
+    ```bash
+    exec 9< /etc/hostname
+    ls -l /proc/$$/fd/9
+    lsof -p $$ 2>/dev/null | grep hostname
+    exec 9<&-
+    ```
+
+    Esperado: o descritor 9 aparece como link para `/etc/hostname` e some depois do fechamento. É o mesmo mecanismo que impede desmontar um volume em uso.
+
+11. **Compare `pgrep` com `ps | grep`.**
+
+    ```bash
+    ps aux | grep sleep
+    pgrep -a sleep
+    ```
+
+    Esperado: o primeiro inclui uma linha do próprio `grep sleep`; o segundo, não. É por isso que scripts devem usar `pgrep`.
+
+12. **Limpe.**
+
+    ```bash
+    pkill -f 'sleep 600'
+    pkill -f zumbi.sh
+    rm -f /tmp/zumbi.sh
+    pgrep -a sleep
+    ```
+
+    Esperado: nenhum processo de teste sobra. O `pkill` é o assunto do próximo capítulo sobre sinais.
+
+## Resumo
+
+- **Programa é arquivo em disco; processo é uma execução viva daquele programa**, com PID, dono, memória, descritores e estado próprios. O mesmo programa pode ter muitos processos simultâneos.
+- **Todo processo nasce de `fork()` mais `exec()`**: o pai se duplica e a cópia troca de imagem, mantendo o PID. É por isso que o shell sobrevive aos comandos que executa, e por que variáveis definidas em subshell não voltam para o pai.
+- **Os processos formam uma árvore enraizada no PID 1** (`systemd`). `pstree -pa` responde "quem chamou isso?" — um shell filho de servidor web é sinal clássico de comprometimento.
+- **`/proc/<PID>/` é a tabela de processos exposta como arquivos.** `status`, `cmdline`, `exe`, `cwd`, `fd/` e `environ` são a fonte de tudo que `ps` e `top` exibem; um `exe` marcado `(deleted)` é indício forte de atividade maliciosa.
+- **Os estados que importam são `D` e `Z`.** Em `D` (sono ininterrompível de E/S) o processo ignora até `SIGKILL` — insistir não adianta, é preciso resolver a E/S. Em `Z` (zumbi) o processo já morreu e só espera o pai chamar `wait()`; mata-se o pai, não o zumbi.
+- **Órfão não morre com o pai**: é reparentado para o PID 1, e passa a exibir PPID 1.
+- **Threads são tarefas que compartilham memória**, com TID próprio, visíveis em `/proc/<PID>/task/` e com `ps -L`. Um processo com uso de CPU acima de 100% está usando várias delas.
+- **`pgrep` e `pkill` substituem `ps | grep`** sem o falso positivo do próprio `grep`; `lsof` e `fuser` localizam processos por arquivo, porta ou ponto de montagem.

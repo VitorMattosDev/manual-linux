@@ -1,3 +1,459 @@
 # Sinais e controle: kill, killall, nice e prioridades {#sec-cap029}
 
-*(em elaboracao)*
+O editor travou. Você abre outro terminal, descobre o PID e digita, por reflexo, `kill -9`. O processo some — e junto com ele o arquivo que estava sendo salvo, meio gravado, agora corrompido. O banco de dados que você encerrou do mesmo jeito na semana passada levou quarenta minutos para reconstruir o índice no próximo boot.
+
+O `-9` é o primeiro comando que quase todo mundo aprende e o último que deveria ser usado. Ele existe justamente porque **não pode ser recusado** — e é exatamente por isso que o processo não tem chance de fechar arquivos, gravar o que estava em memória e limpar o que deixou pelo caminho. Este capítulo trata do mecanismo por trás disso: os **sinais**, a forma como o Unix interrompe um processo para lhe dizer alguma coisa, e a escada correta de encerramento. Na segunda metade, o outro lado do controle: como decidir qual processo tem preferência na CPU, com `nice`, `renice` e `ionice`.
+
+## O que é um sinal
+
+Um sinal é uma notificação assíncrona entregue pelo kernel a um processo. É o mecanismo de comunicação mais antigo do Unix: minúsculo — apenas um número — e universal. Quem envia pode ser o kernel (uma violação de memória gera `SIGSEGV`), o terminal (`Ctrl-C` gera `SIGINT`), outro processo (`kill`) ou o próprio processo.
+
+Quando um sinal chega, o kernel interrompe o fluxo normal e escolhe entre quatro destinos:
+
+::: {#fig-entrega-sinal}
+```{.tikz}
+%%| filename: caminho-de-entrega-de-um-sinal
+%%| alt: Fluxo de decisao do kernel ao entregar um sinal: se for SIGKILL ou SIGSTOP a acao e imediata, senao verifica se o sinal esta bloqueado, ignorado, tem tratador instalado ou aplica a acao padrao
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,text width=3.0cm},
+    orig/.style={bx,draw=manualblue,fill=manualblue!12},
+    ker/.style={bx,draw=manualgray,fill=manualgray!12},
+    esp/.style={bx,draw=manualred,fill=manualred!11},
+    tra/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    pad/.style={bx,draw=manualyellow,fill=manualyellow!12},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[orig] (o) at (0,0) {origem do sinal\\teclado, \texttt{kill}, kernel};
+  \node[ker]  (k) at (4.2,0) {kernel marca o sinal como pendente};
+
+  \node[esp] (x) at (8.8,2.3)  {\texttt{SIGKILL} ou \texttt{SIGSTOP}\\ação imediata, sem consulta};
+  \node[ker] (b) at (8.8,0.6)  {bloqueado\\fica pendente até desbloquear};
+  \node[ker] (i) at (8.8,-1.0) {ignorado\\descartado};
+  \node[tra] (t) at (8.8,-2.6) {tratador instalado\\executa a função do programa};
+  \node[pad] (d) at (8.8,-4.2) {nenhum dos casos\\aplica a \textbf{ação padrão}};
+
+  \draw[fl] (o) -- (k);
+  \draw[fl] (k.east) to[out=0,in=180] (x.west);
+  \draw[fl] (k.east) to[out=0,in=180] (b.west);
+  \draw[fl] (k.east) to[out=0,in=180] (i.west);
+  \draw[fl] (k.east) to[out=0,in=180] (t.west);
+  \draw[fl] (k.east) to[out=0,in=180] (d.west);
+
+  \node[nt,text width=4.6cm] at (13.6,2.3)  {Os dois únicos sinais que o programa não pode capturar, bloquear nem ignorar.};
+  \node[nt,text width=4.6cm] at (13.6,-2.6) {É aqui que um daemon faz \emph{graceful shutdown} ou recarrega a configuração.};
+  \node[nt,text width=4.6cm] at (13.6,-4.2) {Terminar, terminar com \emph{core dump}, parar, continuar ou ignorar --- depende do sinal.};
+\end{tikzpicture}
+```
+O que o kernel faz quando um sinal chega ao processo.
+:::
+
+A consequência prática dessa árvore é toda a diferença entre `-15` e `-9`. O `SIGTERM` (15) é entregue ao processo, que tem a chance de rodar seu tratador: fechar arquivos, gravar buffers, avisar clientes, remover arquivos temporários, sair com código próprio. O `SIGKILL` (9) nunca chega ao programa — o kernel simplesmente remove o processo. Nenhum tratador roda, nenhum buffer é gravado.
+
+## Os sinais que importam
+
+Existem mais de sessenta sinais. `kill -l` lista todos; na prática, uma dúzia cobre tudo:
+
+| Nº | Nome | Ação padrão | Quando se usa |
+|:---:|---|---|---|
+| 1 | `SIGHUP` | terminar | terminal fechou; por convenção, **recarrega configuração** em daemons |
+| 2 | `SIGINT` | terminar | `Ctrl-C`: interrupção pelo usuário |
+| 3 | `SIGQUIT` | terminar + *core* | `Ctrl-\`: interrompe e gera imagem de memória |
+| 9 | `SIGKILL` | terminar | **não capturável**: último recurso |
+| 11 | `SIGSEGV` | terminar + *core* | violação de acesso à memória (erro do programa) |
+| 13 | `SIGPIPE` | terminar | escreveu num *pipe* sem leitor do outro lado |
+| 15 | `SIGTERM` | terminar | **pedido educado** de encerramento; o padrão do `kill` |
+| 17 | `SIGCHLD` | ignorar | um filho terminou ou parou |
+| 18 | `SIGCONT` | continuar | retoma um processo parado |
+| 19 | `SIGSTOP` | parar | **não capturável**: congela o processo |
+| 20 | `SIGTSTP` | parar | `Ctrl-Z`: parada pelo terminal, capturável |
+| 10/12 | `SIGUSR1`/`SIGUSR2` | terminar | livres para o programa definir |
+
+: Sinais de uso cotidiano {#tbl-sinais}
+
+::: {.callout-important}
+## Os números não são universais, os nomes são
+
+`SIGKILL` é 9 no Linux, mas em outros Unix a numeração varia, e mesmo no Linux os sinais em tempo real e alguns intermediários mudam entre arquiteturas. Em script, escreva `kill -TERM` ou `kill -s TERM`, nunca `kill -15`. Vale como hábito também na linha de comando: `kill -HUP` diz o que faz; `kill -1` não diz nada.
+:::
+
+Três desses merecem explicação a mais.
+
+**`SIGHUP` — o sinal do modem.** O nome vem de *hang up*: nos tempos de terminal por linha telefônica, a queda da linha gerava esse sinal para todos os processos da sessão. O comportamento sobreviveu: quando você fecha um terminal, o shell envia `SIGHUP` aos seus filhos, e eles morrem. É o problema que `nohup`, `disown` e `tmux` resolvem (@sec-cap030 e @sec-cap031). Por convenção independente, daemons capturam `SIGHUP` e **relêem a configuração** sem reiniciar — é o que faz `kill -HUP $(pidof nginx)` aplicar mudanças sem derrubar conexões.
+
+**`SIGUSR1` e `SIGUSR2` — livres para o programa.** O kernel não lhes atribui significado; cada programa define o seu. O `dd` responde a `SIGUSR1` imprimindo o progresso da cópia. O `nginx` usa `SIGUSR1` para reabrir os arquivos de log (o passo essencial de uma rotação) e `SIGUSR2` para trocar o binário em execução sem perder conexões. Consultar a página de manual pela seção "SIGNALS" é o caminho para descobrir o que cada daemon faz.
+
+**`SIGPIPE` — por que `head` interrompe um pipeline.** Quando você faz `grep algo arquivo_gigante | head -5`, o `head` sai depois de cinco linhas e fecha a leitura. Na próxima escrita, o `grep` recebe `SIGPIPE` e morre. Isso não é erro: é o mecanismo que impede um produtor de continuar trabalhando sem consumidor.
+
+## kill, pkill e killall
+
+O comando se chama `kill`, mas o nome é enganoso: ele **envia um sinal**, e só por acaso o sinal padrão termina o processo.
+
+```bash
+kill 2201                  # envia SIGTERM (padrao)
+kill -TERM 2201            # o mesmo, explicito
+kill -HUP 2201             # recarrega config, em daemons que seguem a convencao
+kill -STOP 2201            # congela
+kill -CONT 2201            # descongela
+kill -KILL 2201            # ultimo recurso
+kill -0 2201               # nao envia nada: so testa se o PID existe e e seu
+kill -l                    # lista todos os sinais
+kill -l 15                 # traduz numero para nome
+```
+
+O `kill -0` é o idioma correto para "este processo ainda está vivo?" em script: retorna 0 se existe e você tem permissão de sinalizá-lo, diferente de zero caso contrário, sem efeito colateral algum.
+
+Por nome, há duas ferramentas com comportamentos diferentes:
+
+```bash
+pkill firefox              # casa por prefixo do nome, ate 15 caracteres
+pkill -f 'python3 srv.py'  # casa contra a linha de comando inteira (regex)
+pkill -u kali              # todos os processos do usuario
+pkill -HUP nginx           # sinal especifico por nome
+pkill -e -f padrao         # -e ecoa o que foi morto (confira antes)
+
+killall firefox            # casa o nome EXATO do comando
+killall -i firefox         # pergunta antes de cada um
+killall -r 'fire.*'        # -r habilita expressao regular
+killall -u kali            # por usuario
+```
+
+A diferença que morde: o `pkill` casa **parte** do nome por padrão, e o `killall` exige o nome exato. `pkill ssh` atinge `sshd`, `ssh-agent` e `sshfs`; `killall ssh` atinge só o `ssh`. Em compensação, `pkill -f` é imbatível para distinguir dois processos do mesmo interpretador — dois scripts Python só se diferenciam pela linha de comando.
+
+::: {.callout-warning}
+## Confira o alvo antes de sinalizar
+
+`pkill -f` com um padrão amplo pode atingir muito mais do que se pretende — `pkill -f python` derruba todos os serviços escritos em Python, incluindo os do sistema. Rode primeiro o `pgrep` correspondente, que aceita exatamente as mesmas opções e apenas **lista**:
+
+```bash
+pgrep -af 'python3 srv.py'    # veja a lista
+pkill -f 'python3 srv.py'     # so entao mate
+```
+
+Como root o risco cresce: `pkill -u root` ou um padrão que case com `systemd` derruba a sessão inteira e pode exigir reboot forçado.
+:::
+
+## A escada correta de encerramento
+
+Encerrar um processo é uma sequência, não um comando único.
+
+::: {#fig-escada-kill}
+```{.tikz}
+%%| filename: escada-de-encerramento-term-antes-de-kill
+%%| alt: Sequencia de encerramento em quatro degraus: SIGTERM, esperar, SIGHUP ou repetir TERM, e por fim SIGKILL apenas se nada funcionar, com nota sobre processos em estado D
+\begin{tikzpicture}[
+    dg/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=5pt,text width=3.4cm},
+    d1/.style={dg,draw=manualgreen,fill=manualgreen!13},
+    d2/.style={dg,draw=manualblue,fill=manualblue!12},
+    d3/.style={dg,draw=manualyellow,fill=manualyellow!12},
+    d4/.style={dg,draw=manualred,fill=manualred!12},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[d1] (a) at (0,0)      {\textbf{1.} \texttt{kill PID}\\\texttt{SIGTERM}: peça educadamente};
+  \node[d2] (b) at (4.3,-1.2) {\textbf{2.} espere\\5 a 30 segundos, conforme o serviço};
+  \node[d3] (c) at (8.6,-2.4) {\textbf{3.} repita o \texttt{TERM}\\ou confira se está em \texttt{D}};
+  \node[d4] (d) at (12.9,-3.6){\textbf{4.} \texttt{kill -KILL PID}\\só agora, e sabendo o custo};
+
+  \draw[fl] (a.south) to[out=-90,in=180] (b.west);
+  \draw[fl] (b.south) to[out=-90,in=180] (c.west);
+  \draw[fl] (c.south) to[out=-90,in=180] (d.west);
+
+  \node[nt,text width=6.4cm] at (2.6,-4.3) {Um processo em estado \texttt{D} não responde a \emph{nenhum} sinal, inclusive \texttt{SIGKILL}. Insistir no degrau 4 não adianta: o caminho é resolver a E/S travada (disco, NFS) ou reiniciar a máquina.};
+  \node[nt,text width=5.6cm] at (10.4,-5.4) {O \texttt{SIGKILL} não deixa o programa gravar buffers, fechar arquivos nem remover temporários. Banco de dados e editor pagam esse preço no próximo início.};
+\end{tikzpicture}
+```
+A ordem correta para encerrar um processo, e por que o `-9` é o último degrau.
+:::
+
+Em script, o padrão fica assim:
+
+```bash
+kill -TERM "$PID"
+for i in $(seq 1 10); do
+    kill -0 "$PID" 2>/dev/null || break   # ja morreu
+    sleep 1
+done
+kill -0 "$PID" 2>/dev/null && kill -KILL "$PID"
+```
+
+Esse é, em essência, o comportamento do `systemd` ao parar um serviço: envia `TERM`, espera o `TimeoutStopSec` (90 segundos por padrão) e só então manda `KILL`. Serviços gerenciados por systemd devem ser parados com `systemctl stop`, nunca com `kill` direto — caso contrário o gerenciador tenta reiniciá-los, ou perde o controle do estado.
+
+Para grupos de processos, um detalhe importante: um PID **negativo** sinaliza o **grupo de processos** inteiro.
+
+```bash
+kill -TERM -2201           # sinaliza o grupo cujo lider e o PID 2201
+```
+
+É o que o terminal faz ao enviar `Ctrl-C`: o sinal vai para todo o grupo em primeiro plano, não só para o comando visível. É por isso que `Ctrl-C` num pipeline interrompe todos os estágios de uma vez.
+
+## Prioridade de CPU: nice e renice
+
+Sinais dizem "pare"; prioridades dizem "espere um pouco mais". Quando há mais processos prontos do que núcleos, o escalonador do kernel decide a ordem, e o valor de **`nice`** é a alavanca que o administrador tem sobre essa decisão.
+
+A escala vai de **-20** (menos gentil, maior prioridade) a **+19** (mais gentil, menor prioridade), com 0 como padrão. O nome descreve bem: um processo "gentil" cede a vez.
+
+::: {#fig-escala-nice}
+```{.tikz}
+%%| filename: escala-de-valores-de-nice
+%%| alt: Escala horizontal do valor de nice de menos vinte a mais dezenove, com a faixa negativa exigindo root, o zero como padrao e a faixa positiva para tarefas de segundo plano
+\begin{tikzpicture}[
+    fx/.style={rounded corners=3pt,thick,minimum height=1.0cm,font=\scriptsize,align=center,inner sep=4pt},
+    alta/.style={fx,draw=manualred,fill=manualred!13,text width=3.4cm},
+    med/.style={fx,draw=manualgray,fill=manualgray!13,text width=2.4cm},
+    baixa/.style={fx,draw=manualblue,fill=manualblue!12,text width=3.4cm},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    sc/.style={font=\scriptsize\ttfamily,manualgray}
+  ]
+  \node[alta]  (a) at (0,0)   {\textbf{-20 a -1}\\mais prioridade};
+  \node[med]   (b) at (4.0,0) {\textbf{0}\\padrão};
+  \node[baixa] (c) at (8.2,0) {\textbf{+1 a +19}\\menos prioridade};
+
+  \draw[manualgray,thick,-{Stealth[length=5pt]}] (-2.2,-1.1) -- (10.4,-1.1);
+  \node[sc] at (-2.2,-1.5) {-20};
+  \node[sc] at (4.0,-1.5)  {0};
+  \node[sc] at (10.4,-1.5) {+19};
+  \node[nt] at (4.0,-1.95) {maior prioridade \quad $\longleftarrow$ \quad menor prioridade};
+
+  \node[nt,align=left,text width=4.4cm,manualred] at (0,2.1)  {Só o \textbf{root} pode baixar o \texttt{nice}. Usado para tarefa interativa crítica; abusar prejudica o sistema inteiro.};
+  \node[nt,align=left,text width=4.4cm,manualblue] at (8.4,2.1) {Qualquer usuário pode subir --- e nunca descer de volta. Ideal para compilação, backup e varredura em segundo plano.};
+
+  \node[nt,align=left,text width=12.4cm] at (4.0,-3.2) {O \texttt{nice} não é uma fatia fixa de CPU: é um \emph{peso} na disputa. Com a máquina ociosa, um processo com \texttt{nice 19} usa 100\% do processador sem problema algum. O valor só passa a importar quando há concorrência.};
+\end{tikzpicture}
+```
+A escala de `nice`, e por que aumentar é livre mas diminuir exige root.
+:::
+
+Duas regras assimétricas governam o uso:
+
+1. **Qualquer usuário pode aumentar o próprio `nice`** (ceder prioridade).
+2. **Só o root pode diminuí-lo** — e um usuário comum **não consegue desfazer** um aumento que ele mesmo fez. Subiu para 10? Só o root traz de volta para 0.
+
+```bash
+nice -n 10 tar czf backup.tar.gz /dados     # inicia ja gentil
+nice -n 19 ./compilar.sh                     # o mais gentil possivel
+sudo nice -n -5 ./tarefa-critica             # prioridade alta exige root
+
+renice -n 15 -p 2201                         # muda um processo em execucao
+renice -n 5 -u kali                          # todos os processos de um usuario
+renice -n 10 -g 1500                         # por grupo de processos
+```
+
+Cuidado com a sintaxe antiga do `nice`: `nice -5 comando` significa `nice -n 5` (mais gentil), não prioridade -5. Use sempre `-n` explícito.
+
+Para inspecionar:
+
+```bash
+ps -eo pid,nice,pri,comm --sort=nice | head
+ps -eo pid,nice,comm | awk '$2 != 0'         # so os que fugiram do padrao
+```
+
+A coluna `PRI` é a prioridade interna calculada pelo kernel; a coluna `NI` é o valor de `nice` que você controla. No `top`, as colunas se chamam `PR` e `NI`; no `htop`, `PRI` e `NI`, ajustáveis com `F7` e `F8`.
+
+É importante calibrar a expectativa: o escalonador moderno do Linux (o EEVDF, sucessor do CFS) trata o `nice` como **peso relativo**, não como reserva. Cada degrau vale aproximadamente 25% a mais ou a menos de fatia quando há disputa. Num sistema ocioso, o `nice` não faz diferença nenhuma. E ele **não** limita memória, E/S nem rede — para isso existem os *cgroups*, tema do Volume 16.
+
+### ionice: prioridade de disco
+
+Renicear um `backup` não impede que ele sature o disco e deixe o sistema arrastado. A alavanca correta para E/S é o `ionice`, que atua sobre o escalonador de bloco:
+
+```bash
+ionice -c 3 tar czf backup.tar.gz /dados   # classe idle: so usa disco ocioso
+ionice -c 2 -n 7 rsync -a /origem /destino # best-effort, prioridade mais baixa
+ionice -p 2201                              # consulta a classe atual
+ionice -c 2 -n 0 -p 2201                    # muda em processo ja rodando
+```
+
+As classes são três: **1 (real time)**, que monopoliza o disco e exige root; **2 (best effort)**, o padrão, com níveis de 0 a 7; e **3 (idle)**, que só usa o disco quando ninguém mais quer. A combinação canônica para tarefa pesada de manutenção é `nice -n 19 ionice -c 3 comando` — ela cede tanto CPU quanto disco.
+
+::: {.callout-note}
+## `chrt` e o tempo real
+
+Para exigências de latência estrita — áudio profissional, controle industrial — o Linux oferece políticas de tempo real (`SCHED_FIFO`, `SCHED_RR`), configuradas com `chrt`. Um processo de tempo real **preempta qualquer processo normal**, e um laço infinito com `SCHED_FIFO` em prioridade alta trava a máquina de forma que só o *watchdog* do kernel resolve. É ferramenta legítima e perigosa; para trabalho de administração comum, `nice` e `ionice` bastam.
+:::
+
+## 🐉 No Kali
+
+- **Ferramentas de varredura merecem `nice` alto.** Um `nmap -T5` numa faixa grande, um `gobuster` com muitas threads ou um `hashcat` em modo CPU tomam a máquina inteira. Iniciá-los com `nice -n 15` mantém a VM utilizável para você continuar trabalhando, com custo desprezível no tempo total — o processo continua usando todo o processador ocioso.
+- **Encerrar ferramenta ofensiva com `-9` é receita de estado sujo.** Um `metasploit` morto com `SIGKILL` deixa a sessão do banco de dados inconsistente e handlers órfãos escutando portas; um `hashcat` morto assim perde o arquivo de restauração e obriga a recomeçar horas de trabalho. Ambos tratam `SIGINT` (`Ctrl-C`) e `SIGTERM` corretamente. Use a escada.
+- **`SIGHUP` é o jeito certo de rotacionar log de daemon num laboratório.** Ao subir um `nginx` ou um `apache2` para servir um artefato durante um teste autorizado, `kill -HUP` recarrega a configuração e `kill -USR1` reabre os arquivos de log sem derrubar conexões. Reiniciar o serviço quebraria as sessões em andamento.
+- **Cuidado redobrado com `pkill` como root no alvo.** Num engajamento autorizado, um `pkill -f java` disparado sem checar antes com `pgrep -af` pode derrubar a aplicação de produção do cliente. Interrupção de serviço não contratada gera dano real e, além do problema contratual, sai do escopo do que a autorização cobre. O `pgrep` antes do `pkill` é procedimento, não zelo excessivo.
+- **`kill -0` é o teste de vida em qualquer script de automação.** Ao encadear ferramentas — esperar um `scan` terminar antes de iniciar a fase seguinte —, `kill -0 "$PID" 2>/dev/null` verifica a existência sem efeito colateral, e é preferível a analisar a saída do `ps` com `grep`.
+- **Processos travados em `D` aparecem com frequência ao trabalhar com imagens forenses.** Montar uma imagem de disco corrompida, ler um dispositivo com setores ruins ou usar `dd` sobre mídia defeituosa põe o processo em sono ininterrompível, e `kill -9` não resolve. O caminho é desmontar com `umount -l` (*lazy*), desconectar o dispositivo de laço com `losetup -d`, ou aceitar o reboot.
+
+> **Nota sobre a família RHEL.** Sinais, `nice` e `ionice` são idênticos. Duas diferenças de contexto: no RHEL o `sysstat` já vem ativo, e o histórico do `sar` ajuda a decidir quando o `nice` é necessário; e, com SELinux em modo *enforcing*, existem regras que impedem um domínio de sinalizar outro — um processo pode receber "Permissão negada" ao enviar `SIGTERM` mesmo sendo do mesmo usuário, e o diagnóstico está em `ausearch -m avc`, não nas permissões POSIX.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Todos os alvos são processos de teste criados no próprio roteiro.
+
+1. **Conheça a lista de sinais.**
+
+   ```bash
+   kill -l
+   kill -l 15
+   kill -l TERM
+   ```
+
+   Esperado: a lista completa, e a tradução nos dois sentidos entre número e nome.
+
+2. **Envie `SIGTERM` a um processo cooperativo.**
+
+   ```bash
+   sleep 300 &
+   PID=$!
+   kill -0 $PID && echo "vivo"
+   kill -TERM $PID
+   sleep 1
+   kill -0 $PID 2>/dev/null && echo "ainda vivo" || echo "morreu"
+   ```
+
+   Esperado: `vivo` antes, `morreu` depois. O `sleep` não instala tratador, então a ação padrão do `SIGTERM` o encerra.
+
+3. **Escreva um processo que trata o sinal.**
+
+   ```bash
+   cat > /tmp/lab029-trap.sh <<'EOF'
+   #!/bin/bash
+   limpar() { echo "recebi SIGTERM: gravando e saindo"; rm -f /tmp/lab029.tmp; exit 0; }
+   trap limpar TERM
+   trap 'echo "recebi SIGHUP: recarregando configuracao"' HUP
+   touch /tmp/lab029.tmp
+   echo "rodando com PID $$"
+   while :; do sleep 1; done
+   EOF
+   chmod +x /tmp/lab029-trap.sh
+   /tmp/lab029-trap.sh &
+   TPID=$!
+   sleep 1
+   ```
+
+   Esperado: a mensagem `rodando com PID ...` e o arquivo `/tmp/lab029.tmp` criado.
+
+4. **Compare `SIGHUP`, `SIGTERM` e `SIGKILL` nesse processo.**
+
+   ```bash
+   kill -HUP $TPID; sleep 1        # recarrega: o processo continua vivo
+   kill -0 $TPID && echo "sobreviveu ao HUP"
+   kill -TERM $TPID; sleep 1       # tratador roda e limpa
+   ls /tmp/lab029.tmp 2>/dev/null || echo "arquivo temporario removido pelo tratador"
+   ```
+
+   Esperado: o `HUP` imprime a mensagem de recarga e o processo continua; o `TERM` executa a limpeza e o arquivo temporário some. É exatamente o que um daemon bem escrito faz.
+
+5. **Veja o `SIGKILL` atropelar o tratador.**
+
+   ```bash
+   /tmp/lab029-trap.sh &
+   TPID=$!
+   sleep 1
+   kill -KILL $TPID
+   sleep 1
+   ls -l /tmp/lab029.tmp
+   ```
+
+   Esperado: nenhuma mensagem do tratador, e o arquivo temporário **continua lá**. O `SIGKILL` não deu ao programa a chance de limpar — a diferença que importa entre os dois sinais.
+
+6. **Pare e continue um processo.**
+
+   ```bash
+   sleep 300 &
+   SPID=$!
+   kill -STOP $SPID; ps -o pid,stat,comm -p $SPID
+   kill -CONT $SPID; ps -o pid,stat,comm -p $SPID
+   kill -TERM $SPID
+   ```
+
+   Esperado: `T` depois do `STOP`, `S` depois do `CONT`. Nem `SIGSTOP` nem `SIGCONT` podem ser capturados pelo programa.
+
+7. **Use `SIGUSR1` para pedir progresso ao `dd`.**
+
+   ```bash
+   dd if=/dev/zero of=/tmp/lab029.img bs=1M count=3000 &
+   DPID=$!
+   sleep 2; kill -USR1 $DPID
+   sleep 2; kill -USR1 $DPID
+   kill -TERM $DPID 2>/dev/null
+   ```
+
+   Esperado: a cada `SIGUSR1`, o `dd` imprime quantos blocos e bytes já copiou, sem interromper a cópia. É a definição de sinal de uso livre pelo programa.
+
+   ::: {.callout-warning}
+   Confira que `of=` aponta para `/tmp/lab029.img`. Com `of=/dev/sda` ou similar, o `dd` sobrescreve o disco imediatamente e sem confirmação, destruindo o sistema.
+   :::
+
+8. **Confirme a diferença entre `pkill` e `killall`.**
+
+   ```bash
+   sleep 400 & sleep 401 &
+   pgrep -a sleep
+   pkill -e -f 'sleep 40'
+   pgrep -a sleep || echo "todos encerrados"
+   ```
+
+   Esperado: o `pgrep` lista antes, o `pkill -e` ecoa quais foram encerrados. Repita com `killall sleep` para ver que ele exige o nome exato do comando.
+
+9. **Sinalize um grupo de processos inteiro.**
+
+   ```bash
+   ( sleep 200 & sleep 201 & echo "grupo: $$"; sleep 300 ) &
+   sleep 1
+   GPID=$(pgrep -n -f 'sleep 300')
+   ps -eo pid,pgid,comm | grep sleep
+   kill -TERM -"$(ps -o pgid= -p $GPID | tr -d ' ')"
+   pgrep -a sleep || echo "grupo inteiro encerrado"
+   ```
+
+   Esperado: o PID negativo atinge todos os membros do grupo de uma vez — o mesmo mecanismo do `Ctrl-C` num pipeline.
+
+10. **Trabalhe com `nice`.**
+
+    ```bash
+    nice -n 19 bash -c 'while :; do :; done' &
+    NPID=$!
+    bash -c 'while :; do :; done' &
+    MPID=$!
+    sleep 5
+    ps -o pid,nice,pcpu,comm -p $NPID,$MPID
+    ```
+
+    Esperado: os dois valores de `nice` (19 e 0) na coluna `NI`. Se a VM tiver mais de um núcleo livre, ambos usarão CPU cheia — o `nice` só se manifesta sob disputa.
+
+11. **Mude a prioridade em execução e teste a assimetria.**
+
+    ```bash
+    renice -n 5 -p $MPID
+    ps -o pid,nice,comm -p $MPID
+    renice -n 0 -p $MPID          # deve falhar sem root
+    sudo renice -n 0 -p $MPID     # com root, funciona
+    ps -o pid,nice,comm -p $MPID
+    kill $NPID $MPID
+    ```
+
+    Esperado: o aumento funciona sem privilégio; a tentativa de voltar para 0 falha com "Permissão negada" e só passa com `sudo`. É a regra assimétrica do `nice`.
+
+12. **Combine `nice` com `ionice` e limpe.**
+
+    ```bash
+    nice -n 19 ionice -c 3 tar czf /tmp/lab029.tar.gz /usr/share/doc 2>/dev/null &
+    TPID=$!
+    ionice -p $TPID
+    ps -o pid,nice,comm -p $TPID
+    wait $TPID
+    rm -f /tmp/lab029.img /tmp/lab029.tar.gz /tmp/lab029.tmp /tmp/lab029-trap.sh
+    pgrep -a sleep
+    ```
+
+    Esperado: `ionice -p` reporta classe `idle`, e o `ps` mostra `NI` igual a 19 — a receita completa para tarefa pesada que não atrapalha ninguém. Ao final, nenhum artefato de teste sobra.
+
+## Resumo
+
+- **Sinal é uma notificação assíncrona do kernel a um processo.** Ao recebê-lo, o processo executa um tratador, ignora, deixa pendente (bloqueado) ou sofre a ação padrão.
+- **`SIGKILL` (9) e `SIGSTOP` (19) não podem ser capturados, bloqueados nem ignorados.** É por isso que o `-9` funciona sempre — e por isso que ele não deixa o programa gravar buffers, fechar arquivos nem limpar temporários.
+- **A escada correta é `TERM` → esperar → `KILL`.** É o que o `systemd` faz ao parar um serviço, e o que seu script deve fazer, usando `kill -0` para testar se o processo ainda vive.
+- **`SIGHUP` recarrega configuração em daemons, por convenção**, e é também o sinal enviado quando um terminal fecha — a origem do problema que `nohup`, `disown` e `tmux` resolvem.
+- **`SIGUSR1` e `SIGUSR2` são livres para o programa definir**: `dd` imprime progresso, `nginx` reabre logs. Consulte a seção SIGNALS da página de manual.
+- **`pkill` casa parte do nome; `killall` exige o nome exato.** Sempre rode o `pgrep` equivalente antes — as opções são as mesmas, e ele apenas lista.
+- **PID negativo sinaliza o grupo de processos inteiro**, o mesmo mecanismo que faz `Ctrl-C` interromper todos os estágios de um pipeline.
+- **`nice` vai de -20 a +19; aumentar é livre, diminuir exige root**, e o usuário não desfaz o próprio aumento. É peso relativo sob disputa, não reserva de CPU — em máquina ociosa não muda nada.
+- **`ionice -c 3` cede o disco do mesmo jeito que `nice -n 19` cede a CPU.** A combinação dos dois é a receita para tarefa pesada de manutenção que não atrapalha o resto do sistema.

@@ -1,3 +1,425 @@
 # Monitoramento: ps, top e htop {#sec-cap028}
 
-*(em elaboracao)*
+Um usuário reclama que o servidor está lento. Você entra por SSH, digita `top`, e a tela se enche de números: um *load average* de 14, uma coluna `wa` em 60%, um processo Java em 380% de CPU e uma memória "quase toda usada". Cada um desses números conta uma história diferente, e três deles são frequentemente mal interpretados. Este capítulo é sobre extrair diagnóstico dessas telas em vez de impressão.
+
+As três ferramentas centrais se dividem por finalidade. O `ps` tira uma **fotografia**: o estado exato no instante em que rodou, ideal para scripts e para registro. O `top` mostra um **filme**: atualiza continuamente e revela tendência. O `htop` é o `top` com interface decente: cores, rolagem, árvore, e ações diretas sobre os processos. Saber qual usar é metade do trabalho.
+
+## ps: a fotografia
+
+O `ps` carrega uma peculiaridade histórica que confunde todo iniciante: ele aceita **três sintaxes diferentes**, herdadas de linhagens distintas do Unix, e o significado das letras muda conforme a presença do hífen.
+
+| Estilo | Exemplo | Origem |
+|---|---|---|
+| BSD (sem hífen) | `ps aux` | Berkeley |
+| UNIX/POSIX (um hífen) | `ps -ef` | System V |
+| GNU (dois hífens) | `ps --forest` | extensões do `procps` |
+
+: As três sintaxes do `ps` {#tbl-sintaxes-ps}
+
+`ps aux` e `ps -aux` **não são a mesma coisa**. No estilo BSD, `u` significa "formato orientado a usuário"; no estilo UNIX, `-u` significa "processos do usuário indicado". O `ps -aux` moderno tenta interpretar `x` como nome de usuário, falha, e cai de volta para o comportamento BSD com um aviso. Funciona por acidente; escreva `ps aux`.
+
+Os dois comandos que resolvem 90% dos casos:
+
+```bash
+ps aux              # todos os processos, formato BSD com percentuais
+ps -ef              # todos os processos, formato UNIX com PPID
+```
+
+A saída do `ps aux` tem onze colunas, e vale decompor cada uma:
+
+```text
+USER   PID %CPU %MEM    VSZ   RSS TTY  STAT START   TIME COMMAND
+kali  1342  0.0  0.1  13540  9216 pts/0 Ss  09:14   0:00 bash
+kali  2201 98.3  4.7 921648 385204 pts/0 R+ 10:02   3:41 ffmpeg -i entrada.mkv
+root   729  0.0  0.2  15420 11008 ?     Ss  09:12   0:01 sshd: /usr/sbin/sshd -D
+```
+
+::: {#fig-anatomia-ps}
+```{.tikz}
+%%| filename: anatomia-de-uma-linha-do-ps-aux
+%%| alt: Linha de saida do comando ps aux decomposta em suas onze colunas, com explicacao de cada campo incluindo VSZ RSS TTY e STAT
+\begin{tikzpicture}[
+    cel/.style={rounded corners=2pt,font=\scriptsize\ttfamily,thick,inner sep=3pt,minimum height=0.55cm,align=center},
+    ident/.style={cel,draw=manualblue,fill=manualblue!12},
+    pct/.style={cel,draw=manualred,fill=manualred!11},
+    mem/.style={cel,draw=manualyellow,fill=manualyellow!12},
+    est/.style={cel,draw=manualgreen,fill=manualgreen!13},
+    cmd/.style={cel,draw=manualgray,fill=manualgray!12},
+    fl/.style={manualgray,thin,-{Stealth[length=3pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left,text width=4.6cm}
+  ]
+  \node[ident]  (u)  at (0,0)    {kali};
+  \node[ident]  (p)  at (1.3,0)  {2201};
+  \node[pct] (c)  at (2.7,0)  {98.3};
+  \node[pct] (m)  at (4.0,0)  {4.7};
+  \node[mem] (v)  at (5.6,0)  {921648};
+  \node[mem] (r)  at (7.4,0)  {385204};
+  \node[cel,draw=manualgray,fill=white] (t) at (8.9,0) {pts/0};
+  \node[est] (s)  at (10.2,0) {R+};
+  \node[cmd] (k)  at (12.4,0) {ffmpeg -i ...};
+
+  \node[font=\scriptsize\bfseries,manualgray] at (0,0.55)    {USER};
+  \node[font=\scriptsize\bfseries,manualgray] at (1.3,0.55)  {PID};
+  \node[font=\scriptsize\bfseries,manualred]  at (2.7,0.55)  {\%CPU};
+  \node[font=\scriptsize\bfseries,manualred]  at (4.0,0.55)  {\%MEM};
+  \node[font=\scriptsize\bfseries,manualyellow] at (5.6,0.55) {VSZ};
+  \node[font=\scriptsize\bfseries,manualyellow] at (7.4,0.55) {RSS};
+  \node[font=\scriptsize\bfseries,manualgray] at (8.9,0.55)  {TTY};
+  \node[font=\scriptsize\bfseries,manualgreen] at (10.2,0.55) {STAT};
+  \node[font=\scriptsize\bfseries,manualgray] at (12.4,0.55) {COMMAND};
+
+  \node[nt] (nc) at (1.6,-1.9) {\textbf{\textcolor{manualred}{\%CPU}} é a \emph{média} desde o início do processo, não o valor instantâneo. Acima de 100\% significa mais de uma thread ocupando núcleos diferentes.};
+  \node[nt] (nv) at (7.0,-1.9) {\textbf{\textcolor{manualyellow}{VSZ}} é memória \emph{virtual} reservada, quase sempre inflada. \textbf{\textcolor{manualyellow}{RSS}} é o que está de fato na RAM --- o número que interessa.};
+  \node[nt] (ns) at (12.4,-1.9) {\textbf{\textcolor{manualgreen}{STAT}} traz o estado mais sufixos: \texttt{+} em primeiro plano, \texttt{s} líder de sessão, \texttt{l} multithread, \texttt{<} prioridade alta.};
+
+  \draw[fl] (c.south) -- (nc.north);
+  \draw[fl] (v.south) -- (nv.north);
+  \draw[fl] (s.south) -- (ns.north);
+\end{tikzpicture}
+```
+As colunas do `ps aux` e os três campos que mais geram leitura errada.
+:::
+
+Três armadilhas nessa saída merecem destaque.
+
+**`%CPU` não é instantâneo.** O `ps` calcula o percentual dividindo o tempo total de CPU consumido pelo tempo de vida do processo. Um processo que rodou a 100% por dez segundos e depois ficou uma hora ocioso aparece com `%CPU` baixíssimo. Para uso instantâneo, use `top` ou `htop`.
+
+**`VSZ` mente, `RSS` quase não.** O `VSZ` (*virtual size*) soma tudo que o processo mapeou no espaço de endereçamento, incluindo bibliotecas compartilhadas, regiões reservadas mas nunca tocadas e arquivos mapeados. Um processo Java com `VSZ` de 12 GB pode estar usando 400 MB de RAM. O `RSS` (*resident set size*) conta as páginas realmente presentes na memória física — porém **conta bibliotecas compartilhadas em todos os processos que as usam**, então somar o `RSS` de todos os processos dá um número maior que a RAM instalada. Para memória privada de verdade, o campo é `PSS`, disponível em `/proc/<PID>/smaps_rollup`.
+
+**`TTY` com `?` significa sem terminal.** É a marca de daemon: o processo não está associado a nenhum terminal, e portanto não recebe `SIGHUP` quando uma sessão fecha nem sinais de teclado (@sec-cap030).
+
+### Formato sob medida com `-o`
+
+O verdadeiro poder do `ps` está em escolher as colunas. A opção `-o` aceita uma lista de campos, e `--sort` ordena por qualquer um deles:
+
+```bash
+ps -eo pid,ppid,user,pcpu,pmem,rss,stat,etime,comm
+ps -eo pid,comm,pcpu --sort=-pcpu | head -11      # 10 maiores de CPU
+ps -eo pid,comm,rss --sort=-rss | head -11        # 10 maiores de memoria
+ps -eo pid,user,etime,cmd --sort=start_time | head
+ps -eo pid,nice,pri,comm --sort=nice               # prioridades
+```
+
+O sinal de menos em `--sort=-pcpu` inverte a ordem. Campos frequentes:
+
+| Campo | Significado |
+|---|---|
+| `pid`, `ppid`, `pgid`, `sid` | identificadores de processo, pai, grupo e sessão |
+| `user`, `ruser`, `euser` | dono efetivo, real |
+| `pcpu`, `pmem` | percentuais de CPU e memória |
+| `rss`, `vsz`, `sz` | memória residente, virtual |
+| `etime`, `etimes` | tempo de vida (formatado / em segundos) |
+| `time`, `cputime` | tempo de CPU acumulado |
+| `stat`, `state` | estado com e sem sufixos |
+| `nice`, `pri` | valor de gentileza e prioridade |
+| `comm`, `args`, `cmd` | nome curto, linha completa |
+| `tid`, `nlwp` | identificador de thread, número de threads |
+| `wchan` | função do kernel em que o processo dorme |
+
+: Campos úteis do `ps -o` {#tbl-campos-ps}
+
+O `wchan` é subestimado: quando um processo está travado em `D`, ele revela **em qual chamada de kernel** — `nfs_wait`, `blkdev_issue_flush`, `futex_wait` — o que aponta direto para a causa.
+
+Filtros de seleção evitam ter que passar tudo por `grep`:
+
+```bash
+ps -u kali            # do usuario kali
+ps -C sshd            # pelo nome do comando
+ps -p 1342,2201       # PIDs especificos
+ps --ppid 1342        # filhos de um PID
+ps -e --forest        # arvore em ASCII, alternativa ao pstree
+ps -eL                # inclui threads
+ps -eZ                # inclui contexto SELinux
+```
+
+## top: o filme
+
+O `top` redesenha a tela a cada três segundos por padrão. O cabeçalho, cinco linhas, é onde está o diagnóstico — a lista de processos abaixo é quase secundária.
+
+```text
+top - 10:07:52 up 2 days,  3:22,  2 users,  load average: 1.42, 0.98, 0.61
+Tarefas: 312 total,   2 executando, 310 dormindo,   0 parado,   1 zumbi
+%Cpu(s): 12,4 us,  3,1 sy,  0,0 ni, 78,2 id,  6,0 wa,  0,2 hi,  0,1 si,  0,0 st
+MiB Mem :   7852,3 total,    412,8 free,   3120,5 used,   4319,0 buff/cache
+MiB Swap:   2048,0 total,   2048,0 free,      0,0 used.   4210,7 avail Mem
+```
+
+::: {#fig-anatomia-top}
+```{.tikz}
+%%| filename: anatomia-do-cabecalho-do-top
+%%| alt: As cinco linhas do cabecalho do top explicadas: uptime e load average, contagem de tarefas por estado, percentuais de CPU por modo, e as linhas de memoria e swap
+\begin{tikzpicture}[
+    ln/.style={rounded corners=3pt,font=\scriptsize\ttfamily,thick,inner sep=5pt,text width=8.6cm,align=left},
+    l1/.style={ln,draw=manualblue,fill=manualblue!11},
+    l2/.style={ln,draw=manualgray,fill=manualgray!11},
+    l3/.style={ln,draw=manualred,fill=manualred!10},
+    l4/.style={ln,draw=manualgreen,fill=manualgreen!12},
+    l5/.style={ln,draw=manualyellow,fill=manualyellow!11},
+    nt/.style={font=\scriptsize,align=left,text width=5.6cm,manualgray},
+    fl/.style={manualgray,thin,-{Stealth[length=3pt]}}
+  ]
+  \node[l1] (a) at (0,0)     {top - 10:07:52 up 2 days, load average: 1.42, 0.98, 0.61};
+  \node[l2] (b) at (0,-1.05) {Tarefas: 312 total, 2 executando, 310 dormindo, 1 zumbi};
+  \node[l3] (c) at (0,-2.10) {\%Cpu(s): 12,4 us  3,1 sy  78,2 id  6,0 wa  0,0 st};
+  \node[l4] (d) at (0,-3.15) {MiB Mem: 7852 total, 412 free, 3120 used, 4319 buff/cache};
+  \node[l5] (e) at (0,-4.20) {MiB Swap: 2048 total, 2048 free, 0 used. 4210 avail Mem};
+
+  \node[nt] (na) at (10.6,0)     {\textbf{\textcolor{manualblue}{Load average}} de 1, 5 e 15 minutos: média de tarefas prontas \emph{ou} em espera de E/S. Compare com o número de núcleos.};
+  \node[nt] (nb) at (10.6,-1.05) {Contagem por estado. Zumbis persistentes indicam pai que não colhe filhos.};
+  \node[nt] (nc) at (10.6,-2.15) {\textbf{\textcolor{manualred}{us}} usuário, \textbf{\textcolor{manualred}{sy}} kernel, \textbf{\textcolor{manualred}{id}} ocioso, \textbf{\textcolor{manualred}{wa}} esperando disco, \textbf{\textcolor{manualred}{st}} roubado pelo hipervisor.};
+  \node[nt] (nd) at (10.6,-3.30) {\textbf{\textcolor{manualgreen}{buff/cache}} é memória usada como cache de disco: recuperável a qualquer momento. Olhe \emph{avail}, não \emph{free}.};
+  \node[nt] (ne) at (10.6,-4.45) {Swap em uso constante e crescente é o sinal de pressão real de memória.};
+
+  \draw[fl] (a.east) -- (na.west);
+  \draw[fl] (b.east) -- (nb.west);
+  \draw[fl] (c.east) -- (nc.west);
+  \draw[fl] (d.east) -- (nd.west);
+  \draw[fl] (e.east) -- (ne.west);
+\end{tikzpicture}
+```
+As cinco linhas do cabeçalho do `top` e o que cada uma responde.
+:::
+
+Os campos que mais enganam:
+
+**`wa` alto com `us` baixo** significa que a CPU está ociosa esperando disco. Adiantar nada trocar o processador: o gargalo é armazenamento. Combine com processos em estado `D` (@sec-cap027) para confirmar.
+
+**`st` (*steal time*)** só aparece em máquina virtual e mede o tempo em que a CPU virtual quis rodar mas o hipervisor deu o núcleo físico a outro hóspede. Valor consistentemente acima de alguns por cento numa VM de nuvem significa vizinho barulhento ou *overcommit* do provedor — problema que você não resolve de dentro.
+
+**`buff/cache` não é memória perdida.** O kernel usa toda RAM livre como cache de disco, porque RAM ociosa é desperdício. Esse espaço é devolvido instantaneamente quando um processo precisa. A coluna que responde "quanto ainda posso alocar?" é `avail Mem`, não `free` — tema aprofundado em @sec-cap032.
+
+### Teclas interativas
+
+O `top` é mais útil quando pilotado. As teclas essenciais:
+
+| Tecla | Efeito |
+|:---:|---|
+| `P` | ordena por uso de CPU (padrão) |
+| `M` | ordena por uso de memória |
+| `T` | ordena por tempo de CPU acumulado |
+| `1` | mostra cada núcleo em uma linha |
+| `H` | alterna exibição de threads |
+| `c` | alterna entre nome curto e linha de comando completa |
+| `V` | modo árvore (hierarquia de processos) |
+| `u` | filtra por usuário |
+| `o` | filtro por campo, por exemplo `%CPU>10` |
+| `k` | envia sinal a um PID (pergunta qual) |
+| `r` | altera o `nice` de um PID |
+| `d` | muda o intervalo de atualização |
+| `W` | grava a configuração atual em `~/.config/procps/toprc` |
+| `q` | sai |
+
+: Teclas interativas do `top` {#tbl-teclas-top}
+
+Em modo não interativo, o `top` serve para registro e para scripts:
+
+```bash
+top -b -n 1                       # uma leitura, modo batch
+top -b -n 1 | head -20            # so o cabecalho e os maiores
+top -b -n 5 -d 2 > carga.log      # 5 amostras a cada 2s, para arquivo
+top -b -n 1 -o %MEM | head -15    # ordenado por memoria
+top -p 2201 -b -n 3               # so um PID
+top -H -p 2201 -b -n 1            # threads de um PID
+```
+
+## htop: o top com interface
+
+O `htop` faz o mesmo trabalho com muito menos atrito: barras coloridas por núcleo, rolagem horizontal e vertical, seleção por mouse, e ações aplicadas a processos marcados. No Kali ele já vem instalado; em Debian mínimo, `sudo apt install htop`.
+
+O layout tem três partes: os medidores no topo (uma barra por núcleo, mais memória e swap), a lista de processos, e a barra de teclas de função no rodapé.
+
+| Tecla | Efeito |
+|:---:|---|
+| `F2` | *Setup*: escolher medidores, colunas, cores |
+| `F3` | busca incremental por nome |
+| `F4` | **filtro**: esconde tudo que não casa (mais útil que a busca) |
+| `F5` | modo árvore, com hierarquia de pais e filhos |
+| `F6` | escolhe a coluna de ordenação |
+| `F7` / `F8` | diminui / aumenta o `nice` do processo selecionado |
+| `F9` | envia sinal (menu com a lista de sinais) |
+| `Espaço` | marca o processo; ações passam a valer para todos os marcados |
+| `H` | mostra ou esconde threads de usuário |
+| `K` | mostra ou esconde threads de kernel |
+| `u` | filtra por usuário |
+| `l` | lista arquivos abertos do processo (chama `lsof`) |
+| `s` | rastreia chamadas de sistema (chama `strace`) |
+
+: Teclas do `htop` {#tbl-teclas-htop}
+
+As barras de núcleo do `htop` são coloridas por tipo de uso, e essa leitura é rápida: **azul** é processo com `nice` positivo, **verde** é usuário normal, **vermelho** é kernel, **laranja** é E/S. Uma barra majoritariamente vermelha aponta para carga de chamadas de sistema — muita E/S de rede, muito `fork`, ou um driver problemático.
+
+Uma sutileza que confunde: por padrão o `htop` conta a memória de forma diferente do `free`. A barra de memória mostra em verde a memória usada por processos, em azul os buffers e em amarelo o cache — separando o que o `top` agrupa em `buff/cache`.
+
+### Alternativas modernas
+
+```bash
+sudo apt install btop glances atop sysstat
+```
+
+- **`btop`**: sucessor visual do `htop`, com gráficos históricos de CPU, memória, disco e rede na mesma tela. Excelente para acompanhar, mais pesado para rodar em servidor remoto.
+- **`glances`**: painel único com CPU, memória, disco, rede, sensores e contêineres; tem modo cliente-servidor (`glances -s` / `glances -c host`) e exportação para vários formatos.
+- **`atop`**: o diferencial é o **registro histórico**. Com o serviço `atop` ativo, ele grava amostras periódicas e permite voltar no tempo (`atop -r /var/log/atop/atop_20260801`) para investigar um pico que já passou — capacidade que nenhuma das outras tem.
+- **`pidstat`** (pacote `sysstat`): estatísticas por processo ao longo do tempo, ótimo para script. `pidstat -u -p 2201 2 5` amostra CPU do PID a cada 2 segundos, cinco vezes.
+
+E, para acompanhar qualquer comando repetidamente sem escrever laço:
+
+```bash
+watch -n 2 'ps -eo pid,comm,pcpu --sort=-pcpu | head -8'
+watch -d -n 1 'free -h'          # -d destaca o que mudou
+```
+
+::: {.callout-tip}
+## Qual usar, e quando
+
+Investigação interativa na sua máquina: `htop`. Servidor remoto por SSH, sem instalar nada: `top`. Coleta para script, log ou comparação: `ps -eo ... --sort=...` ou `pidstat`. Investigar um pico que já passou: `atop -r`. E, para "quem apareceu depois que aquilo aconteceu", comparar duas saídas de `ps` com `diff` costuma ser mais rápido do que qualquer ferramenta gráfica.
+:::
+
+## 🐉 No Kali
+
+- **Num sistema possivelmente comprometido, não confie no `ps`.** Um *rootkit* de espaço de usuário substitui o binário do `ps` por uma versão que esconde certos PIDs; um de kernel intercepta a leitura de `/proc`. A verificação clássica é comparar fontes independentes: liste os PIDs por `ps` e por `ls /proc | grep '^[0-9]'` e veja se batem. O `unhide` (`sudo apt install unhide`) automatiza várias dessas comparações, inclusive por força bruta sobre o espaço de PIDs.
+- **`ps` é a única fonte de comandos que já terminaram — e ela é volátil.** Comandos disparados por `cron` ou por serviços vivem poucos milissegundos, e um `ps` manual nunca os pega. O `pspy` faz *polling* agressivo de `/proc` justamente para capturá-los, revelando credenciais em linha de comando e tarefas agendadas de root. Ferramenta de enumeração em teste autorizado; em sistema de terceiros sem contrato, é crime (Lei 12.737/2012).
+- **Ferramentas do Kali que rodam por horas pedem acompanhamento em painel separado.** Um `hashcat`, um `gobuster` ou um `nmap` de faixa grande devem ser observados num painel do `tmux` (@sec-cap031) rodando `htop` ou `watch`. Vale filtrar com `F4` pelo nome da ferramenta para não perder de vista.
+- **`RSS` alto é normal em ferramenta de cracking e não indica vazamento.** `hashcat` e `john` carregam listas e tabelas inteiras na RAM de propósito. O sinal de problema numa VM do Kali é o **swap crescendo**, não o `RSS` grande. Observe a linha de swap do `top`, não a de memória usada.
+- **Contêineres e `chroot` distorcem o que você vê.** Dentro de um contêiner, `ps` só enxerga os processos do próprio *namespace* de PID, e os números são renumerados a partir de 1. De fora, os mesmos processos aparecem com outros PIDs. Ao investigar um alvo em contêiner, `ps -eo pid,comm` no hospedeiro e dentro do contêiner dão listas que não se correspondem diretamente — o mapeamento está em `/proc/<PID>/status`, campo `NSpid`.
+- **Gravar a saída faz parte do relatório.** Num engajamento, `ps auxf > evidencias/ps-$(date +%F-%H%M).txt` antes e depois de cada ação documenta o que mudou no alvo. É higiene de teste e material de relatório, e evita a discussão de "o serviço já estava caído".
+
+> **Nota sobre a família RHEL.** O `ps`, o `top` e o `htop` são os mesmos (pacotes `procps-ng` e `htop`, este último via EPEL em versões mais antigas). A diferença relevante é o `ps -eZ` e o `ps auxZ`, que no RHEL trazem o contexto SELinux de cada processo — informação que muda o diagnóstico de "por que este serviço não lê este arquivo". O `sysstat` (com `sar`) costuma vir configurado e ativo por padrão, oferecendo o histórico que no Debian é preciso habilitar em `/etc/default/sysstat`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Ele gera carga artificial de CPU e de E/S de propósito; nada disso persiste após o passo final.
+
+1. **Compare as três sintaxes.**
+
+   ```bash
+   ps aux | head -5
+   ps -ef | head -5
+   ps -eo pid,ppid,user,stat,comm | head -5
+   ```
+
+   Esperado: o mesmo conjunto de processos com colunas diferentes. Note que `ps -ef` traz `PPID` e `ps aux` traz `%CPU` e `%MEM`.
+
+2. **Ordene por consumo.**
+
+   ```bash
+   ps -eo pid,comm,pcpu --sort=-pcpu | head -8
+   ps -eo pid,comm,rss --sort=-rss | head -8
+   ```
+
+   Esperado: as duas listas raramente coincidem. Quem consome CPU e quem consome memória costumam ser processos diferentes.
+
+3. **Veja a diferença entre `VSZ` e `RSS`.**
+
+   ```bash
+   ps -eo pid,comm,vsz,rss --sort=-vsz | head -6
+   PID=$(pgrep -n NetworkManager)
+   grep -E 'VmSize|VmRSS' /proc/$PID/status
+   grep -i pss /proc/$PID/smaps_rollup 2>/dev/null | head -3
+   ```
+
+   Esperado: `VmSize` (o `VSZ`) é várias vezes maior que `VmRSS`. O `Pss` fica entre os dois: é o `RSS` com as bibliotecas compartilhadas rateadas.
+
+4. **Gere carga de CPU e observe.**
+
+   ```bash
+   for i in 1 2 3; do (while :; do :; done) & done
+   jobs
+   ps -eo pid,comm,pcpu,stat --sort=-pcpu | head -6
+   uptime
+   ```
+
+   Esperado: três processos `bash` em estado `R` com `%CPU` subindo, e o load average crescendo em direção a 3 nos próximos minutos.
+
+5. **Acompanhe pelo `top` em modo batch.**
+
+   ```bash
+   top -b -n 1 | head -12
+   top -b -n 3 -d 1 | grep '^%Cpu'
+   ```
+
+   Esperado: a linha `%Cpu(s)` mostra `us` alto e `id` próximo de zero enquanto os laços rodam — carga de espaço de usuário, sem `sy` nem `wa`.
+
+6. **Encerre a carga e confirme a queda.**
+
+   ```bash
+   kill %1 %2 %3
+   sleep 5
+   top -b -n 1 | grep '^%Cpu'
+   uptime
+   ```
+
+   Esperado: `id` volta para perto de 100%. O load average cai devagar — ele é uma média móvel, e leva minutos para refletir a mudança.
+
+7. **Gere carga de E/S e veja o `wa`.**
+
+   ```bash
+   dd if=/dev/zero of=/tmp/lab028.img bs=1M count=1500 oflag=direct &
+   sleep 2
+   top -b -n 2 -d 1 | grep '^%Cpu'
+   ps -eo pid,comm,stat,wchan --sort=-pcpu | head -6
+   wait
+   ```
+
+   Esperado: `wa` sobe enquanto `us` permanece baixo, e o `dd` aparece alternando entre `R` e `D`, com `wchan` apontando para uma função de bloco do kernel. É o perfil de gargalo de disco.
+
+   ::: {.callout-warning}
+   O `dd` grava em `/tmp/lab028.img`, um arquivo comum. Nunca aponte `of=` para um dispositivo (`/dev/sda`, `/dev/nvme0n1`): isso sobrescreve o disco sem confirmação e destrói o sistema. Confira o caminho antes de dar Enter.
+   :::
+
+8. **Use `-o` para montar um painel próprio.**
+
+   ```bash
+   ps -eo pid,user,nice,pri,nlwp,rss,etime,stat,comm --sort=-rss | head -10
+   ```
+
+   Esperado: uma tabela com número de threads (`nlwp`), tempo de vida (`etime`) e prioridade lado a lado — muito mais informativa que `ps aux` para diagnóstico.
+
+9. **Explore o `htop` de verdade.**
+
+   ```bash
+   htop
+   ```
+
+   Dentro dele: `F5` para modo árvore, `F4` e digite `bash` para filtrar, `F6` e escolha `PERCENT_MEM`, `H` para alternar threads, `u` para filtrar por usuário, `F10` para sair.
+
+   Esperado: o modo árvore reproduz o `pstree` do capítulo anterior; o filtro esvazia a lista para só o que casa.
+
+10. **Compare o `ps` com o `/proc` diretamente.**
+
+    ```bash
+    ps -e --no-headers -o pid | tr -d ' ' | sort -n > /tmp/ps.txt
+    ls /proc | grep -E '^[0-9]+$' | sort -n > /tmp/proc.txt
+    diff /tmp/ps.txt /tmp/proc.txt | head
+    ```
+
+    Esperado: diferenças mínimas, causadas por processos que nasceram ou morreram entre os dois comandos. Divergência grande e reprodutível é o sinal que a verificação anti-*rootkit* procura.
+
+11. **Registre um histórico com `watch` e `pidstat`.**
+
+    ```bash
+    pidstat -u 1 3 2>/dev/null || echo "instale: sudo apt install sysstat"
+    watch -n 1 -d 'ps -eo comm,pcpu --sort=-pcpu | head -5'
+    ```
+
+    Esperado: o `pidstat` imprime três amostras por processo ativo; o `watch -d` destaca em vídeo reverso os números que mudaram entre atualizações. Saia com `Ctrl-C`.
+
+12. **Limpe.**
+
+    ```bash
+    rm -f /tmp/lab028.img /tmp/ps.txt /tmp/proc.txt
+    jobs
+    ps -eo pid,comm,pcpu --sort=-pcpu | head -4
+    ```
+
+    Esperado: nenhum job pendente, nenhum arquivo de teste, e a máquina de volta ao repouso.
+
+## Resumo
+
+- **`ps` fotografa, `top` filma, `htop` filma com interface.** Escolha por finalidade: script e registro pedem `ps`; investigação interativa pede `htop`; servidor remoto sem instalar nada pede `top`.
+- **`ps aux` (BSD) e `ps -ef` (UNIX) são as duas formas canônicas**; `ps -aux` funciona por acidente. As três sintaxes convivem por herança histórica.
+- **`%CPU` do `ps` é a média desde o início do processo**, não o valor instantâneo — para instantâneo, use `top` ou `htop`.
+- **`VSZ` é memória virtual reservada e quase sempre inflada; `RSS` é o que está na RAM**, mas conta bibliotecas compartilhadas em cada processo. Para memória privada real, `Pss` em `/proc/<PID>/smaps_rollup`.
+- **No cabeçalho do `top`, `wa` alto com `us` baixo indica gargalo de disco**, e `st` alto indica CPU roubada pelo hipervisor. `buff/cache` não é memória perdida — olhe `avail Mem`, não `free`.
+- **`ps -eo campo,campo --sort=-campo` monta o painel exato que você precisa**, e é preferível a `ps aux | grep` em qualquer script.
+- **`wchan` revela em qual função de kernel um processo travado em `D` está dormindo** — o caminho mais curto para a causa raiz.
+- **`atop` é a única das ferramentas que guarda histórico**, permitindo investigar um pico depois que ele passou; `pidstat` e `watch` cobrem amostragem periódica.

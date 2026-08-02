@@ -51,12 +51,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 5 — Processos e Controle de Tarefas
 
-- [ ] **cap 027** - O que é um processo: PID, estados e a árvore de processos - `vol05/cap027-o-que-e-um-processo-pid-estados-e-a-arvore-de.qmd`
-- [ ] **cap 028** - Monitoramento: ps, top e htop - `vol05/cap028-monitoramento-ps-top-e-htop.qmd`
-- [ ] **cap 029** - Sinais e controle: kill, killall, nice e prioridades - `vol05/cap029-sinais-e-controle-kill-killall-nice-e.qmd`
-- [ ] **cap 030** - Jobs, primeiro e segundo plano, nohup e disown - `vol05/cap030-jobs-primeiro-e-segundo-plano-nohup-e-disown.qmd`
-- [ ] **cap 031** - Multiplexação de terminal: tmux e screen - `vol05/cap031-multiplexacao-de-terminal-tmux-e-screen.qmd`
-- [ ] **cap 032** - Recursos do sistema: memória, CPU, uptime e limites - `vol05/cap032-recursos-do-sistema-memoria-cpu-uptime-e.qmd`
+- [x] **cap 027** - O que é um processo: PID, estados e a árvore de processos - `vol05/cap027-o-que-e-um-processo-pid-estados-e-a-arvore-de.qmd`
+- [x] **cap 028** - Monitoramento: ps, top e htop - `vol05/cap028-monitoramento-ps-top-e-htop.qmd`
+- [x] **cap 029** - Sinais e controle: kill, killall, nice e prioridades - `vol05/cap029-sinais-e-controle-kill-killall-nice-e.qmd`
+- [x] **cap 030** - Jobs, primeiro e segundo plano, nohup e disown - `vol05/cap030-jobs-primeiro-e-segundo-plano-nohup-e-disown.qmd`
+- [x] **cap 031** - Multiplexação de terminal: tmux e screen - `vol05/cap031-multiplexacao-de-terminal-tmux-e-screen.qmd`
+- [x] **cap 032** - Recursos do sistema: memória, CPU, uptime e limites - `vol05/cap032-recursos-do-sistema-memoria-cpu-uptime-e.qmd`
 
 ### Volume 6 — Gerenciamento de Pacotes
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (26 concluidos).
+**Total:** 103 capitulos em 16 volumes (32 concluidos).
 

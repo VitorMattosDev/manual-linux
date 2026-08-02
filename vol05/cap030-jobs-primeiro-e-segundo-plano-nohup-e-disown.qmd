@@ -1,3 +1,423 @@
 # Jobs, primeiro e segundo plano, nohup e disown {#sec-cap030}
 
-*(em elaboracao)*
+Você entra por SSH num servidor, dispara uma varredura que vai levar seis horas, e vai almoçar. O notebook hiberna. A conexão cai. Ao voltar, a varredura não existe mais — nem o processo, nem o arquivo de saída pela metade, nem a sessão. Seis horas perdidas por causa de um sinal que você nem sabia que existia.
+
+O mecanismo por trás disso é o **controle de jobs**, e ele não é uma esquisitice: é a forma como o Unix organiza a relação entre um terminal e os processos que rodam nele. Entender essa relação resolve dois problemas de uma vez — colocar um comando em segundo plano sem perder o terminal, e fazer um processo sobreviver ao fim da sessão. Este capítulo cobre os dois, mais a solução definitiva que o próximo capítulo detalha.
+
+## Job não é processo
+
+Quando você digita um comando, o shell não gerencia processos individuais: ele gerencia **jobs**. Um job é o *pipeline inteiro* que você digitou. Isto é um job só, com três processos:
+
+```bash
+grep erro /var/log/syslog | sort | uniq -c &
+```
+
+O shell numera os jobs a partir de 1, e essa numeração é local ao shell — dois terminais têm jobs `%1` independentes. É por isso que `jobs`, `fg` e `bg` não funcionam entre terminais diferentes: são comandos internos do shell, operando sobre a tabela dele.
+
+Por baixo, cada job corresponde a um **grupo de processos** (*process group*), e é para o grupo que o terminal envia sinais. Isso explica por que `Ctrl-C` num pipeline interrompe todos os estágios simultaneamente, e não só o último.
+
+::: {#fig-sessao-grupos}
+```{.tikz}
+%%| filename: sessao-terminal-e-grupos-de-processo
+%%| alt: Modelo de sessao do Unix com o terminal de controle, o shell como lider de sessao, um grupo de processos em primeiro plano que recebe os sinais do teclado e dois grupos em segundo plano que nao recebem
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt},
+    term/.style={bx,draw=manualblue,fill=manualblue!12,text width=2.9cm},
+    lider/.style={bx,draw=manualgray,fill=manualgray!13,text width=2.9cm},
+    fgg/.style={bx,draw=manualgreen,fill=manualgreen!13,text width=3.4cm},
+    bgg/.style={bx,draw=manualyellow,fill=manualyellow!12,text width=3.4cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    sig/.style={manualred,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[term]  (t) at (0,0)      {terminal de controle\\\texttt{/dev/pts/0}};
+  \node[lider] (s) at (4.4,0)    {\texttt{bash} (líder da sessão)\\PID = SID = 1342};
+
+  \node[fgg] (fg) at (9.4,1.6)  {grupo em \textbf{primeiro plano}\\\texttt{vim relatorio.txt}};
+  \node[bgg] (b1) at (9.4,-0.3) {grupo em segundo plano \texttt{\%1}\\\texttt{tar czf ... \&}};
+  \node[bgg] (b2) at (9.4,-2.0) {grupo em segundo plano \texttt{\%2}\\\texttt{nmap ... \&}};
+
+  \draw[fl] (t) -- (s);
+  \draw[fl] (s.east) to[out=0,in=180] (fg.west);
+  \draw[fl] (s.east) to[out=0,in=180] (b1.west);
+  \draw[fl] (s.east) to[out=0,in=180] (b2.west);
+
+  \draw[sig] (t.north) to[out=90,in=180] node[lb,manualred,above,pos=0.7]{Ctrl-C, Ctrl-Z} (fg.north west);
+
+  \node[nt,text width=4.2cm,manualgreen] at (14.0,1.6)  {Só este grupo recebe sinais do teclado e pode ler do terminal.};
+  \node[nt,text width=4.2cm,manualyellow] at (14.0,-1.1) {Estes escrevem no terminal, mas ler dele os para com \texttt{SIGTTIN}.};
+  \node[nt,text width=13.0cm] at (5.6,-3.6) {Ao fechar o terminal, o kernel envia \texttt{SIGHUP} ao líder da sessão; o \texttt{bash} repassa a todos os jobs. É essa cadeia que \texttt{nohup}, \texttt{disown} e \texttt{setsid} interrompem, cada um em um ponto diferente.};
+\end{tikzpicture}
+```
+Sessão, terminal de controle e grupos de processo: quem recebe os sinais do teclado.
+:::
+
+Só um grupo por vez é o **grupo em primeiro plano**: ele recebe `Ctrl-C`, `Ctrl-Z` e `Ctrl-\`, e é o único que pode ler do teclado. Os demais rodam em segundo plano. Se um processo em segundo plano tenta ler do terminal, o kernel o para com `SIGTTIN` — é a causa daquele "job parado misteriosamente" que aparece como `Stopped (tty input)`.
+
+## Colocando em segundo plano
+
+O básico são três operações:
+
+```bash
+tar czf backup.tar.gz /dados &     # inicia direto em segundo plano
+                                    # Ctrl-Z: para o job em primeiro plano
+bg                                  # retoma o job parado, em segundo plano
+fg                                  # traz o job de volta ao primeiro plano
+```
+
+O `&` no fim da linha inicia o comando em segundo plano e devolve o prompt imediatamente. O shell imprime o número do job e o PID:
+
+```text
+[1] 2847
+```
+
+O `Ctrl-Z` envia `SIGTSTP` ao grupo em primeiro plano, congelando-o (estado `T`, @sec-cap027). Isso não é encerramento: o processo fica parado, com toda a memória intacta, esperando `SIGCONT`. É o que `bg` e `fg` fazem, cada um deixando o processo num plano diferente.
+
+O comando `jobs` lista a tabela do shell:
+
+```bash
+jobs           # lista com numero, estado e comando
+jobs -l        # inclui o PID
+jobs -p        # so os PIDs
+jobs -r        # so os que estao rodando
+jobs -s        # so os parados
+```
+
+```text
+[1]-  Running                 tar czf backup.tar.gz /dados &
+[2]+  Stopped                 vim relatorio.txt
+[3]   Done                    grep erro /var/log/syslog
+```
+
+Os sufixos importam: `+` marca o job **corrente** (o alvo de `fg` e `bg` sem argumento), e `-` marca o anterior. Os especificadores aceitos por `fg`, `bg`, `kill` e `wait`:
+
+| Especificador | Significado |
+|---|---|
+| `%1`, `%2` | pelo número do job |
+| `%+` ou `%%` | o job corrente |
+| `%-` | o job anterior |
+| `%vim` | o job cujo comando **começa** com `vim` |
+| `%?relatorio` | o job cujo comando **contém** `relatorio` |
+
+: Como referenciar um job {#tbl-especificadores-job}
+
+```bash
+fg %1                  # traz o job 1 para o primeiro plano
+bg %2                  # retoma o job 2 em segundo plano
+kill %3                # envia SIGTERM ao job 3 (nao ao PID 3!)
+kill -9 %vim           # pelo prefixo do comando
+wait %1                # espera o job 1 terminar
+```
+
+::: {.callout-important}
+## `kill %1` e `kill 1` são coisas muito diferentes
+
+Com `%`, o argumento é um número de job do shell. Sem `%`, é um PID — e o PID 1 é o `systemd`. Como root, `kill -9 1` é o caminho mais curto para um sistema que só volta com reset físico. O `%` não é decoração.
+:::
+
+::: {#fig-estados-job}
+```{.tikz}
+%%| filename: estados-de-um-job-no-shell
+%%| alt: Diagrama de estados de um job entre primeiro plano, segundo plano e parado, com as transicoes por E comercial, Ctrl-Z, fg e bg, e a saida por termino ou sinal
+\begin{tikzpicture}[
+    st/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=5pt,text width=3.0cm,minimum height=1.1cm},
+    fgs/.style={st,draw=manualgreen,fill=manualgreen!13},
+    bgs/.style={st,draw=manualblue,fill=manualblue!12},
+    stp/.style={st,draw=manualyellow,fill=manualyellow!13},
+    fim/.style={st,draw=manualgray,fill=manualgray!13},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    lb/.style={font=\scriptsize,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[fgs] (F) at (0,0)     {\textbf{primeiro plano}\\recebe o teclado};
+  \node[bgs] (B) at (6.4,0)   {\textbf{segundo plano}\\prompt liberado};
+  \node[stp] (S) at (3.2,-3.6) {\textbf{parado}\\estado \texttt{T}, memória intacta};
+  \node[fim] (D) at (11.6,0)  {\textbf{terminado}\\\texttt{Done} ou \texttt{Terminated}};
+
+  \draw[fl] (F) to[bend left=14] node[lb,above,pos=0.5]{\texttt{\&} na linha} (B);
+  \draw[fl] (B) to[bend left=14] node[lb,below,pos=0.5]{\texttt{fg \%n}} (F);
+  \draw[fl] (F) to[bend right=28] node[lb,sloped,above,pos=0.5]{Ctrl-Z} (S);
+  \draw[fl] (S) to[bend right=28] node[lb,sloped,above,pos=0.5]{\texttt{fg}} (F);
+  \draw[fl] (S) to[bend right=28] node[lb,sloped,above,pos=0.5]{\texttt{bg}} (B);
+  \draw[fl] (B) -- node[lb,above,pos=0.5]{\texttt{exit} ou sinal} (D);
+
+  \node[nt,text width=13.0cm] at (4.4,-5.6) {Só o job em primeiro plano lê do teclado e recebe \texttt{Ctrl-C}. Um job em segundo plano que tenta ler é parado pelo kernel com \texttt{SIGTTIN}, e aparece como \texttt{Stopped (tty input)} --- traga-o com \texttt{fg}, responda o que ele pede, e devolva com \texttt{Ctrl-Z} e \texttt{bg}.};
+\end{tikzpicture}
+```
+Transições entre os estados de um job e os comandos que as provocam.
+:::
+
+Duas variáveis fecham o conjunto. A `$!` guarda o PID do último processo colocado em segundo plano; o comando interno `wait` bloqueia até que jobs terminem:
+
+```bash
+demorado.sh &
+PID=$!
+echo "rodando como $PID"
+wait "$PID"                  # espera so esse
+echo "codigo de saida: $?"
+
+tarefa1 & tarefa2 & tarefa3 &
+wait                         # espera todos os jobs do shell
+echo "todas terminaram"
+```
+
+Esse padrão — disparar várias tarefas com `&` e sincronizar com `wait` — é a forma mais simples de paralelismo em shell, tema aprofundado no Volume 12.
+
+## Por que o processo morre quando o terminal fecha
+
+Volte a @fig-sessao-grupos. Quando o terminal desaparece — você fecha a janela, a conexão SSH cai, o `pty` é destruído —, o kernel envia `SIGHUP` ao **líder da sessão**, que é o shell. O shell, por sua vez, repassa `SIGHUP` a todos os seus jobs antes de sair. A ação padrão do `SIGHUP` é terminar. Fim da varredura de seis horas.
+
+Duas observações mudam o quadro:
+
+**Sair com `exit` é diferente de cair.** Quando você digita `exit` num Bash interativo, ele **não** envia `SIGHUP` aos jobs em execução por padrão — o comportamento é controlado pela opção `huponexit`, desligada no Bash. Ele apenas avisa "There are running jobs" na primeira tentativa. A queda abrupta da conexão é outra história: aí o `SIGHUP` vem do kernel e é repassado.
+
+```bash
+shopt huponexit             # consulta (padrao: off)
+shopt -s huponexit          # liga: exit passa a matar os jobs
+```
+
+**O `zsh`, padrão do Kali, se comporta diferente.** Ele avisa sobre jobs pendentes e, dependendo da configuração, envia `SIGHUP` na saída. Não conte com o comportamento do Bash ao trabalhar no shell padrão do Kali.
+
+## nohup, disown e setsid
+
+Três ferramentas resolvem o problema, atacando pontos distintos da cadeia.
+
+**`nohup`** — executa o comando com `SIGHUP` **ignorado** desde o início, e redireciona a saída (que não teria para onde ir depois) para `nohup.out` no diretório atual, ou para `$HOME/nohup.out` se o diretório não for gravável.
+
+```bash
+nohup ./varredura.sh &
+nohup ./varredura.sh > saida.log 2>&1 &     # redirecionamento explicito, melhor
+nohup nice -n 15 ./varredura.sh > saida.log 2>&1 &
+```
+
+Redirecionar explicitamente é a prática correta: `nohup.out` acumula, colide entre execuções e não diz nada sobre o que contém.
+
+**`disown`** — comando interno do shell que **remove o job da tabela**. O shell deixa de conhecê-lo e, portanto, não lhe envia `SIGHUP` ao sair. É a solução para quem já iniciou o comando e só depois percebeu o problema:
+
+```bash
+./varredura.sh &            # ops, esqueci o nohup
+disown %1                   # remove o job 1 da tabela do shell
+disown -h %1                # mantem na tabela, mas marca para nao receber SIGHUP
+disown -a                   # todos os jobs
+disown -r                   # so os que estao rodando
+```
+
+O `disown` tem um limite: ele não resolve a saída. Se o comando ainda escreve no terminal, ele receberá `SIGTTOU` ou erro de escrita quando o terminal sumir. Para o caso comum — comando já rodando, saída já redirecionada ou irrelevante — funciona bem. Para um comando já em execução **sem** redirecionamento, o resgate completo é `Ctrl-Z`, depois `bg`, depois `disown -h`, aceitando que a saída se perderá.
+
+**`setsid`** — cria uma **nova sessão**, sem terminal de controle. O processo deixa de ter qualquer vínculo com o terminal desde o primeiro instante: não recebe `SIGHUP`, não é filho do shell na hierarquia de sessão, e aparece com `TTY` igual a `?` no `ps`. É o mecanismo que daemons usam para se desassociar.
+
+```bash
+setsid ./varredura.sh > saida.log 2>&1 < /dev/null &
+setsid --fork ./varredura.sh > saida.log 2>&1
+```
+
+E existe a alternativa moderna, para quem trabalha com systemd:
+
+```bash
+systemd-run --user --scope ./varredura.sh          # roda num escopo proprio
+systemd-run --user --unit=varredura ./varredura.sh # unidade transitoria nomeada
+systemctl --user status varredura
+journalctl --user -u varredura -f                  # logs centralizados
+```
+
+A vantagem é que o processo passa a ser um serviço de verdade, com log no `journald`, reinício configurável e controle por `systemctl` — assunto do Volume 7.
+
+| Ferramenta | Momento de uso | Sobrevive ao `SIGHUP` | Saída |
+|---|---|:---:|---|
+| `nohup cmd &` | antes de iniciar | sim (sinal ignorado) | `nohup.out` ou o que você redirecionar |
+| `disown %n` | depois de iniciar | sim (job removido da tabela) | continua no terminal — se perde |
+| `setsid cmd` | antes de iniciar | sim (sem terminal de controle) | precisa de redirecionamento |
+| `systemd-run --user` | antes de iniciar | sim (serviço próprio) | `journald` |
+| `tmux` / `screen` | antes de iniciar | sim (terminal virtual persiste) | **preservada e reconectável** |
+
+: Como desacoplar um processo do terminal {#tbl-desacoplar}
+
+A última linha é a mais importante, e o motivo de existir o próximo capítulo. `nohup` e `disown` mantêm o processo **vivo**, mas você perde a interação: não dá para ver o progresso, responder a um prompt, nem retomar a sessão. O `tmux` mantém o terminal inteiro vivo do outro lado, e você reconecta como se nunca tivesse saído (@sec-cap031). Para qualquer tarefa longa e interativa, é a escolha certa; `nohup` fica para o caso em que a saída vai para arquivo e não há nada a acompanhar.
+
+## Reconectando ao que ficou para trás
+
+Se um processo ficou órfão sem terminal, ainda dá para acompanhá-lo, mesmo sem `tmux`. Duas técnicas:
+
+```bash
+tail -f /proc/2847/fd/1              # le o que o processo escreve no stdout
+strace -p 2847 -e trace=write -s 200 # observa as chamadas de escrita
+```
+
+E, para casos extremos, o `reptyr` (`sudo apt install reptyr`) **rouba** um processo para o terminal atual, reassociando-o:
+
+```bash
+reptyr 2847
+```
+
+Ele funciona bem para processos simples e falha em programas que criaram múltiplos processos ou usam recursos incomuns do terminal. É recurso de emergência, não substituto de planejar com `tmux`.
+
+## 🐉 No Kali
+
+- **Toda ferramenta longa merece `tmux`, não `nohup`.** Um `nmap` de faixa grande, um `gobuster` sobre lista extensa, um `hashcat` de horas: se a conexão cair no meio, você quer reconectar e **ver a tela**, não descobrir pelo arquivo de log em que ponto estava. O `nohup` só resolve metade do problema; a outra metade é a razão de o próximo capítulo existir.
+- **`nmap` merece cuidado extra: ele grava estado.** Rodar com `--resume` depois de uma interrupção exige que a varredura tenha sido iniciada com saída em arquivo (`-oA` ou `-oN`). `nmap -oA scan alvo` em segundo plano, com a saída preservada, é o que torna a retomada possível. Sem isso, uma interrupção significa recomeçar.
+- **Nunca deixe um `netcat` ou um *handler* preso ao terminal em engajamento.** Um *listener* de `metasploit` ou um `nc -lvnp` morre com a sessão SSH e derruba o que estiver conectado nele. `tmux` para trabalho interativo; `systemd-run --user --unit=` quando o objetivo é um serviço que precisa sobreviver a logout e, eventualmente, a reboot.
+- **Processos com `TTY` igual a `?` são a assinatura do desacoplamento.** Ao inspecionar um alvo autorizado, `ps -eo pid,ppid,tty,comm | awk '$3=="?"'` lista tudo que não tem terminal: serviços legítimos, mas também qualquer coisa que alguém deixou rodando com `setsid` ou `nohup`. Combinado com PPID igual a 1 e um binário fora dos caminhos padrão, é um dos indicadores mais diretos de persistência.
+- **`nohup.out` no diretório de trabalho é vestígio.** Num teste autorizado, um `nohup.out` esquecido no diretório do alvo é artefato deixado para trás — e conteúdo potencialmente sensível legível por outros. Redirecione sempre para caminho escolhido, dentro da sua área de trabalho, e inclua a limpeza no roteiro de encerramento.
+- **`jobs` não atravessa terminais, e isso confunde em trabalho paralelo.** Ao usar vários painéis do `tmux`, cada painel tem sua própria tabela de jobs. Um `%1` num painel não é o mesmo `%1` no outro. Para agir sobre processo de outro painel, use PID com `pgrep`/`pkill`, nunca especificador de job.
+
+> **Nota sobre a família RHEL.** O controle de jobs é do shell e é idêntico. A diferença de contexto é cultural: no RHEL, a resposta padrão para "preciso que isso sobreviva ao logout" é `systemd-run` ou uma unidade `.service`, não `nohup` — a integração com `journald` e com o modelo de cgroups do systemd é considerada o caminho suportado. O `tmux` está nos repositórios base; o `screen` migrou para EPEL em versões recentes, uma inversão em relação ao Debian.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Vale rodar os passos 8 a 11 numa sessão SSH separada, para observar o efeito real da queda de conexão.
+
+1. **Coloque jobs em segundo plano e liste.**
+
+   ```bash
+   sleep 300 &
+   sleep 400 &
+   sleep 500 &
+   jobs
+   jobs -l
+   ```
+
+   Esperado: três jobs numerados de 1 a 3, com `+` no mais recente e `-` no anterior. O `-l` acrescenta o PID de cada um.
+
+2. **Use os especificadores.**
+
+   ```bash
+   jobs %2
+   jobs %+
+   jobs %-
+   jobs %?400
+   ```
+
+   Esperado: cada forma seleciona exatamente um job. O `%?400` casa pelo trecho do comando, útil quando você não lembra o número.
+
+3. **Pare e retome.**
+
+   ```bash
+   sleep 900          # deixe rodando e tecle Ctrl-Z
+   jobs
+   bg %4
+   jobs
+   fg %4              # volta ao primeiro plano; Ctrl-Z de novo para liberar
+   ```
+
+   Esperado: depois do `Ctrl-Z` o job aparece como `Stopped`; o `bg` o move para `Running`; o `fg` o traz de volta e prende o terminal.
+
+4. **Confirme que o job parado não consome CPU.**
+
+   ```bash
+   ps -o pid,stat,pcpu,comm -p $(jobs -p) 2>/dev/null
+   ```
+
+   Esperado: o job parado aparece com `STAT` iniciado em `T` — congelado, memória preservada, zero CPU.
+
+5. **Veja o grupo de processos de um pipeline.**
+
+   ```bash
+   sleep 700 | cat | cat &
+   ps -eo pid,pgid,stat,comm | grep -E 'sleep|cat' | head
+   ```
+
+   Esperado: os três processos compartilham o mesmo `PGID` — um único job. É esse grupo que recebe `Ctrl-C` de uma vez.
+
+6. **Use `$!` e `wait`.**
+
+   ```bash
+   ( sleep 3; exit 42 ) &
+   PID=$!
+   echo "PID guardado: $PID"
+   wait "$PID"
+   echo "codigo de saida: $?"
+   ```
+
+   Esperado: o `wait` bloqueia por três segundos e devolve `42` — o código de saída real do job, recuperável mesmo em segundo plano.
+
+7. **Dispare em paralelo e sincronize.**
+
+   ```bash
+   for n in 1 2 3; do ( sleep $((n*2)); echo "tarefa $n pronta" ) & done
+   wait
+   echo "todas terminaram"
+   ```
+
+   Esperado: as três mensagens saem em ordem crescente de tempo, e a linha final só aparece depois da última.
+
+8. **Prove o efeito do `SIGHUP`.** Abra **duas** sessões SSH ou dois terminais. No primeiro:
+
+   ```bash
+   sleep 1200 &
+   echo "PID sem protecao: $!"
+   ```
+
+   Feche esse terminal **abruptamente** (fechar a janela, ou `kill -HUP $$` na própria sessão). No segundo terminal:
+
+   ```bash
+   pgrep -a 'sleep 1200' || echo "morreu com o terminal"
+   ```
+
+   Esperado: o processo não existe mais. É o cenário da varredura perdida.
+
+9. **Repita com `nohup`.**
+
+   ```bash
+   nohup sleep 1200 > /tmp/lab030-nohup.log 2>&1 &
+   echo "PID protegido: $!"
+   ```
+
+   Feche o terminal do mesmo jeito e, no outro:
+
+   ```bash
+   pgrep -a 'sleep 1200' && echo "sobreviveu"
+   ps -o pid,ppid,tty,comm -C sleep
+   ```
+
+   Esperado: o processo continua vivo, agora com PPID 1 (foi adotado, @sec-cap027) e `TTY` igual a `?`.
+
+10. **Resgate um job já iniciado com `disown`.**
+
+    ```bash
+    sleep 1300 > /tmp/lab030-disown.log 2>&1 &
+    jobs
+    disown -h %1
+    jobs
+    ```
+
+    Feche o terminal e confirme no outro com `pgrep -a 'sleep 1300'`.
+
+    Esperado: com `-h` o job permanece na lista, mas marcado para não receber `SIGHUP`; sem `-h`, ele some da tabela imediatamente. Nos dois casos o processo sobrevive.
+
+11. **Desassocie desde o início com `setsid`.**
+
+    ```bash
+    setsid sleep 1400 > /tmp/lab030-setsid.log 2>&1 < /dev/null &
+    sleep 1
+    ps -o pid,ppid,sid,tty,comm -C sleep
+    ```
+
+    Esperado: o processo já nasce com `SID` próprio, `TTY` igual a `?` e sem vínculo com o shell. É como um daemon se comporta.
+
+12. **Espie a saída de um processo desacoplado e limpe.**
+
+    ```bash
+    nohup bash -c 'for i in $(seq 1 60); do echo "linha $i"; sleep 1; done' \
+        > /tmp/lab030-saida.log 2>&1 &
+    SPID=$!
+    sleep 3
+    tail -f /proc/$SPID/fd/1 &      # Ctrl-C para sair do tail
+    sleep 3; kill %2 2>/dev/null
+    pkill -f 'sleep 1[234]00'; pkill -f 'seq 1 60'
+    rm -f /tmp/lab030-*.log nohup.out
+    jobs
+    ```
+
+    Esperado: o `tail` sobre `/proc/<PID>/fd/1` mostra a saída em tempo real mesmo sem o terminal original. Ao final, nenhum job pendente e nenhum arquivo de teste.
+
+## Resumo
+
+- **Job é o pipeline inteiro que você digitou**, não um processo; ele corresponde a um grupo de processos, e é ao grupo que o terminal envia `Ctrl-C` e `Ctrl-Z`.
+- **`jobs`, `fg` e `bg` são internos do shell** e valem só naquele terminal. Entre terminais (ou painéis do `tmux`), use PID.
+- **`&` inicia em segundo plano; `Ctrl-Z` para; `bg` retoma em segundo plano; `fg` traz de volta.** Um job em segundo plano que tenta ler do teclado é parado com `SIGTTIN`.
+- **`%1`, `%+`, `%-`, `%nome` e `%?trecho` referenciam jobs.** `kill %1` age sobre o job 1; `kill 1` age sobre o `systemd` — o `%` não é opcional.
+- **Ao fechar o terminal, o kernel manda `SIGHUP` ao líder da sessão, que repassa aos jobs.** É por isso que a tarefa longa morre quando a conexão cai. Sair com `exit` no Bash não faz isso (opção `huponexit` desligada); a queda abrupta faz.
+- **`nohup` ignora o `SIGHUP` desde o início; `disown` remove o job da tabela depois de iniciado; `setsid` cria sessão nova sem terminal.** Os três mantêm o processo vivo, nenhum preserva a interação.
+- **`$!` guarda o PID do último job em segundo plano; `wait` sincroniza.** Disparar com `&` e coletar com `wait` é o paralelismo básico do shell.
+- **Para tarefa longa e interativa, a resposta certa é `tmux`**, que preserva o terminal inteiro e permite reconectar — assunto do próximo capítulo. `nohup` serve quando a saída vai para arquivo e não há nada a acompanhar.

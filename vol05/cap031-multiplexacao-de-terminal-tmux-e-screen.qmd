@@ -1,3 +1,435 @@
 # Multiplexação de terminal: tmux e screen {#sec-cap031}
 
-*(em elaboracao)*
+O capítulo anterior terminou com um problema resolvido pela metade. O `nohup` mantém a varredura viva quando a conexão cai — mas você volta cego: sem a tela, sem o progresso, sem poder responder ao prompt que a ferramenta fez às três da manhã. Manter o **processo** vivo não é a mesma coisa que manter a **sessão de trabalho** viva.
+
+O multiplexador de terminal resolve o problema inteiro. A ideia é simples e engenhosa: em vez de rodar o programa no terminal que pode desaparecer, roda-se um **servidor** que cria terminais virtuais próprios e mantém tudo neles. Seu terminal real é apenas uma janela que espia esse servidor — e pode ir embora e voltar quantas vezes quiser. Quando você reconecta, o `htop` continua atualizando, o `nmap` está na linha 4.812 e o editor tem o cursor onde você deixou.
+
+## O modelo cliente-servidor
+
+Ao rodar `tmux` pela primeira vez, um processo servidor sobe em segundo plano, desassociado de qualquer terminal. Ele cria pseudoterminais próprios e executa os programas ali dentro. O que você vê é um **cliente** conectado a esse servidor.
+
+::: {#fig-hierarquia-tmux}
+```{.tikz}
+%%| filename: hierarquia-do-tmux-servidor-sessao-janela-painel
+%%| alt: Hierarquia do tmux com um servidor persistente contendo duas sessoes, cada sessao com janelas e cada janela dividida em paineis, e o cliente conectado por fora
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt},
+    srv/.style={bx,draw=manualred,fill=manualred!12,text width=3.2cm},
+    ses/.style={bx,draw=manualblue,fill=manualblue!12,text width=2.9cm},
+    jan/.style={bx,draw=manualgreen,fill=manualgreen!13,text width=2.9cm},
+    pan/.style={bx,draw=manualyellow,fill=manualyellow!12,text width=2.9cm},
+    cli/.style={bx,draw=manualgray,fill=manualgray!13,text width=3.0cm},
+    li/.style={manualgray,thick},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[srv] (s) at (0,0) {\textbf{servidor tmux}\\sem terminal, PPID 1};
+
+  \node[ses] (s1) at (4.2,1.6)  {sessão \texttt{recon}};
+  \node[ses] (s2) at (4.2,-1.8) {sessão \texttt{relatorio}};
+
+  \node[jan] (w1) at (8.0,2.5)  {janela 1: \texttt{scan}};
+  \node[jan] (w2) at (8.0,0.9)  {janela 2: \texttt{logs}};
+  \node[jan] (w3) at (8.0,-1.8) {janela 1: \texttt{editor}};
+
+  \node[pan] (p1) at (11.8,3.1) {painel: \texttt{nmap}};
+  \node[pan] (p2) at (11.8,1.9) {painel: \texttt{htop}};
+  \node[pan] (p3) at (11.8,0.9) {painel: \texttt{tail -f}};
+
+  \node[cli] (c) at (0,-3.4) {cliente: seu terminal SSH};
+
+  \draw[li] (s.east) to[out=0,in=180] (s1.west);
+  \draw[li] (s.east) to[out=0,in=180] (s2.west);
+  \draw[li] (s1.east) to[out=0,in=180] (w1.west);
+  \draw[li] (s1.east) to[out=0,in=180] (w2.west);
+  \draw[li] (s2.east) to[out=0,in=180] (w3.west);
+  \draw[li] (w1.east) to[out=0,in=180] (p1.west);
+  \draw[li] (w1.east) to[out=0,in=180] (p2.west);
+  \draw[li] (w2.east) to[out=0,in=180] (p3.west);
+
+  \draw[fl,manualgray,dashed] (c.north) -- node[nt,left,pos=0.5]{attach} (s.south);
+
+  \node[nt,text width=13.5cm] at (5.4,-4.8) {O cliente pode desconectar (\emph{detach}) e reconectar de outra máquina sem que nada lá dentro perceba. Tudo o que importa vive no servidor, que sobrevive à queda da conexão porque não tem terminal de controle --- exatamente o mecanismo do \texttt{setsid} do capítulo anterior, só que embutido.};
+\end{tikzpicture}
+```
+A hierarquia do `tmux`: servidor, sessões, janelas e painéis, com o cliente por fora.
+:::
+
+A hierarquia tem quatro níveis, e vale fixar o vocabulário:
+
+- **Servidor**: um por usuário (por *socket*). Persiste até a última sessão morrer.
+- **Sessão**: um agrupamento nomeado de janelas. É a unidade de *attach* e *detach*. Normalmente uma por assunto: `recon`, `relatorio`, `servidor`.
+- **Janela**: ocupa a tela inteira, como uma aba. Numeradas e nomeáveis.
+- **Painel**: uma divisão da janela. Cada painel roda um shell independente.
+
+## tmux: o essencial
+
+```bash
+sudo apt install tmux        # ja vem no Kali
+
+tmux                         # nova sessao sem nome
+tmux new -s recon            # nova sessao nomeada
+tmux ls                      # lista as sessoes do servidor
+tmux attach -t recon         # reconecta (abreviacoes: tmux a -t recon)
+tmux attach                  # reconecta a ultima sessao usada
+tmux new -As recon           # conecta se existir, cria se nao existir
+tmux kill-session -t recon   # encerra uma sessao
+tmux kill-server             # encerra tudo
+```
+
+O comando `tmux new -As nome` é o idioma que vale memorizar: ele torna seguro digitar a mesma linha sempre, sem risco de criar sessões duplicadas.
+
+Dentro do `tmux`, tudo passa por uma **tecla de prefixo**, `Ctrl-b` por padrão. A notação `C-b d` significa: pressione `Ctrl-b`, solte, depois pressione `d`.
+
+| Atalho | Efeito |
+|---|---|
+| `C-b d` | *detach*: sai deixando tudo rodando |
+| `C-b ?` | lista todos os atalhos |
+| `C-b :` | linha de comando do tmux |
+| `C-b c` | cria janela |
+| `C-b n` / `C-b p` | próxima / janela anterior |
+| `C-b 0`…`9` | vai para a janela pelo número |
+| `C-b w` | lista interativa de janelas |
+| `C-b ,` | renomeia a janela |
+| `C-b &` | fecha a janela (pede confirmação) |
+| `C-b %` | divide o painel na **vertical** |
+| `C-b "` | divide o painel na **horizontal** |
+| `C-b` + setas | move entre painéis |
+| `C-b o` | próximo painel |
+| `C-b z` | **zoom**: amplia o painel para a tela toda, e desfaz |
+| `C-b x` | fecha o painel |
+| `C-b espaço` | percorre os layouts predefinidos |
+| `C-b {` / `C-b }` | troca o painel de posição |
+| `C-b [` | entra em modo cópia / rolagem |
+| `C-b ]` | cola o buffer |
+| `C-b t` | relógio (útil para conferir se a sessão está viva) |
+
+: Atalhos essenciais do `tmux` {#tbl-atalhos-tmux}
+
+O `C-b z` merece destaque: dividir a tela em quatro painéis é ótimo para acompanhar, e péssimo para ler uma saída longa. O zoom resolve os dois — amplia o painel de interesse, e um segundo `C-b z` devolve o layout.
+
+### Detach e attach na prática
+
+::: {#fig-detach-attach}
+```{.tikz}
+%%| filename: linha-do-tempo-de-detach-e-attach
+%%| alt: Linha do tempo mostrando o inicio da sessao tmux, a conexao caindo, o processo continuando no servidor e a reconexao recuperando a tela intacta
+\begin{tikzpicture}[
+    ev/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=4pt,text width=2.8cm,minimum height=1.2cm},
+    ok/.style={ev,draw=manualgreen,fill=manualgreen!13},
+    ruim/.style={ev,draw=manualred,fill=manualred!12},
+    neutro/.style={ev,draw=manualgray,fill=manualgray!13},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=center}
+  ]
+  \draw[manualgray,thick,-{Stealth[length=5pt]}] (-1.4,0) -- (14.2,0);
+
+  \node[ok]     (a) at (0,1.5)   {\texttt{tmux new -s recon}\\inicia o \texttt{nmap}};
+  \node[ruim]   (b) at (4.2,-1.6) {conexão SSH cai\\ou você faz \texttt{C-b d}};
+  \node[neutro] (c) at (8.4,1.5)  {servidor segue\\rodando sozinho};
+  \node[ok]     (d) at (12.8,-1.6) {\texttt{tmux a -t recon}\\tela intacta};
+
+  \draw[fl] (a.south) -- (0,0.15);
+  \draw[fl] (b.north) -- (4.2,-0.15);
+  \draw[fl] (c.south) -- (8.4,0.15);
+  \draw[fl] (d.north) -- (12.8,-0.15);
+
+  \node[nt] at (0,-0.5)   {09:00};
+  \node[nt] at (4.2,0.5)  {09:12};
+  \node[nt] at (8.4,-0.5) {12:40};
+  \node[nt] at (12.8,0.5) {14:05};
+
+  \node[nt,align=left,text width=13.5cm] at (6.2,-3.4) {A diferença para o \texttt{nohup} está no último quadro: com \texttt{nohup} o processo estaria vivo, mas a tela não --- nada de barra de progresso, de histórico de rolagem nem de responder a um prompt. Aqui a sessão volta exatamente como estava, inclusive com os painéis e o modo de cópia.};
+\end{tikzpicture}
+```
+O ciclo de *detach* e *attach*: o que muda em relação ao `nohup`.
+:::
+
+Vale notar que `C-b d` (detach voluntário) e a queda da conexão têm o mesmo efeito: o cliente some, o servidor continua. Não há nada a fazer para "salvar" antes de perder a conexão.
+
+Quando a mesma sessão é aberta em duas telas de tamanhos diferentes, o `tmux` reduz a exibição ao menor dos dois. Para forçar o desligamento do outro cliente:
+
+```bash
+tmux attach -d -t recon      # desconecta os outros clientes ao entrar
+```
+
+### Modo cópia e rolagem
+
+Dentro do `tmux`, a rolagem do emulador de terminal não funciona como você espera — o histórico pertence ao `tmux`. `C-b [` entra no modo cópia, onde as setas, `PgUp`/`PgDn`, `/` (busca para frente) e `?` (busca para trás) navegam pelo buffer. `Espaço` inicia a seleção, `Enter` copia, `q` sai. `C-b ]` cola.
+
+Por padrão o histórico guarda 2000 linhas, pouco para uma varredura longa. Aumentar é uma linha de configuração.
+
+### Configuração mínima que vale a pena
+
+O arquivo é `~/.tmux.conf`. Uma base enxuta e defensável:
+
+```bash
+# prefixo mais confortavel: Ctrl-a (como no screen)
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix
+
+set -g mouse on               # rolagem e selecao de painel com o mouse
+set -g base-index 1           # janelas comecam em 1, alinhado com o teclado
+setw -g pane-base-index 1
+set -g history-limit 50000    # historico de rolagem generoso
+set -g renumber-windows on    # sem buracos na numeracao ao fechar janela
+set -sg escape-time 10        # evita atraso ao usar Esc no vim
+set -g status-interval 5
+
+# divisoes mais intuitivas, mantendo o diretorio atual
+bind | split-window -h -c "#{pane_current_path}"
+bind - split-window -v -c "#{pane_current_path}"
+
+# recarregar a configuracao sem reiniciar
+bind r source-file ~/.tmux.conf \; display "configuracao recarregada"
+```
+
+```bash
+tmux source-file ~/.tmux.conf     # aplica sem reiniciar o servidor
+```
+
+O `set -g mouse on` é a mudança de maior impacto para quem está começando: rolagem, seleção de painel e redimensionamento passam a funcionar como se espera de uma interface moderna.
+
+### tmux como ferramenta de script
+
+O `tmux` aceita comandos de fora, o que permite montar ambientes inteiros automaticamente:
+
+```bash
+tmux new -d -s trab                          # cria destacada
+tmux rename-window -t trab:1 'monitor'
+tmux send-keys -t trab:1 'htop' C-m          # C-m e o Enter
+tmux split-window -t trab:1 -h
+tmux send-keys -t trab:1.2 'journalctl -f' C-m
+tmux new-window -t trab -n 'scan'
+tmux send-keys -t trab:scan 'nmap -sV alvo' C-m
+tmux attach -t trab
+```
+
+E, para registro do que foi feito, o `pipe-pane` grava tudo o que passa por um painel:
+
+```bash
+tmux pipe-pane -o -t trab:1.1 'cat >> ~/logs/painel-$(date +%F).log'
+tmux pipe-pane -t trab:1.1                   # sem argumento: para de gravar
+```
+
+## screen: o antecessor
+
+O GNU `screen` é 20 anos mais velho e ainda está em toda parte. Onde o `tmux` não estiver instalado e não houver como instalar, o `screen` provavelmente estará. O modelo é parecido, mas ele não tem painéis de verdade no mesmo sentido — tem *regions*, mais limitadas — e a configuração é mais espartana.
+
+O prefixo é `Ctrl-a`.
+
+```bash
+screen                      # nova sessao
+screen -S recon             # nomeada
+screen -ls                  # lista
+screen -r recon             # reconecta
+screen -d -r recon          # desconecta o outro cliente e reconecta
+screen -x recon             # conecta em PARALELO (dois usuarios, mesma tela)
+screen -S recon -X quit     # encerra
+screen -L -Logfile scan.log -S recon    # grava a sessao em arquivo
+```
+
+| Atalho | `screen` | `tmux` |
+|---|---|---|
+| detach | `C-a d` | `C-b d` |
+| nova janela | `C-a c` | `C-b c` |
+| próxima / anterior | `C-a n` / `C-a p` | `C-b n` / `C-b p` |
+| lista de janelas | `C-a "` | `C-b w` |
+| renomear | `C-a A` | `C-b ,` |
+| dividir horizontal | `C-a S` (region) | `C-b "` |
+| dividir vertical | `C-a \|` (region) | `C-b %` |
+| alternar divisão | `C-a Tab` | `C-b o` |
+| modo cópia | `C-a [` | `C-b [` |
+| ajuda | `C-a ?` | `C-b ?` |
+
+: Equivalência entre `screen` e `tmux` {#tbl-screen-tmux}
+
+A diferença prática que mais importa: no `screen`, cada *region* precisa que você crie ou selecione uma janela para ela — dividir a tela não cria um shell novo automaticamente. É o principal motivo de o `tmux` ter vencido a disputa.
+
+::: {.callout-tip}
+## Qual escolher
+
+Use `tmux` por padrão: painéis de verdade, scriptável, configuração sã, ainda em desenvolvimento ativo. Aprenda o mínimo de `screen` (`-S`, `-ls`, `-r`, `C-a d`) para o dia em que cair numa máquina antiga onde ele é o que existe. O `screen -x`, que conecta dois usuários à **mesma** tela ao vivo, continua sendo um recurso que o `tmux` só reproduz com sessões agrupadas.
+:::
+
+## 🐉 No Kali
+
+- **Uma sessão nomeada por engajamento é a organização mínima.** `tmux new -As cliente-x` com janelas separadas por fase — `recon`, `enum`, `exploit`, `notas` — mantém o trabalho legível e permite retomar dias depois no mesmo ponto. Perder o rastro de qual painel rodava o quê é um problema real em teste que dura uma semana.
+- **`pipe-pane` produz registro de atividade que vale como evidência.** Num teste autorizado, é recomendável registrar tudo o que foi executado no alvo: o que, quando e com que resultado. `tmux pipe-pane -o 'cat >> ~/engajamento/painel-%F.log'` grava continuamente; a alternativa clássica é `script -a sessao.log` ou `asciinema rec`, que preservam também a temporização. Esse registro protege as duas partes na hora de discutir causa de uma indisponibilidade.
+- **Layout de três painéis é o padrão de acompanhamento de varredura.** Painel grande com a ferramenta rodando, painel pequeno com `htop` (@sec-cap028) e outro com `tail -f` do arquivo de saída. Com `C-b z` você amplia o que interessa no momento sem desmontar o arranjo.
+- **Ao obter shell num alvo, o `tmux` do alvo não é seu amigo.** Um shell reverso costuma vir sem terminal decente; a estabilização usa `python3 -c 'import pty; pty.spawn("/bin/bash")'` mais ajustes de `stty`, não `tmux`. Iniciar um `tmux` no alvo deixa um servidor persistente rodando lá — artefato que sobrevive ao seu desligamento, altera o estado do sistema do cliente e precisa constar do relatório de limpeza.
+- **Sessão de `tmux` alheia é vetor de escalada.** O socket do `tmux` fica em `/tmp/tmux-<UID>/`; se as permissões estiverem frouxas, outro usuário se conecta a uma sessão de root e herda o shell. Ao endurecer um sistema, verifique `ls -ld /tmp/tmux-*` (deve ser `700`) e desconfie de sessões de `screen` com o bit SUID no binário, uma falha histórica conhecida (@sec-cap023).
+- **Sessões sobrevivem a logout, não a reboot.** Nenhum multiplexador restaura sessões após reiniciar a máquina. Para retomar o ambiente, mantenha um script de montagem com `tmux new -d`, `send-keys` e `split-window`, versionado junto com seus dotfiles — ou use `tmux-resurrect`, que salva e restaura o layout.
+
+> **Nota sobre a família RHEL.** O `tmux` está nos repositórios base do RHEL 8 e 9 e é o multiplexador recomendado; o `screen` foi movido para o EPEL, invertendo a situação histórica. Com SELinux em modo *enforcing*, sessões iniciadas por SSH e reconectadas depois mantêm o contexto do momento da criação, o que ocasionalmente surpreende: um `tmux` iniciado numa sessão com um papel e reconectado de outra continua rodando sob o contexto original — visível com `ps -eZ`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Os passos 5 e 6 ficam mais convincentes com duas conexões SSH abertas.
+
+1. **Crie e liste sessões.**
+
+   ```bash
+   tmux new -d -s lab031
+   tmux new -d -s descartavel
+   tmux ls
+   ```
+
+   Esperado: duas sessões listadas, com número de janelas e horário de criação. O `-d` cria sem conectar.
+
+2. **Conecte e navegue entre janelas.**
+
+   ```bash
+   tmux attach -t lab031
+   ```
+
+   Dentro: `C-b c` para criar janelas (três vezes), `C-b ,` para renomear a atual, `C-b w` para ver a lista, `C-b 1` e `C-b 2` para alternar, `C-b n` e `C-b p` para percorrer.
+
+   Esperado: a barra de status embaixo reflete cada mudança, com a janela ativa destacada.
+
+3. **Divida em painéis e use o zoom.**
+
+   Ainda dentro: `C-b %` (divide na vertical), `C-b "` (divide o painel atual na horizontal), setas para navegar, `C-b z` para ampliar e de novo para restaurar, `C-b espaço` para percorrer layouts.
+
+   ```bash
+   htop            # em um painel
+   watch -n 1 date # em outro
+   ```
+
+   Esperado: os dois programas rodam ao mesmo tempo, cada um no seu painel, com o `htop` atualizando enquanto você trabalha no outro.
+
+4. **Teste o histórico e o modo cópia.**
+
+   ```bash
+   seq 1 3000
+   ```
+
+   Depois: `C-b [`, `PgUp` várias vezes, `/` e digite `2500` seguido de `Enter`, `q` para sair.
+
+   Esperado: a busca leva direto à linha 2500 no buffer de rolagem — sem depender da rolagem do emulador de terminal.
+
+5. **Faça o *detach* e confirme que tudo continua.**
+
+   Dentro do `tmux`, inicie algo longo e destaque:
+
+   ```bash
+   ping -c 600 127.0.0.1 > /tmp/lab031-ping.log
+   ```
+
+   Tecle `C-b d`. Fora:
+
+   ```bash
+   tmux ls
+   pgrep -a ping
+   ps -o pid,ppid,tty,comm -C tmux
+   ```
+
+   Esperado: a sessão continua listada, o `ping` continua rodando, e o servidor `tmux` aparece com `TTY` igual a `?` e PPID 1 — desassociado, como o `setsid` de @sec-cap030.
+
+6. **Simule a queda da conexão.**
+
+   Reconecte com `tmux attach -t lab031`, e então **feche a janela do terminal abruptamente**. Numa segunda conexão:
+
+   ```bash
+   tmux ls
+   tmux attach -t lab031
+   ```
+
+   Esperado: a sessão está intacta, com os painéis, o `htop` rodando e o buffer de rolagem preservado. É a diferença entre o `tmux` e o `nohup`.
+
+7. **Monte um ambiente por script.**
+
+   ```bash
+   tmux kill-session -t lab031 2>/dev/null
+   tmux new -d -s lab031 -n monitor
+   tmux send-keys -t lab031:monitor 'htop' C-m
+   tmux split-window -t lab031:monitor -h
+   tmux send-keys -t lab031:monitor.2 'watch -n 2 uptime' C-m
+   tmux new-window -t lab031 -n trabalho
+   tmux send-keys -t lab031:trabalho 'cd /tmp && pwd' C-m
+   tmux attach -t lab031
+   ```
+
+   Esperado: o ambiente inteiro pronto ao conectar — duas janelas, dois painéis na primeira, comandos já rodando.
+
+8. **Grave um painel com `pipe-pane`.**
+
+   ```bash
+   mkdir -p /tmp/lab031-logs
+   tmux pipe-pane -o -t lab031:trabalho "cat >> /tmp/lab031-logs/painel.log"
+   tmux send-keys -t lab031:trabalho 'uname -a; id; ls /etc | head -5' C-m
+   sleep 2
+   cat /tmp/lab031-logs/painel.log
+   tmux pipe-pane -t lab031:trabalho
+   ```
+
+   Esperado: o arquivo contém tudo o que apareceu no painel, comandos e saídas. É o mecanismo de registro de atividade.
+
+9. **Aplique uma configuração.**
+
+   ```bash
+   cp ~/.tmux.conf ~/.tmux.conf.bak 2>/dev/null
+   cat > ~/.tmux.conf <<'EOF'
+   set -g mouse on
+   set -g base-index 1
+   setw -g pane-base-index 1
+   set -g history-limit 50000
+   set -g renumber-windows on
+   bind | split-window -h -c "#{pane_current_path}"
+   bind - split-window -v -c "#{pane_current_path}"
+   bind r source-file ~/.tmux.conf \; display "recarregado"
+   EOF
+   tmux source-file ~/.tmux.conf
+   ```
+
+   Dentro do `tmux`, teste `C-b |` e `C-b -`, e role com a roda do mouse.
+
+   Esperado: as divisões abrem no diretório atual do painel, e a rolagem com o mouse entra no modo cópia automaticamente.
+
+10. **Compare com o `screen`.**
+
+    ```bash
+    which screen || sudo apt install -y screen
+    screen -dmS lab031scr bash -c 'sleep 600'
+    screen -ls
+    screen -r lab031scr        # C-a d para destacar
+    screen -S lab031scr -X quit
+    screen -ls
+    ```
+
+    Esperado: o fluxo é análogo — criar, listar, reconectar, destacar, encerrar — com prefixo `C-a` no lugar de `C-b`.
+
+11. **Inspecione os artefatos no sistema de arquivos.**
+
+    ```bash
+    ls -ld /tmp/tmux-$(id -u)
+    ls -l /tmp/tmux-$(id -u)
+    ps -eo pid,ppid,tty,comm | grep -E 'tmux|screen'
+    ```
+
+    Esperado: o diretório do socket com modo `700` — só o dono entra. É a proteção que impede outro usuário de se conectar à sua sessão.
+
+12. **Limpe.**
+
+    ```bash
+    tmux kill-server 2>/dev/null
+    screen -wipe 2>/dev/null
+    rm -rf /tmp/lab031-logs /tmp/lab031-ping.log
+    mv ~/.tmux.conf.bak ~/.tmux.conf 2>/dev/null || rm -f ~/.tmux.conf
+    tmux ls 2>&1 | head -1
+    ```
+
+    Esperado: `no server running on ...` — todas as sessões encerradas e nenhum artefato de teste.
+
+## Resumo
+
+- **O multiplexador roda um servidor sem terminal de controle** e cria pseudoterminais próprios. Seu terminal é só um cliente, que pode ir e voltar sem afetar nada.
+- **A hierarquia é servidor → sessão → janela → painel.** Sessão é a unidade de *attach*; janela ocupa a tela; painel é uma divisão dela, com shell próprio.
+- **`tmux new -As nome` é o comando a memorizar**: conecta se a sessão existir, cria se não existir. `tmux ls` lista, `tmux a -t nome` conecta, `C-b d` destaca.
+- **Tudo passa pelo prefixo `C-b`.** Os atalhos que resolvem o dia a dia: `c` (janela), `%` e `"` (dividir), setas (navegar), `z` (zoom), `[` (rolagem e cópia), `w` (lista de janelas), `?` (ajuda).
+- **`nohup` mantém o processo; `tmux` mantém a sessão inteira** — tela, histórico, painéis e a possibilidade de responder a um prompt. Para tarefa longa e interativa, é a escolha certa.
+- **Cinco linhas de `~/.tmux.conf` mudam muito**: `mouse on`, `base-index 1`, `history-limit` alto, `renumber-windows on` e divisões que preservam o diretório atual.
+- **`tmux send-keys`, `new-window` e `split-window` montam ambientes por script**, e `pipe-pane` grava tudo o que passa por um painel — útil como registro de atividade.
+- **`screen` é o antecessor onipresente**: aprenda `-S`, `-ls`, `-r` e `C-a d` para as máquinas onde `tmux` não existe. Só o `screen` conecta dois usuários à mesma tela com `-x`.
+- **Sessões sobrevivem a logout e à queda da conexão, não a reboot.** Um script de montagem versionado é o que reconstrói o ambiente depois de reiniciar.

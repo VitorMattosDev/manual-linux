@@ -1,3 +1,492 @@
 # Recursos do sistema: memória, CPU, uptime e limites {#sec-cap032}
 
-*(em elaboracao)*
+Um chamado abre com a frase "o servidor está sem memória". Você entra, roda `free -h`, e a coluna `free` mostra 180 MB de 16 GB. Parece confirmar o diagnóstico — e não confirma nada. Na mesma saída, a coluna `available` mostra 11 GB, o *swap* está intocado, e o sistema responde normalmente. O que está acontecendo é o comportamento correto de qualquer Linux saudável, mal interpretado por quem olhou a coluna errada.
+
+Este capítulo fecha o volume olhando para os recursos que os processos disputam: memória, CPU e os limites que o administrador impõe. É a camada onde os números enganam com mais frequência, e onde o diagnóstico errado leva a comprar hardware que não resolve nada.
+
+## Memória: por que "livre" é a coluna errada
+
+O ponto de partida é `free -h`:
+
+```bash
+free -h
+free -m          # em MiB
+free -w          # separa buffers de cache
+free -s 2 -c 5   # 5 amostras a cada 2 segundos
+```
+
+```text
+               total       usada       livre  compart.  buff/cache  disponível
+Mem.:           15Gi       3,6Gi       180Mi     420Mi        11Gi        11Gi
+Swap:          2,0Gi          0B       2,0Gi
+```
+
+::: {#fig-mapa-memoria}
+```{.tikz}
+%%| filename: mapa-da-memoria-usada-cache-e-disponivel
+%%| alt: Barra horizontal representando a RAM dividida em memoria de processos, buffers e cache e memoria livre, com uma segunda barra mostrando que disponivel soma o livre com a maior parte do cache
+\begin{tikzpicture}[
+    seg/.style={draw,thick,minimum height=1.1cm,font=\scriptsize,align=center,inner sep=2pt},
+    usada/.style={seg,draw=manualred,fill=manualred!16,minimum width=3.4cm},
+    cache/.style={seg,draw=manualyellow,fill=manualyellow!16,minimum width=7.4cm},
+    livre/.style={seg,draw=manualgreen,fill=manualgreen!16,minimum width=1.4cm},
+    disp/.style={seg,draw=manualblue,fill=manualblue!14,minimum width=8.4cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    rot/.style={font=\scriptsize\bfseries,align=center}
+  ]
+  \node[usada] (u) at (0,0) {3,6 Gi};
+  \node[cache] (c) at (5.4,0) {11 Gi};
+  \node[livre] (l) at (9.8,0) {180 Mi};
+
+  \node[rot,manualred]    at (0,0.95)   {usada por processos};
+  \node[rot,manualyellow] at (5.4,0.95) {buff/cache};
+  \node[rot,manualgreen]  at (10.1,0.95) {livre};
+
+  \node[disp] (d) at (6.3,-1.7) {11 Gi};
+  \node[rot,manualblue] at (6.3,-2.75) {\textbf{disponível} --- o número que responde ``quanto ainda posso alocar?''};
+
+  \draw[manualblue,thick,dashed] (2.1,-0.55) -- (2.1,-1.15);
+  \draw[manualblue,thick,dashed] (10.5,-0.55) -- (10.5,-1.15);
+
+  \node[nt,text width=13.4cm] at (5.0,-4.1) {O kernel usa toda a RAM ociosa como cache de disco, porque RAM parada é desperdício. Esse espaço é devolvido \emph{instantaneamente} quando um processo precisa. Por isso \texttt{livre} próximo de zero é normal e saudável --- a coluna a monitorar é \texttt{disponível}, que soma o livre com a parte recuperável do cache.};
+\end{tikzpicture}
+```
+Como a RAM é realmente ocupada, e por que `disponível` é a coluna que importa.
+:::
+
+A frase que resume: **"Linux ate minha RAM" é o comportamento correto.** Memória livre não rende nada; memória usada como cache de disco economiza leituras. Quando um processo pede memória, o kernel descarta páginas de cache na hora e entrega. A coluna `disponível` (`MemAvailable` no `/proc/meminfo`) é a estimativa do kernel de quanto pode ser alocado sem entrar em *swap*.
+
+As três colunas que enganam:
+
+- **`livre`**: RAM que não está sendo usada para nada. Num sistema com dias de uso, é normal ficar próxima de zero.
+- **`buff/cache`**: cache de páginas de arquivos (`Cached`) mais buffers de bloco (`Buffers`). Recuperável.
+- **`compart.`**: memória compartilhada, incluindo `tmpfs`. Atenção: o que está em `/dev/shm` e em `/tmp` montado como `tmpfs` **não é recuperável** — é conteúdo real ocupando RAM.
+
+Para o detalhe, `/proc/meminfo`:
+
+```bash
+grep -E 'MemTotal|MemFree|MemAvailable|Buffers|^Cached|Dirty|Writeback|Slab|SwapTotal|SwapFree' /proc/meminfo
+```
+
+| Campo | Significado |
+|---|---|
+| `MemAvailable` | estimativa do que pode ser alocado sem swap — a métrica principal |
+| `Buffers` | metadados de bloco em cache |
+| `Cached` | conteúdo de arquivos em cache (inclui `tmpfs`) |
+| `Dirty` | páginas modificadas ainda não gravadas em disco |
+| `Writeback` | páginas em processo de gravação |
+| `Slab` / `SReclaimable` | estruturas do kernel; a parte reclaimable conta como disponível |
+| `Committed_AS` | total que os processos já se comprometeram a usar |
+
+: Campos de `/proc/meminfo` que importam {#tbl-meminfo}
+
+Um `Dirty` grande e persistente indica gravação represada: o sistema aceitou escritas mais rápido do que o disco dá conta. É o mesmo quadro do `wa` alto no `top` (@sec-cap028).
+
+Para memória **por processo**, `RSS` superestima (conta bibliotecas compartilhadas em cada processo). O número honesto é o `Pss`:
+
+```bash
+ps -eo pid,comm,rss --sort=-rss | head
+grep Pss /proc/1234/smaps_rollup
+sudo smem -rs pss 2>/dev/null | head        # apt install smem
+```
+
+## Swap e o OOM killer
+
+O *swap* é espaço em disco usado como extensão da RAM. Páginas pouco usadas são movidas para lá, liberando memória física.
+
+```bash
+swapon --show                  # o que esta ativo
+free -h                        # linha Swap
+cat /proc/sys/vm/swappiness    # 60 por padrao
+```
+
+O `swappiness` (0 a 200) controla a **agressividade** com que o kernel prefere mover páginas de processos em vez de descartar cache. Não é "usar swap ou não": mesmo com 0, o kernel usa swap quando falta memória. Valores baixos (10 a 20) favorecem sistemas interativos; valores altos favorecem servidores com muitos processos ociosos.
+
+```bash
+sudo sysctl vm.swappiness=10                         # ate o proximo reboot
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf   # permanente
+```
+
+Criar um arquivo de swap, útil numa VM apertada:
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+swapon --show
+# permanente: acrescentar ao /etc/fstab
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+sudo swapoff /swapfile && sudo rm /swapfile          # desfazer
+```
+
+::: {.callout-warning}
+## `mkswap` no alvo errado destrói dados
+
+`mkswap /dev/sda2` formata a partição como swap e apaga o que houver nela, sem perguntar. O roteiro acima usa um **arquivo** (`/swapfile`) justamente por ser seguro e reversível. Confira o caminho antes de dar Enter — a diferença entre `/swapfile` e `/dev/sda2` é um sistema inteiro.
+:::
+
+Quando nem swap resolve, o kernel aciona o **OOM killer** (*Out Of Memory killer*): escolhe um processo e o mata para salvar o sistema. A escolha usa uma pontuação que pondera consumo de memória, tempo de vida e ajustes manuais.
+
+```bash
+cat /proc/1234/oom_score           # 0 a 1000: quanto maior, mais candidato
+cat /proc/1234/oom_score_adj       # -1000 a 1000: seu ajuste
+echo -500 | sudo tee /proc/1234/oom_score_adj    # protege o processo
+sudo dmesg -T | grep -i -E 'oom|killed process'  # o que ja foi morto
+journalctl -k | grep -i 'out of memory'
+```
+
+`oom_score_adj` igual a **-1000** torna o processo imune. Usar com parcimônia: proteger o processo errado faz o OOM killer derrubar o `sshd` e deixar a máquina inacessível.
+
+O detalhe cruel do OOM killer é que ele frequentemente escolhe **o processo maior, não o culpado**. Um vazamento lento num serviço pequeno pode acabar com o banco de dados morto no lugar. Por isso a investigação começa em `dmesg -T`, que registra qual processo foi morto, quanta memória ele usava e o que havia no sistema no momento.
+
+## CPU: quantos núcleos, e o que é load average
+
+```bash
+nproc                        # numero de CPUs disponiveis
+lscpu                        # modelo, nucleos, threads, cache, flags
+lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket|MHz'
+grep -c ^processor /proc/cpuinfo
+```
+
+O `lscpu` distingue **soquetes**, **núcleos por soquete** e **threads por núcleo**. Uma máquina com 1 soquete, 4 núcleos e 2 threads apresenta 8 CPUs ao sistema, mas só 4 unidades de execução reais — o *hyper-threading* rende bem menos que o dobro em carga pesada.
+
+O **load average** aparece em `uptime`, `top` e `/proc/loadavg`:
+
+```bash
+uptime
+cat /proc/loadavg
+```
+
+```text
+ 14:32:07 up 6 days,  2:14,  3 users,  load average: 2,31, 1,84, 1,52
+```
+
+Os três números são médias móveis exponenciais de 1, 5 e 15 minutos. E aqui está a particularidade do Linux que confunde quem vem de outro Unix: o load average conta as tarefas **executando ou prontas para executar** *mais* as tarefas **em sono ininterrompível** (estado `D`, @sec-cap027). Ou seja, ele mistura pressão de CPU com pressão de disco.
+
+::: {#fig-load-average}
+```{.tikz}
+%%| filename: interpretacao-do-load-average-por-numero-de-nucleos
+%%| alt: Escala de interpretacao do load average comparada ao numero de nucleos, com faixa folgada abaixo de um por nucleo, saturada em torno de um por nucleo e sobrecarregada acima
+\begin{tikzpicture}[
+    fx/.style={rounded corners=3pt,thick,minimum height=1.3cm,font=\scriptsize,align=center,inner sep=4pt,text width=3.6cm},
+    ok/.style={fx,draw=manualgreen,fill=manualgreen!13},
+    lim/.style={fx,draw=manualyellow,fill=manualyellow!13},
+    ruim/.style={fx,draw=manualred,fill=manualred!12},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    sc/.style={font=\scriptsize\ttfamily,manualgray}
+  ]
+  \node[ok]   (a) at (0,0)   {\textbf{abaixo de N}\\folga: há núcleo ocioso};
+  \node[lim]  (b) at (4.4,0) {\textbf{em torno de N}\\saturado: tudo ocupado, sem fila};
+  \node[ruim] (c) at (8.8,0) {\textbf{acima de N}\\fila: tarefas esperando a vez};
+
+  \draw[manualgray,thick,-{Stealth[length=5pt]}] (-2.2,-1.2) -- (11.0,-1.2);
+  \node[sc] at (-2.2,-1.6) {0};
+  \node[sc] at (4.4,-1.6)  {N = nproc};
+  \node[sc] at (11.0,-1.6) {2N e além};
+
+  \node[nt,text width=13.4cm] at (4.4,-3.0) {\textbf{N é o número de núcleos.} Load 4,0 numa máquina de 8 núcleos é metade da capacidade; a mesma carga em 2 núcleos é o dobro do que ela suporta. Sempre divida pelo \texttt{nproc}.};
+  \node[nt,text width=13.4cm] at (4.4,-4.6) {No Linux o load também conta tarefas em \texttt{D} (sono ininterrompível de E/S). Load alto com \texttt{\%Cpu} ocioso e \texttt{wa} elevado significa gargalo de \textbf{disco}, não de processador --- trocar a CPU não resolveria nada.};
+  \node[nt,text width=13.4cm] at (4.4,-6.0) {A ordem dos três números diz a tendência: \texttt{5,2 2,1 1,0} é um pico subindo agora; \texttt{1,0 2,1 5,2} é um pico que já passou.};
+\end{tikzpicture}
+```
+Como ler o load average: sempre em relação ao número de núcleos.
+:::
+
+A leitura correta em três perguntas: o número está acima de `nproc`? A tendência (comparando os três) sobe ou desce? E, se está alto, o `top` mostra `us` alto (CPU) ou `wa` alto (disco)?
+
+Para detalhar, o pacote `sysstat`:
+
+```bash
+sudo apt install sysstat
+vmstat 2 5                 # memoria, swap, E/S, CPU a cada 2s
+mpstat -P ALL 2 3          # por nucleo
+iostat -xz 2 3             # por dispositivo de bloco, com utilizacao
+pidstat -u 2 3             # por processo
+sar -u 1 3                 # amostragem; com historico, se habilitado
+sar -q                     # historico de load average
+```
+
+No `vmstat`, as colunas mais informativas são `r` (tarefas prontas na fila), `b` (bloqueadas em E/S), `si`/`so` (páginas entrando e saindo do swap) e `wa`. `si` e `so` consistentemente diferentes de zero indicam pressão real de memória — muito mais confiável que olhar o total de swap usado, que pode ser resíduo antigo.
+
+E o tempo de atividade:
+
+```bash
+uptime -p                  # "up 6 days, 2 hours"
+uptime -s                  # desde quando
+who -b                     # horario do ultimo boot
+last reboot | head -5      # historico de reinicializacoes
+systemd-analyze            # quanto tempo o boot levou
+systemd-analyze blame | head
+```
+
+## Limites de recurso
+
+Os limites são a contenção preventiva: o teto que um processo não pode ultrapassar, aplicado pelo kernel. Cada limite tem duas faces.
+
+::: {#fig-limites-soft-hard}
+```{.tikz}
+%%| filename: limite-flexivel-e-limite-rigido
+%%| alt: Relacao entre limite flexivel e limite rigido: o usuario pode elevar o flexivel ate o rigido e baixa-lo livremente, mas so o root eleva o rigido
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,font=\scriptsize,align=center,thick,inner sep=5pt,text width=3.6cm,minimum height=1.3cm},
+    soft/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    hard/.style={bx,draw=manualred,fill=manualred!12},
+    conf/.style={bx,draw=manualblue,fill=manualblue!12,text width=3.9cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    lb/.style={font=\scriptsize,manualgray}
+  ]
+  \node[soft] (s) at (0,0)   {\textbf{flexível} (\emph{soft})\\o valor em vigor agora};
+  \node[hard] (h) at (5.6,0) {\textbf{rígido} (\emph{hard})\\o teto do flexível};
+
+  \draw[fl] (s) to[bend left=22] node[lb,above,pos=0.5]{usuário pode elevar até aqui} (h);
+  \draw[fl,manualred] (h) to[bend left=22] node[lb,below,pos=0.5]{só o root eleva o rígido} (s);
+
+  \node[conf] (c1) at (11.6,1.1)  {\texttt{ulimit -S} / \texttt{-H}\\na sessão atual};
+  \node[conf] (c2) at (11.6,-0.6) {\texttt{/etc/security/limits.conf}\\por usuário, via PAM};
+  \node[conf] (c3) at (11.6,-2.3) {\texttt{LimitNOFILE=} na unit\\para serviços do systemd};
+
+  \node[nt,text width=13.6cm] at (5.0,-3.9) {O erro clássico é ajustar o \texttt{limits.conf} e não ver efeito em serviço do systemd: unidades do systemd \textbf{não passam pelo PAM}, e usam as diretivas \texttt{Limit*} da própria unit. Para conferir o que vale de fato num processo em execução, leia \texttt{/proc/<PID>/limits}.};
+\end{tikzpicture}
+```
+Limite flexível e limite rígido, e onde cada um é configurado.
+:::
+
+```bash
+ulimit -a                  # todos os limites flexiveis da sessao
+ulimit -Ha                 # os rigidos
+ulimit -n                  # descritores de arquivo abertos
+ulimit -n 4096             # eleva o flexivel (ate o rigido)
+ulimit -u                  # processos por usuario
+ulimit -c unlimited        # habilita core dump
+cat /proc/1234/limits      # o que vale para um processo especifico
+```
+
+| Opção | Limite |
+|:---:|---|
+| `-n` | descritores de arquivo abertos (o que mais causa problema) |
+| `-u` | processos/threads por usuário |
+| `-f` | tamanho máximo de arquivo criado |
+| `-c` | tamanho do *core dump* |
+| `-v` | memória virtual do processo |
+| `-s` | tamanho da pilha |
+| `-l` | memória que pode ser travada na RAM |
+
+: Limites mais usados do `ulimit` {#tbl-ulimit}
+
+O `-n` é o campeão de incidentes: um servidor web ou um banco de dados que atinge o teto de descritores começa a recusar conexões com `Too many open files`, sem nenhum outro sintoma. O padrão de 1024 é baixo para serviço com carga.
+
+Para tornar permanente, em sessões de login (via PAM):
+
+```text
+# /etc/security/limits.d/90-nofile.conf
+kali    soft    nofile    8192
+kali    hard    nofile    16384
+*       soft    nproc     4096
+```
+
+E, para serviços do systemd — que **não** passam pelo PAM:
+
+```bash
+sudo systemctl edit nginx.service
+```
+
+```text
+[Service]
+LimitNOFILE=16384
+LimitNPROC=4096
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart nginx
+cat /proc/$(pgrep -n nginx)/limits | grep -i 'open files'
+```
+
+::: {.callout-important}
+## O limite que salva de um *fork bomb*
+
+`ulimit -u` é a defesa contra o clássico `:(){ :|:& };:` — uma função que se chama duas vezes em segundo plano, dobrando o número de processos até esgotar a tabela e travar a máquina. Com um `nproc` razoável em `/etc/security/limits.d/`, a bomba atinge o teto do usuário e para, deixando o sistema utilizável. **Não execute essa linha** para testar num sistema que importa: sem limite configurado, o resultado é um travamento que só o botão de reset resolve.
+:::
+
+Acima dos limites por processo estão os **cgroups**, que impõem tetos a *grupos* de processos — memória, CPU, E/S e número de PIDs — e são a base de contêineres e do controle de recursos do systemd:
+
+```bash
+systemd-cgtop                                  # uso por cgroup, ao vivo
+systemctl set-property nginx.service MemoryMax=512M
+cat /sys/fs/cgroup/system.slice/nginx.service/memory.max
+```
+
+O mecanismo em profundidade é tema do Volume 16.
+
+## 🐉 No Kali
+
+- **VM do Kali com pouca RAM é o cenário padrão, e o OOM killer aparece.** Ferramentas como `hashcat`, `john` e `bettercap` carregam listas inteiras na memória; uma wordlist como a `rockyou` já pesa. Antes de rodar cracking numa VM de 4 GB, confira `free -h` e `swapon --show`, e considere um arquivo de swap temporário. Depois de um travamento, `sudo dmesg -T | grep -i oom` diz exatamente quem foi morto e quanto consumia.
+- **Load average alto durante varredura raramente é problema de CPU.** Um `nmap` com muitos alvos, um `masscan` ou um `gobuster` geram carga de rede e de E/S, não de processamento. Confirme com `top`: `wa` alto e `us` baixo confirmam que aumentar a CPU da VM não ajudaria. O ajuste útil costuma ser reduzir a taxa de envio ou o número de threads da ferramenta.
+- **`ulimit -n` é o limite que trava ferramenta de varredura.** `nmap`, `masscan` e proxies como o `Burp` abrem milhares de conexões simultâneas, cada uma consumindo um descritor. `Too many open files` no meio de um scan é quase sempre isso. `ulimit -n 65535` na sessão (ou no `limits.d`) resolve; o limite rígido padrão do Kali costuma permitir.
+- **Verificar recursos é passo do reconhecimento em teste autorizado.** Num alvo, `nproc`, `free -h`, `uptime` e `lscpu` dizem se a máquina é física ou virtual, quanto suporta e há quanto tempo está de pé — um `uptime` de 400 dias significa kernel sem atualização de segurança há mais de um ano, informação relevante para o relatório. Use apenas dentro do escopo autorizado; acesso não autorizado é crime (Lei 12.737/2012).
+- **Do lado defensivo, limites são contenção contra abuso.** Um `nproc` por usuário em `/etc/security/limits.d/` contém *fork bomb*; um `MemoryMax=` na unit do systemd contém vazamento de serviço; `oom_score_adj` negativo no `sshd` garante que você não perde o acesso remoto quando o OOM killer agir. Os três são configuração de dez minutos que evita um incidente de horas.
+- **Kali em live USB usa a RAM como sistema de arquivos.** Sem persistência, boa parte do sistema está em `tmpfs`, e o que você grava consome memória de verdade — sem cache que possa ser descartado. Um `free -h` numa sessão live mostra `compart.` alto, e encher `/tmp` significa encher a RAM. Baixar wordlists grandes numa sessão live é o caminho direto para o OOM killer.
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas. Três diferenças: o `sysstat` costuma vir instalado e com coleta ativa, oferecendo histórico do `sar` que no Debian precisa ser habilitado em `/etc/default/sysstat`; o `tuned` fornece perfis prontos de ajuste (`tuned-adm profile throughput-performance`) que alteram `swappiness` e parâmetros do escalonador de uma vez; e o RHEL 9 usa cgroups v2 exclusivamente, com `systemctl set-property` como interface recomendada, enquanto o Debian aceita as duas versões conforme a configuração de boot.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. O passo 8 gera pressão de memória de propósito, com teto controlado.
+
+1. **Leia a memória do jeito certo.**
+
+   ```bash
+   free -h
+   free -w -h
+   grep -E 'MemTotal|MemFree|MemAvailable|Buffers|^Cached' /proc/meminfo
+   ```
+
+   Esperado: `disponível` muito maior que `livre`. O `-w` separa `buffers` de `cache`, mostrando que a maior parte é cache de arquivos.
+
+2. **Encha o cache e veja o efeito.**
+
+   ```bash
+   free -h | head -2
+   tar cf /dev/null /usr 2>/dev/null
+   free -h | head -2
+   ```
+
+   Esperado: `buff/cache` sobe e `livre` cai, enquanto `disponível` fica praticamente igual. O kernel cacheou os arquivos lidos; a memória continua utilizável.
+
+3. **Compare `RSS` com `Pss`.**
+
+   ```bash
+   ps -eo pid,comm,rss --sort=-rss | head -6
+   PID=$(ps -eo pid,rss --sort=-rss --no-headers | head -1 | awk '{print $1}')
+   grep -E 'Rss|Pss' /proc/$PID/smaps_rollup
+   ```
+
+   Esperado: `Pss` menor que `Rss` — a diferença são as bibliotecas compartilhadas, rateadas entre os processos que as usam.
+
+4. **Inspecione o swap e o swappiness.**
+
+   ```bash
+   swapon --show
+   cat /proc/sys/vm/swappiness
+   grep -E 'SwapTotal|SwapFree|SwapCached' /proc/meminfo
+   ```
+
+   Esperado: se não houver swap, o `swapon --show` sai vazio. Anote o valor de `swappiness` antes de qualquer alteração.
+
+5. **Crie e remova um arquivo de swap.**
+
+   ```bash
+   sudo fallocate -l 1G /swapfile-lab
+   sudo chmod 600 /swapfile-lab
+   sudo mkswap /swapfile-lab
+   sudo swapon /swapfile-lab
+   swapon --show; free -h | tail -1
+   sudo swapoff /swapfile-lab && sudo rm -f /swapfile-lab
+   swapon --show
+   ```
+
+   Esperado: o swap aparece e some. Nada foi escrito em `/etc/fstab`, então o efeito termina aqui.
+
+   ::: {.callout-warning}
+   O `mkswap` acima aponta para um **arquivo**. Apontá-lo para um dispositivo (`/dev/sda2`, `/dev/nvme0n1p3`) formataria a partição e destruiria os dados nela. Confira o argumento.
+   :::
+
+6. **Descubra a topologia da CPU.**
+
+   ```bash
+   nproc
+   lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket'
+   grep -c ^processor /proc/cpuinfo
+   ```
+
+   Esperado: `nproc` igual a soquetes × núcleos × threads. Numa VM, tipicamente 1 thread por núcleo.
+
+7. **Gere carga e observe o load average subir.**
+
+   ```bash
+   N=$(nproc)
+   for i in $(seq 1 $N); do (while :; do :; done) & done
+   for i in 1 2 3 4 5 6; do uptime; sleep 20; done
+   ```
+
+   Esperado: o primeiro número sobe em direção a `N` ao longo de alguns minutos. Note a lentidão: é média móvel, não medida instantânea.
+
+   ```bash
+   kill $(jobs -p)
+   uptime
+   ```
+
+   Esperado: a carga real cai na hora, mas o load average leva minutos para acompanhar.
+
+8. **Provoque o OOM killer com teto controlado.**
+
+   ```bash
+   bash -c 'ulimit -v 262144; python3 -c "
+   b = []
+   while True:
+       b.append(bytearray(10*1024*1024))
+   " ' ; echo "codigo de saida: $?"
+   ```
+
+   Esperado: o processo morre por falta de memória — mas contido pelo `ulimit -v` de 256 MB, sem afetar o sistema. É a demonstração de que o limite funciona como cinto de segurança.
+
+   ```bash
+   sudo dmesg -T | tail -20 | grep -i -E 'oom|memory' || echo "contido pelo ulimit, sem acionar o OOM killer"
+   ```
+
+9. **Explore os limites da sua sessão.**
+
+   ```bash
+   ulimit -a
+   ulimit -n; ulimit -Hn
+   ulimit -n 4096; ulimit -n
+   ulimit -n 100000 2>&1 | head -1     # falha se passar do rigido
+   ```
+
+   Esperado: o flexível sobe livremente até o rígido; acima dele, "operation not permitted".
+
+10. **Veja os limites de um processo em execução.**
+
+    ```bash
+    sleep 300 & SPID=$!
+    cat /proc/$SPID/limits
+    grep -i 'open files' /proc/$SPID/limits
+    grep -i 'open files' /proc/1/limits
+    kill $SPID
+    ```
+
+    Esperado: os limites do seu `sleep` vêm da sessão; os do PID 1 vêm do systemd e costumam ser bem maiores. É a diferença entre PAM e unit.
+
+11. **Amostre com `vmstat` e `iostat`.**
+
+    ```bash
+    vmstat 2 4
+    mpstat -P ALL 2 2 2>/dev/null || echo "instale: sudo apt install sysstat"
+    iostat -xz 2 2 2>/dev/null | head -20
+    ```
+
+    Esperado: no `vmstat`, `r` mostra a fila de prontos, `b` os bloqueados, e `si`/`so` em zero confirmam que não há pressão de swap. A primeira linha do `vmstat` é média desde o boot — ignore-a e leia da segunda em diante.
+
+12. **Verifique o uptime e limpe.**
+
+    ```bash
+    uptime -p; uptime -s; who -b
+    last reboot | head -3
+    systemd-analyze
+    jobs; free -h | head -2
+    ```
+
+    Esperado: nenhum job de teste pendente, memória de volta ao normal, e o resumo do tempo de boot. Se você alterou `swappiness` no passo 4, restaure com `sudo sysctl vm.swappiness=<valor anotado>`.
+
+## Resumo
+
+- **Memória `livre` próxima de zero é normal e saudável.** O kernel usa toda RAM ociosa como cache de disco e a devolve instantaneamente. A coluna que responde "quanto posso alocar?" é **`disponível`** (`MemAvailable`).
+- **`buff/cache` é recuperável; `tmpfs` e `/dev/shm` não são.** O que está em memória compartilhada ocupa RAM de verdade — relevante em Kali live, que mantém boa parte do sistema em `tmpfs`.
+- **`RSS` superestima memória por processo** porque conta bibliotecas compartilhadas em cada um; `Pss` em `/proc/<PID>/smaps_rollup` é o número honesto.
+- **`swappiness` regula a preferência entre mover páginas e descartar cache**, não liga ou desliga o swap. `si`/`so` no `vmstat` são o sinal confiável de pressão de memória, melhor que o total de swap usado.
+- **O OOM killer escolhe pelo `oom_score`, e frequentemente mata o maior, não o culpado.** `dmesg -T | grep -i oom` conta o que aconteceu; `oom_score_adj` negativo protege o que não pode cair, como o `sshd`.
+- **Load average só faz sentido dividido pelo `nproc`**, e no Linux inclui tarefas em sono ininterrompível — load alto com `wa` alto e `us` baixo é gargalo de **disco**, não de CPU. A ordem dos três números dá a tendência.
+- **Todo limite tem face flexível e rígida.** O usuário eleva o flexível até o rígido; só o root eleva o rígido. `ulimit -n` (descritores) é a causa mais comum de `Too many open files`.
+- **Serviços do systemd não passam pelo PAM**, então `/etc/security/limits.conf` não os afeta — use `LimitNOFILE=` na unit e confirme lendo `/proc/<PID>/limits`.
+- **`ulimit -u` contém *fork bomb*; cgroups contêm grupos inteiros de processos** com `MemoryMax=` e afins, e são a base do controle de recursos do systemd e de contêineres.
