@@ -69,12 +69,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 7 — Boot, systemd e Serviços
 
-- [ ] **cap 039** - O processo de inicialização: UEFI, GRUB e o kernel - `vol07/cap039-o-processo-de-inicializacao-uefi-grub-e-o.qmd`
-- [ ] **cap 040** - systemd: units, targets e o modelo de serviços - `vol07/cap040-systemd-units-targets-e-o-modelo-de-servicos.qmd`
-- [ ] **cap 041** - Gerenciando serviços com systemctl - `vol07/cap041-gerenciando-servicos-com-systemctl.qmd`
-- [ ] **cap 042** - Logs com journald e o syslog tradicional - `vol07/cap042-logs-com-journald-e-o-syslog-tradicional.qmd`
-- [ ] **cap 043** - Agendamento: cron, at e timers do systemd - `vol07/cap043-agendamento-cron-at-e-timers-do-systemd.qmd`
-- [ ] **cap 044** - Targets, modo de recuperação e resolução de problemas de boot - `vol07/cap044-targets-modo-de-recuperacao-e-resolucao-de.qmd`
+- [x] **cap 039** - O processo de inicialização: UEFI, GRUB e o kernel - `vol07/cap039-o-processo-de-inicializacao-uefi-grub-e-o.qmd`
+- [x] **cap 040** - systemd: units, targets e o modelo de serviços - `vol07/cap040-systemd-units-targets-e-o-modelo-de-servicos.qmd`
+- [x] **cap 041** - Gerenciando serviços com systemctl - `vol07/cap041-gerenciando-servicos-com-systemctl.qmd`
+- [x] **cap 042** - Logs com journald e o syslog tradicional - `vol07/cap042-logs-com-journald-e-o-syslog-tradicional.qmd`
+- [x] **cap 043** - Agendamento: cron, at e timers do systemd - `vol07/cap043-agendamento-cron-at-e-timers-do-systemd.qmd`
+- [x] **cap 044** - Targets, modo de recuperação e resolução de problemas de boot - `vol07/cap044-targets-modo-de-recuperacao-e-resolucao-de.qmd`
 
 ### Volume 8 — Armazenamento e Sistemas de Arquivos
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (38 concluidos).
+**Total:** 103 capitulos em 16 volumes (44 concluidos).
 

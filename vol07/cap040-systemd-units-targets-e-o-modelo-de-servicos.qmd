@@ -1,3 +1,471 @@
 # systemd: units, targets e o modelo de serviços {#sec-cap040}
 
-*(em elaboracao)*
+Um script antigo de inicialização do SysV começava assim: um arquivo em `/etc/init.d/` com um `case` de quatro ramos — `start`, `stop`, `restart`, `status` —, um `while` para esperar o processo subir, um arquivo de PID escrito à mão, e uns cinquenta links simbólicos numerados espalhados por `/etc/rc2.d/`, `/etc/rc3.d/` e companhia, cuja ordem alfabética era a ordem de execução. Funcionava. Também significava que cada serviço reimplementava, em Bash, a mesma lógica de "iniciar, verificar se subiu, matar se travar" — cada um com seus próprios bugs.
+
+O systemd substituiu isso por algo declarativo: em vez de um script que **faz**, um arquivo que **descreve**. O administrador diz o que deve rodar, do que depende e sob que condições; o PID 1 cuida de executar, supervisionar, reiniciar em caso de falha, coletar os logs e limitar os recursos. Este capítulo é sobre esse modelo — o vocabulário de *units*, dependências e *targets*. O comando `systemctl`, que opera sobre tudo isso, é o assunto do @sec-cap041; aqui interessa entender o que ele está manipulando.
+
+## Tudo é uma unit
+
+A abstração central do systemd é a **unit**: qualquer coisa que ele saiba gerenciar. Um serviço é uma unit, mas também são um ponto de montagem, um socket, um dispositivo, um temporizador. Cada uma é descrita por um arquivo de texto cuja extensão determina o tipo.
+
+```bash
+systemctl --type=help
+ls /lib/systemd/system/ | head -20
+```
+
+| Extensão | O que representa |
+|---|---|
+| `.service` | um processo gerenciado — o tipo mais comum |
+| `.target` | um agrupamento de units, usado como marco de sincronização |
+| `.socket` | um socket que, ao receber conexão, ativa um serviço |
+| `.timer` | um agendamento que dispara outra unit |
+| `.mount` | um ponto de montagem, derivado do `fstab` ou declarado |
+| `.automount` | montagem sob demanda, no primeiro acesso ao diretório |
+| `.path` | vigia um caminho no sistema de arquivos e ativa algo na mudança |
+| `.device` | um dispositivo exposto pelo udev, usado em dependências |
+| `.swap` | uma área de troca |
+| `.slice` | um grupo de controle de recursos, hierárquico |
+| `.scope` | processos criados externamente, agrupados para controle |
+
+: Tipos de unit do systemd {#tbl-tipos-unit}
+
+Essa uniformidade é o que torna o modelo poderoso. "Este serviço só deve subir depois que o disco de dados estiver montado" é uma dependência entre uma `.service` e uma `.mount`, expressa com exatamente a mesma sintaxe de qualquer outra dependência. No SysV, isso seria um `while` verificando `mountpoint` dentro do script.
+
+## Anatomia de um arquivo `.service`
+
+Um arquivo de unit é um INI: seções entre colchetes, pares de chave e valor. O de um serviço tem três seções.
+
+```ini
+# /etc/systemd/system/coletor.service
+[Unit]
+Description=Coletor de metricas do laboratorio
+Documentation=https://exemplo.local/docs/coletor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coletor
+Group=coletor
+ExecStart=/usr/local/bin/coletor --config /etc/coletor.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+WorkingDirectory=/var/lib/coletor
+
+[Install]
+WantedBy=multi-user.target
+```
+
+::: {#fig-anatomia-unit}
+```{.tikz}
+%%| filename: anatomia-de-um-arquivo-de-service
+%%| alt: Decomposicao de um arquivo service em tres secoes Unit, Service e Install, com a funcao de cada uma
+\begin{tikzpicture}[
+    sec/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=4.1cm,minimum height=2.9cm},
+    su/.style={sec,draw=manualblue,fill=manualblue!12},
+    ss/.style={sec,draw=manualgreen,fill=manualgreen!13},
+    si/.style={sec,draw=manualyellow,fill=manualyellow!16},
+    tl/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[su] (u) at (0,0)   {\textbf{[Unit]}\\[3pt]\texttt{Description}\\\texttt{Documentation}\\\texttt{After} / \texttt{Before}\\\texttt{Wants} / \texttt{Requires}\\[3pt]\emph{quem sou e de quem dependo}};
+  \node[ss] (s) at (4.9,0) {\textbf{[Service]}\\[3pt]\texttt{Type}\\\texttt{ExecStart}\\\texttt{User} / \texttt{Group}\\\texttt{Restart}\\[3pt]\emph{como executar e supervisionar}};
+  \node[si] (i) at (9.8,0) {\textbf{[Install]}\\[3pt]\texttt{WantedBy}\\\texttt{RequiredBy}\\\texttt{Alias}\\[3pt]\emph{o que acontece no} \texttt{enable}};
+
+  \node[tl,manualblue,above=5pt]   at (u.north) {vale para todo tipo de unit};
+  \node[tl,manualgreen,above=5pt]  at (s.north) {só existe em \texttt{.service}};
+  \node[tl,manualyellow,above=5pt] at (i.north) {lido só por \texttt{enable}/\texttt{disable}};
+
+  \node[nt,text width=14.0cm] at (4.9,-2.9) {A seção \texttt{[Install]} é a que mais confunde. Ela não tem efeito nenhum enquanto o serviço roda: é lida apenas quando alguém executa \texttt{systemctl enable}, e o que ela descreve é onde criar o link simbólico que fará o serviço subir no boot. Uma unit sem \texttt{[Install]} funciona perfeitamente com \texttt{systemctl start}, mas não pode ser habilitada --- e o erro nesse caso, \texttt{No installation config specified}, não diz que falta a seção.};
+\end{tikzpicture}
+```
+As três seções de um arquivo `.service` e o papel de cada uma.
+:::
+
+### O campo `Type`
+
+O `Type=` diz ao systemd **como saber que o serviço terminou de subir**. Errá-lo é a causa mais comum de um serviço que "inicia mas o systemd acha que falhou", ou de um `systemctl start` que trava por 90 segundos e desiste.
+
+| `Type=` | O systemd considera pronto quando |
+|---|---|
+| `simple` | o processo é executado — imediatamente, sem esperar (padrão) |
+| `exec` | o `execve()` teve sucesso — como `simple`, mas detecta binário inexistente |
+| `forking` | o processo pai sai, deixando o filho rodando |
+| `oneshot` | o processo termina; usado para tarefas que rodam e acabam |
+| `notify` | o próprio processo avisa via `sd_notify()` |
+| `dbus` | o serviço registra um nome no D-Bus |
+| `idle` | como `simple`, mas espera outros jobs terminarem (só cosmético) |
+
+: Valores de `Type=` e o critério de prontidão de cada um {#tbl-type-service}
+
+A regra prática: software escrito para rodar em primeiro plano usa `simple`. *Daemons* antigos, que se desligam do terminal por conta própria, usam `forking` — e nesse caso quase sempre precisam de `PIDFile=` para que o systemd saiba qual processo vigiar. Tarefas que executam uma vez e terminam usam `oneshot`, geralmente com `RemainAfterExit=yes` para que o estado fique `active` depois de concluídas.
+
+Um `Type=simple` num programa que faz *fork* produz o cenário clássico: o systemd vê o pai sair, conclui que o serviço morreu, e mata o filho que estava funcionando perfeitamente.
+
+### `Restart` e a supervisão
+
+O que o SysV nunca teve, e que sozinho justificaria a troca:
+
+| `Restart=` | Reinicia quando |
+|---|---|
+| `no` | nunca (padrão) |
+| `on-failure` | código de saída diferente de zero, sinal, timeout |
+| `on-abnormal` | sinal ou timeout, mas não código de saída |
+| `always` | sempre, inclusive após parada limpa |
+| `on-success` | só quando termina com sucesso |
+
+: Políticas de reinício automático {#tbl-restart}
+
+`Restart=on-failure` com `RestartSec=5s` é o par sensato para a maioria dos serviços. Há uma proteção embutida contra laço infinito: `StartLimitIntervalSec` e `StartLimitBurst` definem quantos reinícios são tolerados numa janela de tempo — por padrão, cinco em dez segundos. Estourado o limite, o systemd desiste e marca a unit como `failed`, com a mensagem `start request repeated too quickly`. Essa mensagem é frequentemente lida como a causa do problema, quando é apenas o sintoma de um serviço que falha na partida por outro motivo.
+
+## Dependências: ordem e requisito são coisas diferentes
+
+Este é o ponto conceitual mais importante do systemd, e o que mais gera configuração quebrada.
+
+O systemd inicia tudo em paralelo por padrão. Duas perguntas distintas precisam ser respondidas separadamente:
+
+- **"B precisa de A?"** — é uma dependência de **requisito**: `Requires`, `Wants`, `BindsTo`.
+- **"B deve começar depois de A?"** — é uma dependência de **ordem**: `After`, `Before`.
+
+Declarar apenas `Requires=a.service` significa "puxe o A também", **sem nenhuma garantia de que o A terá subido antes**. Os dois começam ao mesmo tempo. Quase sempre o que se quer é o par completo:
+
+```ini
+Requires=postgresql.service
+After=postgresql.service
+```
+
+::: {#fig-dependencias}
+```{.tikz}
+%%| filename: eixos-de-dependencia-do-systemd
+%%| alt: Matriz mostrando o eixo de requisito com Wants Requires e BindsTo e o eixo de ordem com After e Before, sendo independentes entre si
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=4.3cm,minimum height=2.2cm},
+    req/.style={bx,draw=manualblue,fill=manualblue!12},
+    ord/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    cmb/.style={bx,draw=manualyellow,fill=manualyellow!16,text width=5.0cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[req] (r) at (0,0)   {\textbf{eixo do requisito}\\\emph{``B precisa de A?''}\\[3pt]\texttt{Wants=} --- puxa, tolera falha\\\texttt{Requires=} --- puxa, falha junto\\\texttt{BindsTo=} --- para se A parar\\\texttt{Conflicts=} --- não coexiste};
+  \node[ord] (o) at (5.4,0) {\textbf{eixo da ordem}\\\emph{``B começa depois de A?''}\\[3pt]\texttt{After=} --- só depois de A\\\texttt{Before=} --- antes de A\\[3pt]nada mais};
+  \node[cmb] (c) at (11.2,0) {\textbf{os dois juntos}\\[3pt]\texttt{Requires=db.service}\\\texttt{After=db.service}\\[3pt]``preciso do banco \emph{e} só subo depois que ele estiver de pé''};
+
+  \node[nt,text width=14.2cm] at (5.4,-2.4) {Os eixos são independentes: é possível ter requisito sem ordem (os dois sobem em paralelo, o que raramente é o desejado) e ordem sem requisito (\texttt{After=} sozinho não puxa nada --- se A não for iniciado por outro motivo, a cláusula simplesmente não tem efeito). O erro clássico é escrever só \texttt{Requires=} e ver o serviço falhar de forma intermitente, funcionando na máquina lenta e quebrando na rápida, porque a corrida entre os dois tem vencedor variável.};
+\end{tikzpicture}
+```
+Os dois eixos independentes de dependência entre units.
+:::
+
+As diferenças dentro do eixo de requisito:
+
+- **`Wants=`** — a recomendação padrão. Puxa a outra unit, mas se ela falhar, a nossa sobe assim mesmo. É o que se usa quando a dependência é útil, não essencial.
+- **`Requires=`** — se a outra falhar ao iniciar, esta também é desativada. Sem `After=`, porém, "falhar ao iniciar" pode nem ter sido detectado ainda.
+- **`BindsTo=`** — mais forte: se a outra unit parar **em qualquer momento**, esta é parada junto. Útil para amarrar um serviço a um `.device` — um daemon que só faz sentido enquanto o adaptador USB estiver conectado.
+- **`Conflicts=`** — iniciar esta unit para a outra. É como `rescue.target` derruba `multi-user.target`.
+
+A dependência de ordem tem uma sutileza: `After=` significa "depois que a outra unit atingiu seu estado de prontidão" — e o que conta como pronto depende do `Type=` dela. Um serviço `Type=simple` é considerado pronto assim que o processo é executado, muito antes de estar realmente aceitando conexões. É por isso que `After=postgresql.service` não garante que o banco aceite consultas; para isso existe `Type=notify` do lado do serviço, ou uma verificação explícita no próprio programa.
+
+## Targets: marcos, não níveis
+
+Um **target** é uma unit que não faz nada. Seu conteúdo é apenas um conjunto de dependências, e sua função é servir de ponto de sincronização com nome legível: "a rede está de pé", "o sistema está multiusuário", "a interface gráfica subiu".
+
+```bash
+systemctl list-units --type=target
+systemctl get-default
+cat /lib/systemd/system/multi-user.target
+```
+
+Os targets mais relevantes:
+
+| Target | Significado |
+|---|---|
+| `sysinit.target` | inicialização básica: sistemas de arquivos, dispositivos, `/tmp` |
+| `basic.target` | sistema mínimo pronto; sockets e temporizadores ativos |
+| `network.target` | a configuração de rede foi aplicada (não garante conectividade) |
+| `network-online.target` | há conectividade de fato — só se um serviço a garantir |
+| `multi-user.target` | sistema completo em modo texto, com serviços de rede |
+| `graphical.target` | `multi-user` mais o gerenciador de login gráfico |
+| `rescue.target` | modo mínimo, um shell de root, sem rede |
+| `emergency.target` | apenas a raiz montada somente leitura e um shell |
+
+: Targets do systemd e o marco que cada um representa {#tbl-targets}
+
+Os targets numerados `runlevel0.target` a `runlevel6.target` existem apenas como links simbólicos para compatibilidade. A analogia com *runlevels* do SysV é útil para quem vem de lá, mas enganosa: *runlevels* eram estados mutuamente exclusivos e ordenados por número; targets são um grafo, e vários podem estar ativos ao mesmo tempo. `graphical.target` não substitui `multi-user.target` — ele o inclui.
+
+::: {.callout-note}
+## `network.target` não significa "tem internet"
+
+A confusão custa horas. `network.target` indica apenas que os serviços de configuração de rede foram acionados; não que uma interface tenha endereço, nem que haja rota para fora. Um serviço que precisa de conectividade real declara `Wants=network-online.target` **e** `After=network-online.target`, e isso só funciona se algo garantir esse target — `NetworkManager-wait-online.service` ou `systemd-networkd-wait-online.service`, que precisa estar habilitado.
+
+O efeito colateral é conhecido: esses serviços de espera bloqueiam o boot até obter endereço, e num laptop sem cabo aparecem no topo do `systemd-analyze blame` com dezenas de segundos.
+:::
+
+## Onde moram os arquivos e quem vence
+
+Units vêm de vários lugares, e a ordem de precedência é a regra que evita o erro mais destrutivo desta área.
+
+::: {#fig-precedencia-units}
+```{.tikz}
+%%| filename: precedencia-dos-diretorios-de-unit
+%%| alt: Pilha de precedencia dos diretorios de unit do systemd, do run systemd system no topo ate lib systemd system na base, com os drop-ins ao lado
+\begin{tikzpicture}[
+    dir/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=5pt,text width=5.6cm,minimum height=1.15cm},
+    d1/.style={dir,draw=manualred,fill=manualred!12},
+    d2/.style={dir,draw=manualyellow,fill=manualyellow!16},
+    d3/.style={dir,draw=manualgray,fill=manualgray!11},
+    dropin/.style={dir,draw=manualgreen,fill=manualgreen!13,text width=5.4cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[d1] (a) at (0,2.1)  {\texttt{/run/systemd/system/}\\\emph{tempo de execução --- some no reboot}};
+  \node[d2] (b) at (0,0.7)  {\texttt{/etc/systemd/system/}\\\emph{do administrador --- aqui é o seu lugar}};
+  \node[d3] (c) at (0,-0.7) {\texttt{/lib/systemd/system/}\\\emph{dos pacotes --- o APT sobrescreve}};
+
+  \node[dropin] (e) at (7.6,0.7) {\texttt{/etc/systemd/system/}\\\texttt{nome.service.d/10-algo.conf}\\\emph{drop-in: altera só o que muda}};
+
+  \draw[fl] (-3.4,-1.3) -- node[lb,sloped,above]{precedência cresce} (-3.4,2.7);
+  \draw[fl,manualgreen] (b) -- node[lb,above]{ou, melhor} (e);
+
+  \node[nt,text width=14.0cm] at (3.4,-2.6) {Um arquivo em \texttt{/etc/systemd/system/} com o mesmo nome de um de \texttt{/lib} substitui o original por inteiro --- e congela a cópia: correções que o pacote trouxer em atualizações futuras não chegam. O \emph{drop-in} resolve isso alterando apenas as chaves desejadas, sobre o arquivo original que continua sendo atualizado normalmente. \texttt{systemctl edit nome.service} cria o \emph{drop-in} no lugar certo; \texttt{systemctl edit -{}-full} faz a cópia integral, que é a opção a evitar sem um bom motivo.};
+\end{tikzpicture}
+```
+Precedência dos diretórios de unit e o papel dos *drop-ins*.
+:::
+
+Um *drop-in* é um fragmento. Para mudar apenas o limite de arquivos abertos de um serviço do sistema, sem tocar no arquivo do pacote:
+
+```bash
+sudo systemctl edit ssh.service
+```
+
+```ini
+# /etc/systemd/system/ssh.service.d/override.conf
+[Service]
+LimitNOFILE=8192
+```
+
+Duas armadilhas com *drop-ins*, ambas consequência de o fragmento ser **somado** ao original:
+
+- Diretivas de lista se acumulam. Um `ExecStart=` no *drop-in* não substitui o original: gera erro, porque um serviço não pode ter dois. Para trocá-lo, é preciso zerar primeiro com uma linha `ExecStart=` vazia e depois declarar o novo.
+- Depois de qualquer edição manual de arquivo de unit, `sudo systemctl daemon-reload` é obrigatório. Sem isso, o systemd continua operando com a versão anterior carregada em memória, e a mudança "não faz efeito" de forma inexplicável.
+
+```bash
+systemctl cat ssh.service          # arquivo original + todos os drop-ins
+systemctl show ssh.service         # configuracao efetiva, com os padroes
+systemd-delta                      # tudo que foi sobrescrito no sistema
+```
+
+O `systemd-delta` é o comando de auditoria desta seção: ele lista todas as units do sistema que foram mascaradas, sobrescritas ou estendidas, e é a primeira coisa a rodar num sistema herdado que se comporta de forma estranha.
+
+## Templates e units de usuário
+
+Uma unit cujo nome contém `@` é um **template**, instanciável várias vezes. O arquivo `getty@.service` gera `getty@tty1.service`, `getty@tty2.service`, e assim por diante. Dentro do arquivo, `%i` é substituído pelo nome da instância:
+
+```ini
+# /etc/systemd/system/tunel@.service
+[Service]
+ExecStart=/usr/bin/ssh -N -L 8080:localhost:80 %i
+```
+
+```bash
+sudo systemctl start tunel@servidor1
+sudo systemctl start tunel@servidor2
+```
+
+Duas instâncias independentes, um arquivo só. Além de `%i`, os especificadores mais úteis são `%n` (nome completo da unit), `%H` (hostname) e `%h` (diretório pessoal do usuário).
+
+O systemd também roda uma instância por usuário, com units próprias em `~/.config/systemd/user/`:
+
+```bash
+systemctl --user list-units --type=service
+systemctl --user status
+```
+
+Serviços de usuário não precisam de `sudo`, morrem quando a sessão termina — a menos que `loginctl enable-linger` seja usado — e são o lugar certo para automação pessoal: sincronizar dotfiles, rodar um agente, manter um túnel. É a alternativa moderna ao `@reboot` do crontab pessoal.
+
+## 🐉 No Kali
+
+- **O Kali desabilita serviços de rede por padrão, e isso é uma decisão de projeto.** Numa instalação Debian comum, instalar o `openssh-server` habilita e inicia o serviço na hora. No Kali, não: `ssh.service`, `postgresql.service` e outros ficam instalados e **desabilitados**. A razão é que uma máquina de teste de intrusão frequentemente está em rede hostil, e um serviço que sobe sozinho é superfície de ataque não solicitada. A consequência prática é que `systemctl enable --now ssh` é um passo consciente, e que reinstalar o pacote não vai reabilitar nada.
+- **O PostgreSQL do Metasploit é o exemplo canônico de dependência de ordem.** O `msfconsole` precisa do banco de pé antes de tentar conectar; a inicialização recomendada é `sudo systemctl start postgresql && sudo msfdb init`. Quem escreve uma unit própria para automatizar isso precisa do par `Requires=postgresql.service` **e** `After=postgresql.service` — e, mesmo assim, lembrar que o `After` garante o processo iniciado, não o banco aceitando conexões.
+- **Serviços de laboratório devem viver em units próprias, não em scripts soltos.** Um listener, um servidor HTTP para entrega de arquivo em teste autorizado, um coletor de logs: transformar cada um numa `.service` com `Restart=on-failure` e `User=` dedicado dá supervisão, log centralizado e desligamento limpo — e evita o processo esquecido rodando em segundo plano depois que o teste terminou. É também documentação: o arquivo diz o que aquilo é e por que existe.
+- **`Type=forking` sem `PIDFile=` é o erro mais comum ao empacotar ferramenta de segurança.** Muita ferramenta de rede se desliga do terminal por conta própria. Declará-la como `simple` faz o systemd matar o processo real; declará-la como `forking` sem informar o arquivo de PID faz o systemd vigiar o processo errado. A saída limpa, quando a ferramenta oferece, é a opção de rodar em primeiro plano (`-f`, `--foreground`, `--no-daemon`) combinada com `Type=simple`.
+- **Live sem persistência não guarda unit nenhuma.** Toda alteração em `/etc/systemd/system/` numa sessão live existe apenas em RAM. Para automação que precise sobreviver ao desligamento, é persistência (@sec-cap039) ou instalação em disco — não há meio-termo.
+- **`systemd-delta` num Kali herdado revela o que foi mexido.** Máquina de laboratório que passou por várias mãos costuma ter units mascaradas e sobrescritas de que ninguém se lembra. Antes de investigar comportamento estranho, esse comando responde "o que neste sistema não é padrão" em uma tela.
+
+> **Nota sobre a família RHEL.** O systemd é o mesmo, com as mesmas seções, os mesmos tipos e a mesma precedência de diretórios — units escritas para Debian funcionam sem alteração no Fedora ou no RHEL. As diferenças estão em volta: o diretório dos pacotes é `/usr/lib/systemd/system/` (no Debian, `/lib/` é um link simbólico para `/usr/lib/`, então dá no mesmo), e o SELinux acrescenta uma camada invisível — um serviço com `ExecStart` apontando para um binário em `/usr/local/bin/` pode falhar com `Permission denied` mesmo com as permissões de arquivo corretas, porque o contexto SELinux do arquivo não permite a execução naquele domínio. `ausearch -m avc -ts recent` é onde isso aparece; `chcon` ou `restorecon` é o que corrige.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Os passos 1 a 5 são de leitura. A partir do 6, você cria uma unit própria, chamada `laboratorio-eco`, que é removida no passo 12.
+
+1. **Conheça o vocabulário de units do seu sistema.**
+
+   ```bash
+   systemctl --type=help
+   systemctl list-units --type=service --state=running | head -15
+   systemctl list-units --type=target --state=active
+   ```
+
+   Esperado: a lista de tipos, os serviços em execução e os targets ativos. Note que vários targets estão ativos ao mesmo tempo — eles são um grafo, não níveis exclusivos.
+
+2. **Leia um arquivo de unit real, com todos os seus fragmentos.**
+
+   ```bash
+   systemctl cat ssh.service
+   systemctl cat multi-user.target
+   ```
+
+   Esperado: o `ssh.service` com `[Unit]`, `[Service]` e `[Install]`. O `multi-user.target` é quase vazio — confirmando que um target não faz nada além de agrupar.
+
+3. **Compare o arquivo com a configuração efetiva.**
+
+   ```bash
+   systemctl show ssh.service | wc -l
+   systemctl show ssh.service -p Type -p Restart -p ExecStart -p WantedBy
+   ```
+
+   Esperado: mais de duzentas propriedades no `show`, contra as poucas dezenas de linhas do arquivo. A diferença são os padrões que o systemd aplica em silêncio.
+
+4. **Inspecione as dependências de um serviço nos dois sentidos.**
+
+   ```bash
+   systemctl list-dependencies graphical.target | head -25
+   systemctl list-dependencies ssh.service
+   systemctl list-dependencies --reverse network-online.target
+   ```
+
+   Esperado: a árvore descendo de `graphical.target` até `sysinit.target`, e, no `--reverse`, quem depende do target de rede.
+
+5. **Descubra o que neste sistema foge do padrão.**
+
+   ```bash
+   systemd-delta
+   systemctl list-unit-files --state=masked
+   systemctl list-unit-files --type=service --state=disabled | head
+   ```
+
+   Esperado: no Kali recém-instalado, poucos itens no `systemd-delta` e uma lista razoável de serviços de rede desabilitados — a política descrita acima.
+
+6. **Crie um serviço próprio.**
+
+   ```bash
+   sudo tee /etc/systemd/system/laboratorio-eco.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Servico de eco do laboratorio
+   After=network.target
+
+   [Service]
+   Type=simple
+   ExecStart=/bin/sh -c 'while true; do echo "eco em $(date -Is)"; sleep 10; done'
+   Restart=on-failure
+   RestartSec=3s
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl daemon-reload
+   ```
+
+   Esperado: nenhuma saída. O `daemon-reload` é o passo que faz o systemd reler o disco — sem ele, o arquivo existe e o systemd não sabe.
+
+7. **Inicie o serviço e observe o estado.**
+
+   ```bash
+   sudo systemctl start laboratorio-eco
+   systemctl status laboratorio-eco
+   ```
+
+   Esperado: `Active: active (running)`, o PID do processo, o *slice* e o *cgroup* a que ele pertence, e as últimas linhas de saída — que o systemd capturou automaticamente, sem que a unit configurasse log algum.
+
+8. **Verifique que ele ainda não sobe no boot.**
+
+   ```bash
+   systemctl is-enabled laboratorio-eco
+   sudo systemctl enable laboratorio-eco
+   systemctl is-enabled laboratorio-eco
+   ls -l /etc/systemd/system/multi-user.target.wants/ | grep eco
+   ```
+
+   Esperado: `disabled`, depois `enabled`, e um link simbólico criado em `multi-user.target.wants/` — exatamente o que a seção `[Install]` descrevia. É esse link, e nada mais, que faz um serviço subir no boot.
+
+9. **Prove que a supervisão funciona.**
+
+   ```bash
+   systemctl show laboratorio-eco -p MainPID
+   sudo kill $(systemctl show laboratorio-eco -p MainPID --value)
+   sleep 5
+   systemctl status laboratorio-eco | head -6
+   ```
+
+   Esperado: o serviço volta sozinho com um PID novo, graças ao `Restart=on-failure`. Este é o comportamento que nenhum script de `/etc/init.d/` oferecia.
+
+10. **Altere um parâmetro com um *drop-in*.**
+
+    ```bash
+    sudo systemctl edit laboratorio-eco
+    ```
+
+    No editor, insira:
+
+    ```ini
+    [Service]
+    RestartSec=15s
+    ```
+
+    Salve e saia, depois confirme:
+
+    ```bash
+    systemctl cat laboratorio-eco
+    systemctl show laboratorio-eco -p RestartSec
+    find /etc/systemd/system/laboratorio-eco.service.d/ -type f
+    ```
+
+    Esperado: o `cat` mostra o arquivo original **e** o fragmento, e o `show` reporta 15 segundos. O arquivo original permaneceu intocado — é isso que torna o *drop-in* seguro contra atualizações de pacote.
+
+11. **Experimente um template.**
+
+    ```bash
+    sudo tee /etc/systemd/system/laboratorio-eco@.service > /dev/null <<'EOF'
+    [Unit]
+    Description=Eco do laboratorio para a instancia %i
+
+    [Service]
+    Type=simple
+    ExecStart=/bin/sh -c 'while true; do echo "instancia %i"; sleep 10; done'
+    EOF
+    sudo systemctl daemon-reload
+    sudo systemctl start laboratorio-eco@alfa
+    sudo systemctl start laboratorio-eco@beta
+    systemctl list-units 'laboratorio-eco@*'
+    systemctl show laboratorio-eco@alfa -p Description
+    ```
+
+    Esperado: duas instâncias independentes a partir de um único arquivo, e `%i` substituído pelo nome de cada uma na descrição.
+
+12. **Remova tudo e confirme que o sistema voltou ao estado original.**
+
+    ```bash
+    sudo systemctl stop laboratorio-eco laboratorio-eco@alfa laboratorio-eco@beta
+    sudo systemctl disable laboratorio-eco
+    sudo rm -rf /etc/systemd/system/laboratorio-eco.service \
+                /etc/systemd/system/laboratorio-eco.service.d \
+                /etc/systemd/system/laboratorio-eco@.service
+    sudo systemctl daemon-reload
+    systemctl list-units 'laboratorio-eco*' --all
+    systemd-delta | tail -3
+    ```
+
+    Esperado: nenhuma unit com esse nome resta, e o `systemd-delta` volta ao que era no passo 5. Se alguma referência sobrar, `sudo systemctl reset-failed` limpa o estado residual.
+
+## Resumo
+
+- **Tudo é uma unit**: serviços, montagens, sockets, temporizadores e dispositivos são descritos com a mesma sintaxe, o que permite expressar dependências entre coisas de natureza diferente sem código.
+- **Um arquivo `.service` tem três seções**: `[Unit]` diz quem é e de quem depende, `[Service]` diz como executar e supervisionar, `[Install]` só é lida no `enable` e descreve onde criar o link que faz o serviço subir no boot.
+- **`Type=` define como o systemd sabe que o serviço subiu.** `simple` para programas de primeiro plano, `forking` (com `PIDFile=`) para *daemons* clássicos, `oneshot` para tarefas que terminam. Errar isso faz o systemd matar um processo saudável ou esperar 90 segundos por nada.
+- **Requisito e ordem são eixos independentes.** `Requires=` puxa a outra unit; `After=` ordena. Sem os dois, os serviços sobem em paralelo e a falha é intermitente — funciona na máquina lenta, quebra na rápida.
+- **Targets são marcos, não *runlevels*.** Não são exclusivos e vários ficam ativos ao mesmo tempo. `network.target` não significa conectividade; para isso existe `network-online.target`, que precisa de um serviço que o garanta.
+- **A precedência dos diretórios é `/run` > `/etc` > `/lib`.** Copiar uma unit para `/etc` congela a cópia e perde as correções do pacote; o *drop-in* criado por `systemctl edit` altera só o necessário e continua recebendo atualizações.
+- **`daemon-reload` depois de toda edição manual.** Sem ele, o systemd opera com a versão antiga em memória e a mudança parece não ter efeito.
+- **Templates (`nome@.service`) instanciam um arquivo várias vezes** com `%i` substituído, e as units de usuário em `~/.config/systemd/user/` são o lugar certo para automação pessoal, sem `sudo`.
+- **`systemctl cat`, `systemctl show` e `systemd-delta`** são o trio de diagnóstico: o arquivo com seus fragmentos, a configuração efetiva com os padrões, e tudo que no sistema foge do padrão.

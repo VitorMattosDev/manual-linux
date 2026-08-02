@@ -1,3 +1,466 @@
 # Gerenciando serviços com systemctl {#sec-cap041}
 
-*(em elaboracao)*
+Uma reclamação recorrente em qualquer equipe de infraestrutura: "reiniciei o serviço, mas a mudança não pegou". Outra, mais grave: "parei o serviço e ele voltou sozinho depois do reboot". E uma terceira, que costuma vir acompanhada de uma noite mal dormida: "o serviço aparece como *active*, mas o sistema não responde na porta".
+
+As três têm a mesma raiz — confundir o que o `systemctl` faz com o que se imagina que ele faça. O comando é simples de usar e enganosamente fácil de usar errado, porque um serviço tem **dois estados independentes** (está rodando agora? vai subir no boot?), e porque "reiniciar" não é uma operação só. Este capítulo é sobre operar o modelo do @sec-cap040 na linha de comando com precisão.
+
+## Os dois estados de um serviço
+
+A distinção fundamental, que resolve sozinha duas das três queixas acima:
+
+::: {#fig-ativo-habilitado}
+```{.tikz}
+%%| filename: matriz-de-estados-ativo-e-habilitado
+%%| alt: Matriz dois por dois cruzando o estado ativo agora com o estado habilitado no boot, mostrando os quatro casos possiveis e o comando de cada um
+\begin{tikzpicture}[
+    cel/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=5.0cm,minimum height=2.0cm},
+    bom/.style={cel,draw=manualgreen,fill=manualgreen!13},
+    mid/.style={cel,draw=manualyellow,fill=manualyellow!16},
+    off/.style={cel,draw=manualgray,fill=manualgray!11},
+    eixo/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[eixo,manualblue] at (2.9,3.15) {\texttt{enabled}\\(sobe no boot)};
+  \node[eixo,manualblue] at (8.5,3.15) {\texttt{disabled}\\(não sobe no boot)};
+  \node[eixo,manualred,anchor=east] at (-0.3,1.7)  {\texttt{active}\\(rodando agora)};
+  \node[eixo,manualred,anchor=east] at (-0.3,-0.9) {\texttt{inactive}\\(parado agora)};
+
+  \node[bom] (a) at (2.9,1.7)   {serviço em produção\\[3pt]\texttt{systemctl enable -{}-now}};
+  \node[mid] (b) at (8.5,1.7)   {rodando, mas some no reboot\\[3pt]\texttt{systemctl start}\\\emph{o padrão do Kali}};
+  \node[mid] (c) at (2.9,-0.9)  {parado agora, volta no reboot\\[3pt]\texttt{systemctl stop}\\\emph{a armadilha clássica}};
+  \node[off] (d) at (8.5,-0.9)  {desligado de fato\\[3pt]\texttt{systemctl disable -{}-now}};
+
+  \node[nt,text width=14.2cm] at (4.5,-3.0) {O quadrante inferior esquerdo é o erro que mais volta a morder: \texttt{systemctl stop} para o serviço agora e não altera nada sobre o boot. Quem quer desligar de verdade usa \texttt{disable -{}-now}; quem quer garantir que nem uma dependência consiga reativá-lo usa \texttt{mask}. Os dois estados são consultados por comandos diferentes --- \texttt{is-active} e \texttt{is-enabled} --- e nunca se deduzem um do outro.};
+\end{tikzpicture}
+```
+Os dois estados independentes de um serviço e o comando que leva a cada quadrante.
+:::
+
+```bash
+systemctl is-active ssh       # rodando agora?
+systemctl is-enabled ssh      # sobe no boot?
+```
+
+Os dois retornam código de saída utilizável em script: zero quando a resposta é afirmativa. É a forma correta de testar estado de serviço num script, muito melhor que filtrar a saída de `status` com `grep`.
+
+Os valores possíveis de `is-enabled` são mais numerosos do que a intuição sugere:
+
+| Valor | Significado |
+|---|---|
+| `enabled` | há um link em algum diretório `.wants/` |
+| `disabled` | tem seção `[Install]`, mas nenhum link existe |
+| `static` | não tem `[Install]` — não pode ser habilitada nem precisa |
+| `masked` | apontada para `/dev/null`; não pode ser iniciada de forma alguma |
+| `indirect` | não é habilitada diretamente; outra unit a puxa |
+| `generated` | criada em tempo de execução por um gerador (ex.: do `fstab`) |
+| `alias` | é apenas outro nome para uma unit existente |
+
+: Valores de retorno de `systemctl is-enabled` {#tbl-is-enabled}
+
+O `static` costuma gerar confusão: tentar `systemctl enable` numa unit estática falha com `The unit files have no installation config`, e a reação natural é achar que algo está quebrado. Não está — aquela unit foi projetada para ser puxada por outra, não para ser habilitada sozinha.
+
+## Os verbos de ciclo de vida
+
+```bash
+sudo systemctl start ssh
+sudo systemctl stop ssh
+sudo systemctl restart ssh
+sudo systemctl reload ssh
+sudo systemctl reload-or-restart ssh
+```
+
+A diferença entre `restart` e `reload` é operacionalmente relevante:
+
+- **`restart`** mata o processo e sobe outro. Todas as conexões caem. Sempre funciona.
+- **`reload`** envia um sinal — tipicamente `SIGHUP` — pedindo ao processo que releia a configuração sem morrer. Conexões existentes sobrevivem. Só funciona se a unit declarar `ExecReload=` e o programa souber tratar o sinal.
+- **`reload-or-restart`** tenta o primeiro e cai para o segundo. É o verbo certo em script de automação, que não sabe de antemão o que a unit suporta.
+
+```bash
+systemctl show ssh -p ExecReload        # a unit suporta reload?
+systemctl show ssh -p CanReload
+```
+
+::: {.callout-warning}
+## `restart` de `ssh.service` numa máquina remota
+
+Reiniciar o SSH pela própria sessão SSH é seguro no Debian e no Kali — a unit é escrita para não derrubar conexões estabelecidas —, mas apenas se a nova configuração for válida. Se o `sshd_config` tiver um erro de sintaxe, o serviço não sobe, a sessão atual continua viva e **nenhuma nova conexão é aceita**. Fechar aquele terminal é perder a máquina.
+
+O procedimento seguro é sempre o mesmo: `sudo sshd -t` para validar a configuração **antes**, `sudo systemctl reload ssh` em vez de `restart` quando possível, e abrir uma segunda sessão para confirmar que o acesso funciona antes de encerrar a primeira.
+:::
+
+Há ainda dois verbos condicionais, úteis em scripts de pacote:
+
+```bash
+sudo systemctl try-restart nginx      # reinicia so se ja estiver rodando
+sudo systemctl try-reload-or-restart nginx
+```
+
+## Lendo o `status` de verdade
+
+O `systemctl status` é a tela mais consultada do systemd, e a maior parte da informação nela passa despercebida:
+
+```bash
+systemctl status ssh
+```
+
+```text
+● ssh.service - OpenBSD Secure Shell server
+     Loaded: loaded (/lib/systemd/system/ssh.service; enabled; preset: disabled)
+     Active: active (running) since Sat 2026-08-01 09:14:02 -03; 2h 31min ago
+       Docs: man:sshd(8)
+   Main PID: 1187 (sshd)
+      Tasks: 1 (limit: 4631)
+     Memory: 4.1M (peak: 5.2M)
+        CPU: 112ms
+     CGroup: /system.slice/ssh.service
+             └─1187 "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups"
+
+ago 01 09:14:02 kali systemd[1]: Starting ssh.service...
+ago 01 09:14:02 kali sshd[1187]: Server listening on 0.0.0.0 port 22.
+```
+
+Cada linha responde a uma pergunta diferente:
+
+- **`Loaded:`** traz três informações num só lugar — o caminho do arquivo (revelando se veio do pacote ou de `/etc`), o estado de habilitação, e o *preset*, que é a política padrão da distribuição para aquele serviço. No Kali, ver `enabled; preset: disabled` significa "alguém habilitou isto conscientemente, o padrão da distribuição era não subir".
+- **`Active:`** o estado e há quanto tempo. Um serviço que reinicia sozinho a cada poucos minutos aparece aqui com um tempo suspeitosamente curto — o primeiro sinal de um laço de falha.
+- **`CGroup:`** a árvore de processos que **pertence** ao serviço. Esta é a diferença conceitual mais importante em relação ao SysV: o systemd rastreia processos por *cgroup*, não por arquivo de PID. Um processo filho que se desliga do pai continua contabilizado ali, e `systemctl stop` mata a árvore inteira. É o fim do processo órfão que sobrevive ao "stop" do serviço.
+- As últimas linhas são o log real, vindo do journal (@sec-cap042), já filtrado para essa unit.
+
+O ponto de atenção: **`active (running)` significa que o processo existe, não que ele funciona.** Um `sshd` que subiu escutando na interface errada aparece exatamente assim. Confirmar serviço é confirmar o efeito — `ss -tlnp`, uma requisição de teste — não o estado da unit.
+
+Estados de `Active:` que valem conhecer:
+
+| Estado | Quando aparece |
+|---|---|
+| `active (running)` | processo em execução |
+| `active (exited)` | terminou com sucesso; unit `oneshot` com `RemainAfterExit` |
+| `active (waiting)` | ativo, aguardando evento — típico de `.socket` e `.path` |
+| `inactive (dead)` | parado, sem erro |
+| `failed` | terminou mal, ou estourou o limite de reinícios |
+| `activating` / `deactivating` | em transição; se persistir, há um timeout em curso |
+
+: Estados de `Active:` e o que cada um indica {#tbl-estados-active}
+
+## Habilitar, desabilitar e mascarar
+
+```bash
+sudo systemctl enable ssh            # cria o link; nao inicia agora
+sudo systemctl enable --now ssh      # cria o link E inicia
+sudo systemctl disable --now ssh     # remove o link E para
+```
+
+O `enable` não faz mágica: ele lê a seção `[Install]` e cria um link simbólico. Nada mais.
+
+```bash
+sudo systemctl enable ssh
+```
+
+```text
+Created symlink /etc/systemd/system/multi-user.target.wants/ssh.service → /lib/systemd/system/ssh.service.
+```
+
+O **`mask`** é uma ferramenta mais forte e de natureza diferente. Ele aponta o nome da unit para `/dev/null`, tornando-a impossível de iniciar — nem manualmente, nem como dependência de outra unit:
+
+```bash
+sudo systemctl mask bluetooth.service
+sudo systemctl start bluetooth.service
+```
+
+```text
+Failed to start bluetooth.service: Unit bluetooth.service is masked.
+```
+
+::: {#fig-ciclo-systemctl}
+```{.tikz}
+%%| filename: verbos-do-systemctl-e-os-estados
+%%| alt: Diagrama de estados com inactive, active, failed e masked, e os verbos do systemctl que levam de um estado a outro
+\begin{tikzpicture}[
+    st/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.1cm,minimum height=1.5cm},
+    ina/.style={st,draw=manualgray,fill=manualgray!11},
+    act/.style={st,draw=manualgreen,fill=manualgreen!13},
+    fal/.style={st,draw=manualred,fill=manualred!12},
+    msk/.style={st,draw=manualyellow,fill=manualyellow!16},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[msk] (m) at (0,0)      {\textbf{masked}\\não pode iniciar};
+  \node[ina] (i) at (5.4,0)    {\textbf{inactive}\\parado, pode iniciar};
+  \node[act] (a) at (10.8,0)   {\textbf{active}\\rodando};
+  \node[fal] (f) at (10.8,-3.2) {\textbf{failed}\\terminou mal};
+
+  \draw[manualyellow,thick,-{Stealth[length=4.5pt]}] (i) to[bend left=20] node[lb,sloped,above,pos=0.5]{\texttt{mask}} (m);
+  \draw[manualgray,thick,-{Stealth[length=4.5pt]}]   (m) to[bend left=20] node[lb,sloped,below,pos=0.5]{\texttt{unmask}} (i);
+  \draw[manualgreen,thick,-{Stealth[length=4.5pt]}]  (i) to[bend left=20] node[lb,sloped,above,pos=0.5]{\texttt{start}} (a);
+  \draw[manualgray,thick,-{Stealth[length=4.5pt]}]   (a) to[bend left=20] node[lb,sloped,below,pos=0.5]{\texttt{stop}} (i);
+  \draw[manualred,thick,-{Stealth[length=4.5pt]}]    (a) -- node[lb,right,align=left,xshift=4pt,pos=0.45]{erro, sinal ou limite\\de reinícios estourado} (f);
+  \draw[manualgreen,thick,-{Stealth[length=4.5pt]}]  (f) to[bend right=34] node[lb,sloped,below,pos=0.25]{\texttt{reset-failed}} (i);
+
+  \node[nt,text width=14.2cm] at (5.4,-4.6) {\texttt{enable} e \texttt{disable} não aparecem neste diagrama porque não mudam o estado atual --- eles operam no outro eixo, o do boot. Um serviço \texttt{failed} permanece nesse estado até ser reiniciado ou até \texttt{reset-failed}: é uma marca deliberada, para que a falha não passe despercebida. \texttt{systemctl -{}-failed} lista todas de uma vez e é a primeira coisa a rodar num sistema que ``está estranho''.};
+\end{tikzpicture}
+```
+Estados de uma unit e os verbos que transitam entre eles.
+:::
+
+Quando usar cada um:
+
+| Situação | Comando |
+|---|---|
+| Não quero este serviço agora, mas talvez depois | `stop` |
+| Não quero que suba no boot | `disable` |
+| Não quero de jeito nenhum, nem agora nem depois | `disable --now` |
+| Não quero, e nenhuma dependência pode ativá-lo | `mask` |
+| Vou trocar por outra implementação do mesmo papel | `mask` no antigo |
+
+: Qual verbo usar para desligar um serviço {#tbl-quando-mask}
+
+O caso legítimo mais comum de `mask` é a substituição: ao trocar o `NetworkManager` por `systemd-networkd`, apenas desabilitar o primeiro não basta, porque outra unit pode puxá-lo por dependência. Mascarar garante que ele não volte por nenhum caminho.
+
+::: {.callout-warning}
+## Mascarar não é desligar — é quebrar de propósito
+
+Uma unit mascarada faz **falhar** quem depende dela com `Requires=`. Mascarar `systemd-logind` ou `dbus` para "economizar recurso" produz um sistema em que a sessão gráfica não abre e o `sudo` se comporta de forma estranha, com erros que não mencionam a unit mascarada em lugar nenhum.
+
+Quando um sistema apresenta falhas inexplicáveis, `systemctl list-unit-files --state=masked` deve estar entre os três primeiros comandos. E antes de mascarar qualquer coisa fora da lista de casos acima, `systemctl list-dependencies --reverse <unit>` mostra quem vai quebrar junto.
+:::
+
+## Listar: units carregadas versus arquivos em disco
+
+Dois comandos parecidos que respondem a perguntas diferentes — e a confusão entre eles leva a "esse serviço não existe" quando ele existe:
+
+```bash
+systemctl list-units --type=service              # o que esta carregado agora
+systemctl list-unit-files --type=service         # todo arquivo instalado
+```
+
+O `list-units` mostra apenas o que o systemd carregou em memória. Um serviço instalado, nunca iniciado e desabilitado pode não aparecer ali. O `list-unit-files` lê o disco e mostra tudo que está instalado, com o estado de habilitação de cada um.
+
+Filtros que valem memorizar:
+
+```bash
+systemctl --failed                                       # o essencial do diagnostico
+systemctl list-units --type=service --state=running
+systemctl list-unit-files --state=enabled
+systemctl list-units --type=service --all | grep -i post  # inclui inativas
+systemctl list-units --type=socket
+```
+
+O `systemctl --failed` é o comando de abertura de qualquer investigação. Numa máquina saudável, retorna `0 loaded units listed`.
+
+## Alterar sem editar arquivo
+
+Algumas propriedades podem ser mudadas em tempo de execução:
+
+```bash
+sudo systemctl set-property laboratorio.service MemoryMax=512M
+sudo systemctl set-property laboratorio.service CPUQuota=25%
+```
+
+Por padrão a mudança é persistente — o systemd grava um *drop-in* em `/etc/systemd/system/`. Com `--runtime`, ela vale só até o próximo boot, o que é o modo certo de experimentar.
+
+Dois comandos de recarga que não são a mesma coisa:
+
+```bash
+sudo systemctl daemon-reload      # rele os arquivos de unit do disco
+sudo systemctl daemon-reexec      # o proprio PID 1 se re-executa
+```
+
+O `daemon-reload` é o do dia a dia, obrigatório após qualquer edição manual de unit. O `daemon-reexec` faz o PID 1 substituir a si próprio por uma versão nova do binário, preservando o estado — é o que permite atualizar o pacote `systemd` sem reiniciar a máquina, e o APT o executa automaticamente. Raramente é digitado à mão.
+
+## Sinais, energia e alvos
+
+O `systemctl kill` envia sinais respeitando o *cgroup* da unit, o que o torna mais preciso que o `kill` comum do @sec-cap029:
+
+```bash
+sudo systemctl kill --signal=SIGHUP nginx        # so o processo principal
+sudo systemctl kill --kill-whom=all nginx        # a arvore inteira
+```
+
+Os verbos de energia e de troca de alvo:
+
+```bash
+systemctl reboot
+systemctl poweroff
+systemctl suspend
+systemctl hibernate
+sudo systemctl isolate multi-user.target     # sobe este alvo, para o que nao pertence
+sudo systemctl set-default graphical.target  # alvo padrao do proximo boot
+```
+
+O `isolate` é cirúrgico e perigoso na medida certa: ele ativa o alvo indicado e **para tudo que não faz parte dele**. `systemctl isolate rescue.target` numa máquina remota derruba a rede e o SSH junto — é a forma mais rápida de perder acesso a um servidor.
+
+Por fim, o `systemctl` opera em máquinas que não são a local:
+
+```bash
+systemctl --user status                    # instancia do usuario
+systemctl -H usuario@servidor status nginx # via SSH
+systemctl -M contêiner status              # dentro de um contêiner
+```
+
+## 🐉 No Kali
+
+- **`preset: disabled` no `status` não é anomalia, é a política do Kali.** A distribuição envia presets que impedem serviços de rede de subir automaticamente ao serem instalados. `systemctl list-unit-files --state=enabled` num Kali recém-instalado é uma lista curta, e essa é a intenção: numa máquina que se conecta a redes que não são suas, cada serviço ativo é exposição desnecessária.
+- **`systemctl enable --now ssh` é o comando correto quando se quer SSH no Kali — e junto vem a troca das chaves de host.** As imagens do Kali carregam chaves de host geradas na construção da imagem, o que significa que todas as máquinas criadas a partir da mesma imagem compartilham a mesma identidade criptográfica. Antes de expor o serviço, regenere: apagar `/etc/ssh/ssh_host_*` e rodar `sudo dpkg-reconfigure openssh-server`. Habilitar o serviço sem esse passo entrega uma máquina cuja chave é pública.
+- **`systemctl --failed` é o primeiro comando depois de um `apt full-upgrade` no rolling.** Uma atualização de kernel ou de biblioteca pode deixar um serviço em estado `failed` sem que nada na tela avise. Num sistema rolling, checar isso após cada atualização grande é hábito barato que evita descobrir o problema semanas depois.
+- **Serviços de laboratório merecem `--runtime`.** Ao ajustar limites de um serviço de teste — `MemoryMax` num scanner que consome memória demais, `CPUQuota` numa ferramenta de força bruta que trava a VM —, usar `systemctl set-property --runtime` deixa a mudança valer só até o reboot. O laboratório volta limpo sozinho, sem *drop-ins* esquecidos.
+- **Mascarar serviços de rede é parte legítima de um perfil forense.** Ao usar o Kali para examinar uma mídia suspeita, mascarar `NetworkManager`, `bluetooth` e serviços de montagem automática garante que nenhuma dependência os reative durante o exame. É a versão persistente do que o modo forense do live faz por parâmetro de kernel (@sec-cap039) — e, terminado o exame, `unmask` devolve tudo.
+- **A árvore de *cgroup* no `status` fecha o buraco do processo esquecido.** Ferramentas de teste que disparam subprocessos costumavam deixar restos rodando depois de "parar" o serviço. Como o systemd rastreia por *cgroup*, `systemctl stop` derruba a árvore inteira, e `systemctl status` mostra exatamente o que ainda pertence àquela unit — informação que `ps` sozinho não dá com a mesma clareza.
+
+> **Nota sobre a família RHEL.** Os comandos são idênticos; o que muda é o entorno. O `firewalld` está ativo por padrão, e um serviço habilitado e rodando pode continuar inacessível de fora — `firewall-cmd --list-all` é o complemento obrigatório do `systemctl status` ali. O SELinux acrescenta a segunda camada: um serviço que falha ao abrir uma porta não padrão gera negação registrada em `ausearch -m avc -ts recent`, não uma mensagem no `systemctl status`. E o `dnf` não executa `daemon-reload` com a mesma diligência do APT em todos os casos, o que torna o hábito de rodá-lo manualmente ainda mais útil.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. O passo 6 cria um serviço de teste e o passo 12 o remove. **Não execute o passo 10 numa máquina acessada por SSH** — ele existe justamente para demonstrar por que não se faz isso.
+
+1. **Faça o levantamento inicial do sistema.**
+
+   ```bash
+   systemctl --failed
+   systemctl list-units --type=service --state=running | wc -l
+   systemctl list-unit-files --type=service --state=enabled | head -20
+   ```
+
+   Esperado: `0 loaded units listed` no primeiro comando. A lista de habilitados é curta — a política do Kali em ação.
+
+2. **Consulte os dois estados de um serviço separadamente.**
+
+   ```bash
+   systemctl is-active ssh; echo "codigo: $?"
+   systemctl is-enabled ssh; echo "codigo: $?"
+   ```
+
+   Esperado: provavelmente `inactive` e `disabled`, ambos com código diferente de zero. São perguntas independentes, e é assim que um script deve consultá-las.
+
+3. **Leia um `status` linha por linha.**
+
+   ```bash
+   systemctl status systemd-journald
+   ```
+
+   Esperado: identifique na saída o caminho do arquivo em `Loaded:`, o `preset:`, o tempo em `Active:`, o `Main PID` e a árvore de `CGroup:`. Cada um responde a uma pergunta diferente.
+
+4. **Compare `list-units` com `list-unit-files`.**
+
+   ```bash
+   systemctl list-units --type=service | wc -l
+   systemctl list-unit-files --type=service | wc -l
+   systemctl list-units --type=service --all | wc -l
+   ```
+
+   Esperado: o segundo número é bem maior que o primeiro. A diferença é o que está instalado em disco mas não foi carregado — e é por isso que um serviço pode "não aparecer" e existir.
+
+5. **Explore as dependências e o que é estático.**
+
+   ```bash
+   systemctl list-unit-files --state=static | head -10
+   systemctl is-enabled dbus.socket
+   systemctl enable dbus.socket 2>&1 | head -3
+   ```
+
+   Esperado: o `enable` numa unit estática falha com `no installation config`. Não é defeito: aquela unit é puxada por outra, não habilitada diretamente.
+
+6. **Crie um serviço de teste.**
+
+   ```bash
+   sudo tee /etc/systemd/system/lab-relogio.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Relogio do laboratorio
+
+   [Service]
+   Type=simple
+   ExecStart=/bin/sh -c 'while true; do date -Is; sleep 5; done'
+   ExecReload=/bin/kill -HUP $MAINPID
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl daemon-reload
+   sudo systemctl start lab-relogio
+   systemctl status lab-relogio | head -12
+   ```
+
+   Esperado: `active (running)`, com a árvore de `CGroup:` mostrando o `sh` e o `sleep` como filhos.
+
+7. **Percorra os quatro quadrantes da @fig-ativo-habilitado.**
+
+   ```bash
+   systemctl is-active lab-relogio; systemctl is-enabled lab-relogio
+   sudo systemctl enable lab-relogio
+   systemctl is-active lab-relogio; systemctl is-enabled lab-relogio
+   sudo systemctl stop lab-relogio
+   systemctl is-active lab-relogio; systemctl is-enabled lab-relogio
+   ```
+
+   Esperado: `active/disabled`, depois `active/enabled`, depois `inactive/enabled` — o quadrante da armadilha. O serviço está parado agora **e** voltaria no próximo boot.
+
+8. **Force uma falha e observe o estado `failed`.**
+
+   ```bash
+   sudo systemctl start lab-relogio
+   sudo systemctl kill --signal=SIGKILL --kill-whom=all lab-relogio
+   sleep 3; systemctl status lab-relogio | head -5
+   for i in 1 2 3 4 5 6; do sudo systemctl kill -s SIGKILL --kill-whom=all lab-relogio; sleep 1; done
+   systemctl --failed
+   ```
+
+   Esperado: as primeiras mortes são absorvidas pelo `Restart=on-failure`; depois de vários reinícios rápidos o limite estoura e a unit vai para `failed` com `start request repeated too quickly`.
+
+9. **Limpe o estado de falha.**
+
+   ```bash
+   sudo systemctl reset-failed lab-relogio
+   systemctl --failed
+   sudo systemctl start lab-relogio
+   systemctl is-active lab-relogio
+   ```
+
+   Esperado: a lista de falhas volta a zero e o serviço inicia normalmente. O estado `failed` é uma marca deliberada — ele não se apaga sozinho.
+
+10. **Compare mascarar com desabilitar.**
+
+    ```bash
+    sudo systemctl mask lab-relogio
+    systemctl is-enabled lab-relogio
+    sudo systemctl start lab-relogio 2>&1 | head -2
+    sudo systemctl unmask lab-relogio
+    sudo systemctl start lab-relogio
+    systemctl is-active lab-relogio
+    ```
+
+    Esperado: `masked`, seguido da recusa explícita em iniciar, e depois a volta ao normal. Note que nem `sudo` vence uma unit mascarada — é essa a diferença para `disable`.
+
+11. **Aplique um limite de recurso em tempo de execução.**
+
+    ```bash
+    sudo systemctl set-property --runtime lab-relogio MemoryMax=64M
+    systemctl show lab-relogio -p MemoryMax
+    ls /run/systemd/system/lab-relogio.service.d/ 2>/dev/null
+    ```
+
+    Esperado: o limite aplicado e o *drop-in* criado em `/run/`, não em `/etc/` — por causa do `--runtime`. Ele desaparece no próximo boot, sem deixar rastro.
+
+12. **Remova o serviço e confirme o estado do sistema.**
+
+    ```bash
+    sudo systemctl disable --now lab-relogio
+    sudo rm -f /etc/systemd/system/lab-relogio.service
+    sudo rm -rf /run/systemd/system/lab-relogio.service.d
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed
+    systemctl list-units 'lab-relogio*' --all
+    systemctl --failed
+    ```
+
+    Esperado: nenhuma unit com esse nome e nenhuma falha pendente — o sistema exatamente como estava no passo 1.
+
+## Resumo
+
+- **Um serviço tem dois estados independentes**: `is-active` responde "está rodando agora", `is-enabled` responde "sobe no boot". `stop` mexe só no primeiro, e é por isso que o serviço "parado" volta depois do reboot.
+- **`restart` derruba conexões, `reload` não.** O `reload` só existe se a unit declarar `ExecReload=`; em script, `reload-or-restart` é o verbo seguro por tentar o melhor caso primeiro.
+- **`active (running)` diz que o processo existe, não que ele funciona.** Confirmação de serviço se faz pelo efeito — `ss -tlnp`, uma requisição de teste — não pelo estado da unit.
+- **A linha `Loaded:` do `status` traz três informações**: o caminho do arquivo, o estado de habilitação e o *preset* da distribuição. `enabled; preset: disabled` significa que alguém habilitou aquilo deliberadamente.
+- **A árvore de `CGroup:` é o rastreamento real dos processos do serviço.** É por isso que `systemctl stop` mata a árvore inteira e não deixa órfãos, coisa que o modelo de arquivo de PID do SysV nunca garantiu.
+- **`mask` não é um `disable` mais forte, é outra coisa**: torna a unit impossível de iniciar por qualquer caminho e faz falhar quem depende dela com `Requires=`. Serve para substituição de componente e para perfis forenses, não para economizar recurso.
+- **`list-units` mostra o que está carregado, `list-unit-files` mostra o que está instalado.** Um serviço pode existir em disco e não aparecer no primeiro.
+- **`systemctl --failed` é o comando de abertura de qualquer diagnóstico**, e `reset-failed` é o que limpa a marca depois de resolvido — ela não some sozinha, de propósito.
+- **`daemon-reload` relê os arquivos; `daemon-reexec` reinicia o próprio PID 1.** O primeiro é obrigatório após editar unit à mão; o segundo é o que permite atualizar o systemd sem reiniciar a máquina.

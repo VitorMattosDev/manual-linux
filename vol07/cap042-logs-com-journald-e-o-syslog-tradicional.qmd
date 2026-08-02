@@ -1,3 +1,451 @@
 # Logs com journald e o syslog tradicional {#sec-cap042}
 
-*(em elaboracao)*
+Um serviço falhou às três da manhã e voltou sozinho. Às nove, alguém pergunta o que aconteceu. A resposta está em algum lugar — mas onde? Em `/var/log/syslog`, misturada com dez mil linhas de outros processos? Em `/var/log/auth.log`? Num arquivo próprio do serviço, se ele escrever um? E se a máquina foi reiniciada desde então, o registro sobreviveu?
+
+O modelo tradicional do Unix respondia a isso com texto em arquivos e a disciplina de cada programa em escrever no lugar combinado. Funcionava, com três defeitos conhecidos: correlacionar eventos entre arquivos diferentes exigia acrobacia com `grep` e carimbos de tempo em formatos distintos; nada garantia que o programa escrevesse onde deveria; e um registro em texto puro pode ser editado por quem tem acesso, sem deixar marca.
+
+O **journald** ataca os três. Ele coleta tudo num só lugar, com estrutura, índice e metadados que o programa não precisou fornecer. Este capítulo é sobre extrair informação dele — e sobre o syslog, que não morreu e continua sendo a resposta certa em vários cenários.
+
+## De onde vem cada linha de log
+
+O `systemd-journald` é um serviço que escuta em várias entradas ao mesmo tempo e consolida tudo num formato único.
+
+::: {#fig-fluxo-journald}
+```{.tikz}
+%%| filename: fluxo-de-coleta-do-journald
+%%| alt: Diagrama mostrando as quatro fontes de log convergindo no journald e deste para os arquivos do journal e opcionalmente para o rsyslog
+\begin{tikzpicture}[
+    src/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.7cm,minimum height=1.1cm},
+    s1/.style={src,draw=manualblue,fill=manualblue!12},
+    jd/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=6pt,text width=3.3cm,minimum height=2.4cm,draw=manualred,fill=manualred!12},
+    dst/.style={src,draw=manualgreen,fill=manualgreen!13,text width=3.9cm},
+    alt/.style={src,draw=manualyellow,fill=manualyellow!16,text width=3.9cm},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[s1] (a) at (0,2.4)   {\textbf{kernel}\\buffer do \texttt{dmesg}};
+  \node[s1] (b) at (0,1.0)   {\textbf{serviços}\\saída padrão e de erro};
+  \node[s1] (c) at (0,-0.4)  {\textbf{syslog}\\socket \texttt{/dev/log}};
+  \node[s1] (d) at (0,-1.8)  {\textbf{auditoria}\\e \texttt{sd\_journal\_send()}};
+
+  \node[jd]  (j) at (5.4,0.3) {\textbf{systemd-}\\\textbf{journald}\\[3pt]acrescenta metadados\\indexa por campo};
+
+  \node[dst] (f) at (10.6,1.3)  {\texttt{/var/log/journal/}\\binário, indexado};
+  \node[alt] (r) at (10.6,-0.9) {\texttt{rsyslog}\\\texttt{/var/log/syslog}\\texto, se instalado};
+
+  \draw[fl] (a) -- (j);  \draw[fl] (b) -- (j);
+  \draw[fl] (c) -- (j);  \draw[fl] (d) -- (j);
+  \draw[fl,manualgreen]  (j) -- node[lb,above,pos=0.55]{grava} (f);
+  \draw[fl,manualyellow] (j) -- node[lb,below,pos=0.55]{encaminha} (r);
+
+  \node[nt,text width=14.2cm] at (5.2,-3.4) {A segunda fonte é a mudança de hábito mais relevante: um serviço gerenciado pelo systemd não precisa abrir arquivo de log nenhum. Basta escrever na saída padrão --- o journald captura, carimba com a unit, o PID, o UID, o \emph{cgroup} e o \emph{boot} atual, e indexa. Programa que insiste em escrever no próprio arquivo perde toda essa correlação e obriga quem investiga a juntar as peças à mão.};
+\end{tikzpicture}
+```
+As fontes que o journald consolida e para onde o resultado vai.
+:::
+
+Cada entrada no journal não é uma linha de texto: é um conjunto de campos. Para ver o que existe por baixo:
+
+```bash
+journalctl -u ssh -n 1 -o verbose
+```
+
+```text
+Sat 2026-08-01 09:14:02.184392 -03 [s=8f2a...;i=1c4a;b=3d9f...]
+    _BOOT_ID=3d9f8c21...
+    _MACHINE_ID=a1b2c3...
+    PRIORITY=6
+    SYSLOG_IDENTIFIER=sshd
+    _PID=1187
+    _UID=0
+    _GID=0
+    _COMM=sshd
+    _EXE=/usr/sbin/sshd
+    _CMDLINE=sshd: /usr/sbin/sshd -D
+    _SYSTEMD_UNIT=ssh.service
+    _SYSTEMD_CGROUP=/system.slice/ssh.service
+    MESSAGE=Server listening on 0.0.0.0 port 22.
+```
+
+Os campos que começam com sublinhado são **confiáveis**: foram acrescentados pelo journald a partir do que o kernel informou sobre o processo que enviou a mensagem, não pelo próprio processo. Um programa pode mentir no `SYSLOG_IDENTIFIER`; não pode mentir no `_PID` nem no `_SYSTEMD_UNIT`. Essa distinção é o que dá valor forense ao journal.
+
+Qualquer campo serve de filtro, com a sintaxe `CAMPO=valor`:
+
+```bash
+journalctl _SYSTEMD_UNIT=ssh.service
+journalctl _UID=1000
+journalctl _COMM=sudo
+journalctl _EXE=/usr/sbin/sshd
+```
+
+## Os filtros que resolvem a maior parte dos casos
+
+```bash
+journalctl -u ssh                    # so desta unit
+journalctl -u ssh -n 50              # ultimas 50 linhas
+journalctl -u ssh -f                 # acompanha em tempo real
+journalctl -b                        # so o boot atual
+journalctl -b -1                     # o boot anterior
+journalctl -k                        # so mensagens do kernel
+journalctl -p err                    # prioridade err ou pior
+journalctl --since "2026-08-01 09:00" --until "2026-08-01 10:00"
+journalctl --since "1 hour ago"
+journalctl --since yesterday --until today
+```
+
+Os filtros se combinam com **E** lógico, e é aí que a ferramenta ganha da busca em arquivo de texto:
+
+```bash
+journalctl -u ssh -p warning --since "2 days ago"
+journalctl -b -1 -p err
+journalctl _UID=1000 --since today -o short-iso
+```
+
+O `-b -1` é o que responde à pergunta que abre este capítulo: os logs do boot anterior, isolados, sem misturar com os de agora.
+
+```bash
+journalctl --list-boots
+```
+
+```text
+IDX BOOT ID          FIRST ENTRY                 LAST ENTRY
+ -2 a1b2c3d4...      2026-07-30 08:11:02 -03     2026-07-30 19:44:51 -03
+ -1 e5f6a7b8...      2026-07-31 08:02:14 -03     2026-07-31 23:10:07 -03
+  0 3d9f8c21...      2026-08-01 09:13:58 -03     2026-08-01 11:45:33 -03
+```
+
+### Prioridades
+
+O journald herda a escala de severidade do syslog, de 0 a 7:
+
+| Nº | Nome | Uso |
+|---|---|---|
+| 0 | `emerg` | sistema inutilizável |
+| 1 | `alert` | ação imediata necessária |
+| 2 | `crit` | condição crítica |
+| 3 | `err` | erro |
+| 4 | `warning` | aviso |
+| 5 | `notice` | evento normal, mas digno de nota |
+| 6 | `info` | informativo |
+| 7 | `debug` | depuração |
+
+: Níveis de prioridade do syslog e do journald {#tbl-prioridades}
+
+`journalctl -p err` mostra prioridade `err` **e tudo acima em severidade** — `crit`, `alert`, `emerg`. Para uma faixa exata, `-p warning..err`. Na saída colorida do terminal, vermelho é `err` ou pior e negrito é `warning`, o que permite localizar o problema por varredura visual.
+
+### Formatos de saída
+
+```bash
+journalctl -u ssh -o short-iso       # carimbo ISO 8601, mais util que o padrao
+journalctl -u ssh -o verbose         # todos os campos
+journalctl -u ssh -o cat             # so a mensagem, sem metadado
+journalctl -u ssh -o json-pretty     # estruturado
+journalctl -u ssh -o json | jq -r '.MESSAGE'
+```
+
+O formato `json` é o que torna o journal componível com o resto do ferramental. Extrair os IPs de tentativas de login falhas do boot atual, por exemplo, deixa de ser um exercício de expressão regular sobre texto livre e passa a ser uma consulta sobre campos.
+
+O formato padrão usa o fuso e o formato de data locais; `-o short-iso` produz carimbos comparáveis entre máquinas, e `--utc` normaliza o fuso — os dois juntos são o padrão sensato para qualquer coisa que vá para um relatório.
+
+## Volátil ou persistente
+
+A pergunta que decide se o log de ontem existe:
+
+::: {#fig-persistencia-journal}
+```{.tikz}
+%%| filename: armazenamento-volatil-versus-persistente-do-journal
+%%| alt: Comparacao entre journal volatil em run log journal que some no reboot e journal persistente em var log journal que sobrevive
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=6pt,text width=5.6cm,minimum height=2.5cm},
+    vol/.style={bx,draw=manualyellow,fill=manualyellow!16},
+    per/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    lb/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[vol] (v) at (0,0)   {\texttt{/run/log/journal/}\\[4pt]em \texttt{tmpfs} --- consome RAM\\some a cada reinicialização\\[4pt]\texttt{journalctl -b -1} não\\encontra nada};
+  \node[per] (p) at (7.4,0) {\texttt{/var/log/journal/}\\[4pt]em disco, sobrevive ao reboot\\rotação por tamanho e idade\\[4pt]\texttt{journalctl -b -1}\\responde};
+
+  \node[lb,manualyellow,above=6pt] at (v.north) {volátil --- o padrão quando o diretório não existe};
+  \node[lb,manualgreen,above=6pt]  at (p.north) {persistente --- basta o diretório existir};
+
+  \node[nt,text width=14.2cm] at (3.7,-2.6) {O journald escolhe pela existência do diretório: crie \texttt{/var/log/journal/} e ele passa a gravar ali; apague e ele volta para a RAM. O controle explícito é a chave \texttt{Storage=} em \texttt{/etc/systemd/journald.conf}, com os valores \texttt{auto} (o comportamento descrito), \texttt{persistent}, \texttt{volatile} e \texttt{none}. Descobrir que o log do incidente de ontem nunca existiu é o tipo de lição que só se aprende uma vez.};
+\end{tikzpicture}
+```
+Journal volátil e persistente: onde cada um grava e o que sobrevive ao reboot.
+:::
+
+```bash
+journalctl --disk-usage
+ls -d /var/log/journal 2>/dev/null || echo "journal volatil"
+```
+
+Para tornar persistente:
+
+```bash
+sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald
+```
+
+E o controle de tamanho, em `/etc/systemd/journald.conf`:
+
+```ini
+[Journal]
+Storage=persistent
+SystemMaxUse=500M
+SystemMaxFileSize=50M
+MaxRetentionSec=1month
+```
+
+Sem limite explícito, o journald usa até 10% do sistema de arquivos, deixando 15% livre. Numa VM com disco pequeno, isso é mais do que se imagina.
+
+A limpeza manual:
+
+```bash
+sudo journalctl --vacuum-size=200M
+sudo journalctl --vacuum-time=7d
+sudo journalctl --vacuum-files=5
+```
+
+::: {.callout-warning}
+## `--vacuum-*` apaga registros de forma irreversível
+
+Os três comandos removem arquivos de journal permanentemente. Num sistema sob investigação — ou em qualquer máquina cujo log possa vir a ser evidência —, executá-los destrói exatamente o material que se procuraria depois. Antes de liberar espaço assim, exporte: `journalctl -b -1 -o export > /caminho/externo/journal-boot-anterior.export`.
+
+A limpeza por configuração (`SystemMaxUse=`) é preferível à manual, porque é previsível e não acontece no meio de uma investigação por decisão de alguém com pressa.
+:::
+
+## Integridade: o log como evidência
+
+O journal oferece verificação criptográfica que o arquivo de texto nunca teve:
+
+```bash
+sudo journalctl --verify
+```
+
+E o **FSS** (*Forward Secure Sealing*) vai além: uma chave de selagem é gerada, o journal é selado periodicamente, e alterações retroativas passam a ser detectáveis mesmo por quem tem root na máquina — porque a chave de verificação fica fora dela.
+
+```bash
+sudo journalctl --setup-keys
+sudo journalctl --verify --verify-key=<chave-de-verificacao>
+```
+
+O comando imprime a chave de verificação e um QR code; a chave deve ser guardada **em outro lugar**. O mecanismo não impede a alteração — impede que ela passe despercebida, o que num contexto de resposta a incidente é a propriedade que importa. A alternativa clássica, e complementar, é enviar os logs para uma máquina remota em tempo real, onde o atacante que comprometeu a origem não alcança.
+
+## O syslog não morreu
+
+O `rsyslog` continua instalado em boa parte dos sistemas Debian, recebendo do journald uma cópia de tudo e escrevendo em texto:
+
+```bash
+systemctl status rsyslog
+ls -lh /var/log/{syslog,auth.log,kern.log,daemon.log} 2>/dev/null
+```
+
+O modelo do syslog classifica cada mensagem por **facility** (de onde veio) e **severity** (quão grave é). As facilities mais usadas:
+
+| Facility | Origem |
+|---|---|
+| `auth` / `authpriv` | autenticação e autorização — `sudo`, `sshd`, PAM |
+| `cron` | agendadores |
+| `daemon` | serviços em geral |
+| `kern` | kernel |
+| `mail` | correio |
+| `local0`–`local7` | livres para uso local |
+
+: Facilities do syslog e sua origem típica {#tbl-facilities}
+
+A configuração associa pares facility/severity a destinos:
+
+```text
+# /etc/rsyslog.d/50-default.conf
+auth,authpriv.*                 /var/log/auth.log
+*.*;auth,authpriv.none          -/var/log/syslog
+kern.*                          -/var/log/kern.log
+*.emerg                         :omusrmsg:*
+```
+
+Quatro razões pelas quais o syslog continua fazendo sentido:
+
+1. **Envio remoto para um coletor central**, que é o modo padrão da indústria de centralizar logs. Uma linha `*.* @@coletor.local:514` e todo o log da máquina sai dela em tempo real, com TLS.
+2. **Compatibilidade**: dispositivos de rede, appliances e software antigo falam syslog e não falam journal.
+3. **Texto puro** é o que ferramentas de análise consomem sem tradução.
+4. **Regras de roteamento sofisticadas** — filtrar por conteúdo, reescrever, encaminhar seletivamente — que o journald não oferece.
+
+O `logrotate` cuida do crescimento desses arquivos:
+
+```bash
+cat /etc/logrotate.d/rsyslog
+sudo logrotate -d /etc/logrotate.conf     # simula, nao executa
+```
+
+A opção `-d` é uma simulação — mostra o que seria feito sem tocar em nada. É a forma correta de testar uma regra nova de rotação, e `-f` força a execução imediata.
+
+Num sistema que roda os dois, o mesmo evento aparece em dois lugares. Não é desperdício: é redundância com propriedades diferentes — o journal indexado e verificável para investigação local, o texto do syslog para envio remoto e para ferramentas externas. Quem quiser eliminar a duplicação desabilita o `rsyslog` ou ajusta `ForwardToSyslog=no` em `journald.conf`.
+
+## 🐉 No Kali
+
+- **A instalação padrão do Kali normalmente já tem `/var/log/journal/`, mas confirme antes de contar com isso.** Um `journalctl -b -1` que retorna `Specified boot ID or offset does not exist` significa journal volátil: o log de tudo que aconteceu antes do último boot nunca foi gravado. Numa máquina de trabalho onde a linha do tempo importa, esse é o primeiro ajuste a fazer.
+- **Sessão live: todo log vive em RAM e some no desligamento.** É comportamento esperado, mas tem duas consequências práticas. Primeira: qualquer registro que precise sobreviver a uma sessão live tem de ser exportado para mídia externa **durante** a sessão — `journalctl -b -o export > /media/usb/sessao.export`. Segunda: em live com pouca RAM, o journal disputa memória com as ferramentas, e limitar `RuntimeMaxUse` evita a surpresa.
+- **`journalctl -u` é o caminho certo para depurar ferramenta que roda como serviço.** Metasploit com PostgreSQL, Nessus, OpenVAS/GVM, BeEF — todos sobem como units, e todos escrevem coisas úteis na saída padrão que o journald captura. Procurar arquivo de log em `/opt/` ou em `/var/log/<ferramenta>/` costuma ser desnecessário: `journalctl -u gvmd -p err -b` responde mais rápido.
+- **Em teste de intrusão autorizado, o journal da máquina de trabalho é parte do produto entregue.** A linha do tempo de quando cada ferramenta foi executada, com carimbos confiáveis, sustenta o relatório e delimita o escopo do que foi feito — inclusive para demonstrar que nada aconteceu fora da janela contratada. Exportar `journalctl --since "<inicio>" --until "<fim>" -o export` ao fim do engajamento é hábito profissional, e `-o json` alimenta relatório automatizado.
+- **Do lado defensivo, o FSS e o envio remoto são a resposta ao apagamento de rastros.** Um atacante com root apaga ou edita `/var/log/*` sem esforço. Selar o journal com `journalctl --setup-keys` e guardar a chave fora da máquina torna a alteração detectável; encaminhar para um coletor remoto por `rsyslog` sobre TLS torna-a inútil, porque a cópia já saiu. As duas medidas são complementares e nenhuma delas exige software além do que já está instalado.
+- **`journalctl --disk-usage` merece uma olhada nas VMs de laboratório.** Ferramentas verbosas rodando por horas geram muito log, e um journal sem limite chega a ocupar alguns GB — o suficiente para encher o disco de uma VM dimensionada com folga curta. `SystemMaxUse=500M` em `journald.conf` resolve de forma previsível.
+
+> **Nota sobre a família RHEL.** O journald é o mesmo, com a mesma configuração e os mesmos comandos. As diferenças estão no entorno: o RHEL vem com `rsyslog` habilitado por padrão e com o journal em modo volátil em algumas instalações mínimas, e o subsistema `auditd` — que no Debian é opcional — é parte central do modelo, gravando em `/var/log/audit/audit.log` com ferramentas próprias (`ausearch`, `aureport`). Negações de SELinux aparecem lá, não no journal, e essa é a primeira coisa a lembrar ao depurar um serviço que "falha sem motivo" no RHEL.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. O passo 8 cria um serviço temporário, removido no passo 12. Nenhum passo apaga log — o comando de limpeza aparece apenas como simulação.
+
+1. **Descubra se o seu journal é persistente.**
+
+   ```bash
+   ls -d /var/log/journal 2>/dev/null && echo "PERSISTENTE" || echo "VOLATIL"
+   journalctl --disk-usage
+   journalctl --list-boots
+   ```
+
+   Esperado: se a lista de boots tiver mais de uma linha, o journal é persistente. Uma linha só significa que só o boot atual existe.
+
+2. **Torne-o persistente, se ainda não for.**
+
+   ```bash
+   sudo mkdir -p /var/log/journal
+   sudo systemd-tmpfiles --create --prefix /var/log/journal
+   sudo systemctl restart systemd-journald
+   journalctl --disk-usage
+   ```
+
+   Esperado: o journald passa a gravar em disco. A partir do próximo reboot, `journalctl -b -1` terá o que mostrar.
+
+3. **Veja o que existe por baixo de uma linha de log.**
+
+   ```bash
+   journalctl -n 1 -o verbose
+   journalctl -u systemd-journald -n 3 -o json-pretty
+   ```
+
+   Esperado: dezenas de campos. Identifique os que começam com sublinhado — são os que o journald acrescentou e o processo emissor não pôde forjar.
+
+4. **Filtre por unit, prioridade e tempo.**
+
+   ```bash
+   journalctl -u systemd-journald -n 10 -o short-iso
+   journalctl -p err -b | tail -20
+   journalctl --since "1 hour ago" | wc -l
+   journalctl --since today -p warning | head -20
+   ```
+
+   Esperado: cada filtro reduz o conjunto, e os filtros se combinam com E lógico. Compare o volume do primeiro comando com o do terceiro.
+
+5. **Use os campos como filtro.**
+
+   ```bash
+   journalctl _COMM=sudo --since today | tail -10
+   journalctl _UID=$(id -u) --since today | tail -5
+   journalctl _TRANSPORT=kernel -n 10
+   ```
+
+   Esperado: o filtro por campo é exato, sem falso positivo de busca textual. `_COMM=sudo` traz só o que o binário `sudo` emitiu.
+
+6. **Investigue o boot: agora e o anterior.**
+
+   ```bash
+   journalctl -b -p err | head -20
+   journalctl -b -1 -p err 2>&1 | head -20
+   journalctl -k -b | head -20
+   systemd-analyze blame | head -5
+   ```
+
+   Esperado: os erros de cada boot, separados. Se o `-b -1` disser que o boot não existe, o journal era volátil até o passo 2 — o que só será corrigido a partir do próximo reboot.
+
+7. **Verifique a integridade do journal.**
+
+   ```bash
+   sudo journalctl --verify 2>&1 | tail -10
+   ```
+
+   Esperado: uma sequência de `PASS` por arquivo. Sem FSS configurado, essa verificação detecta corrupção, não adulteração deliberada — a diferença é justamente o que o `--setup-keys` acrescenta.
+
+8. **Crie um serviço que gera log e observe a captura automática.**
+
+   ```bash
+   sudo tee /etc/systemd/system/lab-log.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Gerador de log do laboratorio
+
+   [Service]
+   Type=simple
+   ExecStart=/bin/sh -c 'n=0; while true; do n=$((n+1)); echo "mensagem normal $n"; echo "erro simulado $n" >&2; sleep 4; done'
+   EOF
+   sudo systemctl daemon-reload
+   sudo systemctl start lab-log
+   sleep 12
+   journalctl -u lab-log -n 10 -o short-iso
+   ```
+
+   Esperado: as mensagens aparecem no journal sem que a unit tenha configurado log algum. Note que tanto a saída padrão quanto a de erro foram capturadas.
+
+9. **Acompanhe em tempo real.**
+
+   ```bash
+   journalctl -u lab-log -f
+   ```
+
+   Esperado: novas linhas a cada quatro segundos. Interrompa com `Ctrl+C`. Este é o modo de trabalho ao depurar um serviço que não sobe: deixar o `-f` rodando num terminal e dar `systemctl restart` no outro.
+
+10. **Exporte o log num formato reutilizável.**
+
+    ```bash
+    journalctl -u lab-log -o json | head -2
+    journalctl -u lab-log -o json | jq -r '[.__REALTIME_TIMESTAMP, .MESSAGE] | @tsv' | tail -5
+    journalctl -u lab-log -o export > ~/lab-log.export
+    ls -lh ~/lab-log.export
+    ```
+
+    Esperado: JSON com um objeto por linha, consultável com `jq`, e um arquivo de exportação que pode ser lido em outra máquina. Se o `jq` não estiver instalado: `sudo apt install jq`.
+
+11. **Compare journal e syslog para o mesmo evento.**
+
+    ```bash
+    logger -p auth.warning "teste de mensagem do laboratorio"
+    journalctl -n 5 | grep -i laboratorio
+    sudo grep -i laboratorio /var/log/syslog /var/log/auth.log 2>/dev/null
+    grep -c . /etc/rsyslog.d/50-default.conf 2>/dev/null || echo "rsyslog ausente"
+    ```
+
+    Esperado: a mesma mensagem no journal e, se o `rsyslog` estiver instalado, também em `/var/log/auth.log` — porque a facility declarada foi `auth`. É o encaminhamento da @fig-fluxo-journald funcionando.
+
+12. **Simule a rotação e a limpeza, sem executar nenhuma das duas.**
+
+    ```bash
+    sudo logrotate -d /etc/logrotate.conf 2>&1 | head -20
+    journalctl --disk-usage
+    sudo journalctl --vacuum-time=30d --dry-run 2>/dev/null || \
+        echo "sem --dry-run nesta versao: NAO execute o vacuum agora"
+    ```
+
+    Esperado: o `logrotate -d` mostra o que faria sem fazer. Não execute o `--vacuum` real aqui — o objetivo do passo é justamente reconhecer a diferença entre simular e destruir.
+
+13. **Remova o serviço de teste.**
+
+    ```bash
+    sudo systemctl stop lab-log
+    sudo rm -f /etc/systemd/system/lab-log.service ~/lab-log.export
+    sudo systemctl daemon-reload
+    journalctl -u lab-log -n 3
+    ```
+
+    Esperado: a unit some, mas o log dela **permanece** no journal. É o comportamento correto: o registro do que aconteceu não desaparece porque o serviço foi removido.
+
+## Resumo
+
+- **O journald consolida quatro fontes** — kernel, saída padrão dos serviços, socket do syslog e a API nativa — num formato único, indexado e com metadados que o programa emissor não precisou fornecer.
+- **Uma entrada do journal é um conjunto de campos, não uma linha de texto.** Os campos iniciados por sublinhado (`_PID`, `_SYSTEMD_UNIT`, `_UID`) são acrescentados pelo journald a partir do kernel e não podem ser forjados pelo processo emissor.
+- **Serviço gerenciado pelo systemd não precisa abrir arquivo de log**: basta escrever na saída padrão. Programa que insiste no arquivo próprio perde a correlação automática.
+- **Os filtros se combinam com E lógico** — `-u`, `-b`, `-p`, `--since`/`--until`, `-k` e qualquer `CAMPO=valor` —, o que substitui com vantagem a busca textual em arquivos separados.
+- **`-b -1` isola o boot anterior**, e só funciona com journal persistente. A existência de `/var/log/journal/` é o que decide entre persistente e volátil; `Storage=` em `journald.conf` é o controle explícito.
+- **Sem limite configurado, o journal usa até 10% do sistema de arquivos.** `SystemMaxUse=` é preferível à limpeza manual, porque é previsível — e `--vacuum-*` apaga registros de forma irreversível, o que é grave num sistema sob investigação.
+- **`journalctl --verify` detecta corrupção; o FSS (`--setup-keys`) detecta adulteração.** Nenhum dos dois impede a alteração: eles a tornam visível, o que é a propriedade que importa em resposta a incidente.
+- **O syslog continua relevante** pelo envio remoto a um coletor central, pela compatibilidade com equipamentos que não falam journal, pelo texto puro e pelas regras de roteamento — e o `logrotate -d` simula a rotação antes de executá-la.

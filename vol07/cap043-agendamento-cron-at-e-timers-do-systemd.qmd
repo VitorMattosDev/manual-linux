@@ -1,3 +1,500 @@
 # Agendamento: cron, at e timers do systemd {#sec-cap043}
 
-*(em elaboracao)*
+O script funciona. Roda no terminal, faz exatamente o que deveria, imprime o que deveria. Agendado no `cron` para as três da manhã, não faz nada — sem erro, sem log, sem pista. Na manhã seguinte, o backup não existe.
+
+Esse é o rito de passagem de quem automatiza tarefas no Linux, e a causa quase nunca é o agendador. É o **ambiente**: o `cron` executa o script num contexto quase vazio, sem as variáveis que o shell interativo carregava, com um `PATH` de três diretórios e sem nenhum dos `.bashrc` que davam ao script os apelidos e caminhos de que ele dependia sem que ninguém percebesse.
+
+Este capítulo cobre os três agendadores que convivem num Linux moderno — o `cron` clássico, o `at` para execução única, e os *timers* do systemd — e, principalmente, as armadilhas que fazem uma tarefa agendada falhar em silêncio.
+
+## cron: o clássico
+
+O `cron` é um serviço que acorda a cada minuto, lê suas tabelas e executa o que estiver marcado para aquele momento. A tabela de um usuário se edita com:
+
+```bash
+crontab -e        # edita a tabela do usuario atual
+crontab -l        # lista
+crontab -r        # REMOVE a tabela inteira, sem confirmar
+```
+
+::: {.callout-warning}
+## `crontab -r` apaga tudo sem perguntar
+
+A tecla `r` fica ao lado do `e` no teclado, e `crontab -r` remove a tabela inteira imediatamente, sem confirmação e sem cópia de segurança. Não há desfazer.
+
+Hábito que evita a perda: manter a tabela num arquivo versionado e instalá-la com `crontab arquivo.cron`, em vez de editá-la no lugar. Alternativa mínima: `crontab -l > ~/crontab.bak` antes de qualquer edição.
+:::
+
+### A anatomia de uma linha
+
+::: {#fig-campos-cron}
+```{.tikz}
+%%| filename: anatomia-de-uma-linha-do-crontab
+%%| alt: Decomposicao dos cinco campos de tempo de uma linha do crontab, com minuto hora dia mes e dia da semana, e o comando ao final
+\begin{tikzpicture}[
+    campo/.style={rounded corners=2pt,thick,align=center,font=\scriptsize\ttfamily,inner sep=4pt,minimum height=0.8cm,minimum width=1.1cm},
+    c1/.style={campo,draw=manualred,fill=manualred!12},
+    c2/.style={campo,draw=manualblue,fill=manualblue!12},
+    c3/.style={campo,draw=manualgreen,fill=manualgreen!13},
+    c4/.style={campo,draw=manualyellow,fill=manualyellow!16},
+    c5/.style={campo,draw=manualgray,fill=manualgray!14},
+    cmd/.style={campo,draw=manualgray,fill=white,minimum width=5.2cm},
+    ex/.style={font=\scriptsize,align=center,text width=2.3cm},
+    fl/.style={manualgray,thin,-{Stealth[length=3.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[c1]  (a) at (0,0)    {30};
+  \node[c2]  (b) at (1.4,0)  {3};
+  \node[c3]  (c) at (2.8,0)  {*};
+  \node[c4]  (d) at (4.2,0)  {*};
+  \node[c5]  (e) at (5.6,0)  {1-5};
+  \node[cmd] (f) at (9.4,0)  {/usr/local/bin/backup.sh};
+
+  \node[ex,manualred]    at (-0.2,-1.6) {\textbf{minuto}\\0--59};
+  \node[ex,manualblue]   at (2.2,-1.6)  {\textbf{hora}\\0--23};
+  \node[ex,manualgreen]  at (4.6,-1.6)  {\textbf{dia do mês}\\1--31};
+  \node[ex,manualyellow] at (7.0,-1.6)  {\textbf{mês}\\1--12};
+  \node[ex,manualgray]   at (9.4,-1.6)  {\textbf{dia da semana}\\0--7 (0 e 7 = dom)};
+
+  \draw[fl,manualred]    (a.south) -- (-0.2,-1.0);
+  \draw[fl,manualblue]   (b.south) -- (2.2,-1.0);
+  \draw[fl,manualgreen]  (c.south) -- (4.6,-1.0);
+  \draw[fl,manualyellow] (d.south) -- (7.0,-1.0);
+  \draw[fl,manualgray]   (e.south) -- (9.4,-1.0);
+
+  \node[nt,text width=14.2cm] at (5.0,-3.4) {Operadores dentro de um campo: \texttt{*} qualquer valor, \texttt{,} lista (\texttt{1,15}), \texttt{-} intervalo (\texttt{1-5}), \texttt{/} passo (\texttt{*/10} = a cada dez). A pegadinha está nos campos de dia: quando \emph{dia do mês} e \emph{dia da semana} são ambos diferentes de \texttt{*}, o cron aplica \textbf{ou}, não \textbf{e} --- \texttt{0 0 13 * 5} roda todo dia 13 \emph{e} toda sexta-feira, não apenas nas sextas-feiras 13.};
+\end{tikzpicture}
+```
+Os cinco campos de tempo de uma linha do `crontab`.
+:::
+
+Atalhos que dispensam os cinco campos:
+
+```text
+@reboot     ao iniciar o sistema
+@yearly     0 0 1 1 *
+@monthly    0 0 1 * *
+@weekly     0 0 * * 0
+@daily      0 0 * * *
+@hourly     0 * * * *
+```
+
+### Onde as tabelas moram
+
+| Local | Formato | Uso |
+|---|---|---|
+| `crontab -e` (por usuário) | 5 campos + comando | tarefas pessoais |
+| `/etc/crontab` | 5 campos + **usuário** + comando | sistema, editado à mão |
+| `/etc/cron.d/*` | igual ao `/etc/crontab` | fragmentos instalados por pacotes |
+| `/etc/cron.{hourly,daily,weekly,monthly}/` | scripts executáveis, sem horário | manutenção periódica |
+
+: Onde ficam as tabelas do cron e o formato de cada uma {#tbl-locais-cron}
+
+A diferença mais importante: as tabelas **do sistema** (`/etc/crontab` e `/etc/cron.d/`) têm um campo a mais, o usuário sob o qual o comando roda. Copiar uma linha da tabela pessoal para `/etc/cron.d/` sem acrescentar esse campo faz o cron interpretar o nome do programa como nome de usuário — e a tarefa nunca roda.
+
+Arquivos em `/etc/cron.d/` têm ainda uma exigência silenciosa: o nome não pode conter ponto. Um arquivo chamado `backup.sh` ou `tarefa.conf` ali dentro é ignorado sem qualquer mensagem, porque o `run-parts` que os processa aplica regras de nome herdadas do Debian.
+
+### O ambiente: a causa raiz do "não roda"
+
+O `cron` executa com um ambiente mínimo. Nada de `~/.bashrc`, nada de `~/.profile`, nada de variáveis exportadas na sua sessão:
+
+```text
+PATH=/usr/bin:/bin
+SHELL=/bin/sh
+HOME=/home/usuario
+```
+
+Quatro consequências, em ordem de frequência com que mordem:
+
+1. **Caminho não encontrado.** Um script que chama `nmap` funciona no terminal porque `/usr/sbin` está no seu `PATH`; sob o cron, não está. **Sempre use caminhos absolutos** dentro do script, ou defina `PATH=` no topo do crontab.
+2. **`SHELL=/bin/sh`, não `bash`.** Sintaxe específica do Bash — `[[ ]]`, arrays, `source` — falha com erro de sintaxe. Ou o script declara o shebang `#!/bin/bash` e é executado diretamente, ou o crontab define `SHELL=/bin/bash`.
+3. **O sinal de porcentagem é especial.** No crontab, `%` significa "nova linha, e o que vem depois é entrada padrão". Um `date +%Y-%m-%d` na linha do cron é truncado no primeiro `%`. É preciso escapá-lo com barra invertida — ou, muito melhor, tirar o comando complicado da linha do cron e colocá-lo num script.
+4. **A saída vira e-mail que ninguém lê.** Se o comando escreve qualquer coisa em `stdout` ou `stderr`, o cron tenta enviar por e-mail para o dono da tabela. Sem MTA instalado, essa mensagem se perde — e com ela, o erro que explicaria o problema.
+
+O redirecionamento correto, que resolve o quarto ponto e torna o problema investigável:
+
+```text
+30 3 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+```
+
+E o teste que reproduz o ambiente do cron antes de esperar até as três da manhã:
+
+```bash
+env -i /bin/sh -c '/usr/local/bin/backup.sh'
+```
+
+Se o script falha aí, ele falharia no cron. É um teste de dez segundos que economiza uma noite.
+
+### anacron
+
+O `cron` pressupõe uma máquina ligada. Num laptop desligado às três da manhã, a tarefa simplesmente não acontece — e não é recuperada no dia seguinte.
+
+O **anacron** resolve isso trabalhando com granularidade de dias e registrando a última execução em `/var/spool/anacron/`. Ao ser acionado, ele verifica quanto tempo passou e executa o que está atrasado:
+
+```bash
+cat /etc/anacrontab
+ls /var/spool/anacron/
+```
+
+```text
+# periodo  atraso  identificador  comando
+1          5       cron.daily     run-parts --report /etc/cron.daily
+7          25      cron.weekly    run-parts --report /etc/cron.weekly
+```
+
+Em sistemas Debian com `anacron` instalado, os diretórios `/etc/cron.daily/` e companhia passam a ser executados por ele, não pelo cron — o que garante que a manutenção diária aconteça mesmo numa máquina que só liga durante o expediente.
+
+## at: execução única
+
+Para "rode isto uma vez, mais tarde":
+
+```bash
+echo "/usr/local/bin/coleta.sh" | at 23:30
+at 09:00 tomorrow -f /caminho/script.sh
+at now + 2 hours
+atq                    # lista a fila
+atrm 3                 # remove o job 3
+```
+
+O `at` aceita expressões de tempo em linguagem quase natural: `at 4pm + 3 days`, `at 10:00 Aug 15`, `at midnight`. Diferente do cron, ele **preserva o ambiente e o diretório de trabalho** do momento em que o agendamento foi feito, o que elimina boa parte das armadilhas da seção anterior — mas também significa que uma variável definida naquele instante permanece congelada no job.
+
+O serviço `atd` precisa estar ativo:
+
+```bash
+systemctl status atd
+```
+
+## Timers do systemd
+
+Um *timer* é uma unit `.timer` que ativa outra unit — normalmente uma `.service` de mesmo nome. São **sempre dois arquivos**.
+
+```ini
+# /etc/systemd/system/backup.service
+[Unit]
+Description=Backup diario do laboratorio
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup.sh
+User=backup
+```
+
+```ini
+# /etc/systemd/system/backup.timer
+[Unit]
+Description=Dispara o backup diario
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now backup.timer
+systemctl list-timers
+```
+
+Note o que é habilitado: o **timer**, não o serviço. Habilitar o `.service` faria ele rodar no boot, que não é a intenção. O `.service` de uma tarefa agendada normalmente nem tem seção `[Install]` — é `static`, existindo apenas para ser chamado pelo timer.
+
+### As diretivas de `[Timer]`
+
+| Diretiva | Efeito |
+|---|---|
+| `OnCalendar=` | horário absoluto, no formato de calendário do systemd |
+| `OnBootSec=` | tempo após o boot |
+| `OnStartupSec=` | tempo após o start do próprio systemd |
+| `OnUnitActiveSec=` | tempo após a última ativação — gera repetição periódica |
+| `OnUnitInactiveSec=` | tempo após a unit ficar inativa |
+| `Persistent=true` | se a máquina estava desligada na hora, executa ao ligar |
+| `RandomizedDelaySec=` | atraso aleatório até o valor — evita rajada simultânea |
+| `AccuracySec=` | folga permitida; o padrão de 1 min ajuda o sistema a agrupar despertares |
+
+: Diretivas da seção `[Timer]` {#tbl-diretivas-timer}
+
+O `Persistent=true` é o equivalente ao anacron, e resolve o problema do laptop desligado. O `RandomizedDelaySec=` é o que impede que cem máquinas configuradas pelo mesmo playbook batam no servidor de backup exatamente às 3h30.
+
+A sintaxe de `OnCalendar=` é mais expressiva que a do cron, e — a melhor parte — pode ser testada antes:
+
+```bash
+systemd-analyze calendar "*-*-* 03:30:00"
+systemd-analyze calendar "Mon..Fri 09:00"
+systemd-analyze calendar "daily"
+systemd-analyze calendar "*-*-01 00:00:00" --iterations=3
+```
+
+```text
+  Original form: Mon..Fri 09:00
+Normalized form: Mon..Fri *-*-* 09:00:00
+    Next elapse: Mon 2026-08-03 09:00:00 -03
+       (in UTC): Mon 2026-08-03 12:00:00 UTC
+       From now: 1 day 21h left
+```
+
+Esse comando sozinho justifica a migração para timers. Descobrir que a expressão está errada custa segundos, em vez de esperar um dia para constatar que nada aconteceu.
+
+### Cron ou timer?
+
+::: {#fig-cron-vs-timer}
+```{.tikz}
+%%| filename: comparacao-entre-cron-e-timers-do-systemd
+%%| alt: Comparacao lado a lado entre cron e timers do systemd nos criterios de log, ambiente, limites de recurso, dependencias e simplicidade
+\begin{tikzpicture}[
+    col/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=6pt,text width=6.0cm,minimum height=4.4cm},
+    cr/.style={col,draw=manualyellow,fill=manualyellow!16},
+    tm/.style={col,draw=manualblue,fill=manualblue!12},
+    tl/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cr] (c) at (0,0)   {\textbf{cron}\\[4pt]
+    $+$ uma linha resolve\\
+    $+$ existe em todo Unix\\
+    $+$ sintaxe conhecida por todos\\[4pt]
+    $-$ log só se você redirecionar\\
+    $-$ ambiente mínimo, sem aviso\\
+    $-$ sem limite de recurso\\
+    $-$ sem dependência de outra unit\\
+    $-$ execuções podem se sobrepor};
+  \node[tm] (t) at (7.6,0) {\textbf{systemd timer}\\[4pt]
+    $+$ log automático no journal\\
+    $+$ \texttt{Requires}/\texttt{After} disponíveis\\
+    $+$ limites de CPU e memória\\
+    $+$ \texttt{Persistent=} recupera atraso\\
+    $+$ \texttt{systemd-analyze calendar} testa\\
+    $+$ nunca sobrepõe execuções\\[4pt]
+    $-$ dois arquivos por tarefa\\
+    $-$ só onde há systemd};
+
+  \node[tl,manualyellow,above=6pt] at (c.north) {tarefa pessoal, rápida, portátil};
+  \node[tl,manualblue,above=6pt]   at (t.north) {tarefa de sistema, que precisa ser confiável};
+
+  \node[nt,text width=14.2cm] at (3.8,-3.4) {O critério prático: se a tarefa importa --- se alguém vai notar quando ela falhar ---, ela merece um timer, porque o log fica no journal sem configuração e a falha aparece em \texttt{systemctl -{}-failed}. Se é um lembrete pessoal ou um script de dois minutos numa máquina que também roda BSD, o cron continua sendo a resposta certa. Não há necessidade de migrar o que já funciona.};
+\end{tikzpicture}
+```
+Cron e timers do systemd: o que cada um oferece.
+:::
+
+Duas propriedades dos timers merecem destaque por resolverem problemas reais do cron:
+
+- **Execuções nunca se sobrepõem.** Se a tarefa das 3h30 ainda estiver rodando às 4h30, o cron dispara uma segunda cópia. O systemd não: a unit já está `active`, e a nova ativação é descartada. Isso elimina a classe inteira de bugs em que duas instâncias de um backup competem pelo mesmo arquivo.
+- **Log e falha visíveis por padrão.** A saída vai para o journal com `-u nome.service`, e uma tarefa que termina com erro aparece em `systemctl --failed`. No cron, os dois exigem configuração explícita que quase ninguém faz.
+
+```bash
+systemctl list-timers --all
+journalctl -u backup.service --since "1 week ago"
+systemctl status backup.timer
+```
+
+O `systemctl list-timers` mostra, para cada timer, quando dispara em seguida e quando disparou pela última vez — a resposta imediata para "isso está mesmo rodando?".
+
+## 🐉 No Kali
+
+- **`@reboot` no crontab pessoal é a forma frágil de iniciar algo no boot; a forma certa é uma unit de usuário.** O `@reboot` roda antes de coisas que o script talvez precise, não tem log, não reinicia em caso de falha e não aparece em `systemctl --failed`. Uma unit em `~/.config/systemd/user/` com um timer `OnBootSec=` resolve os quatro pontos, e `loginctl enable-linger` faz com que ela funcione mesmo sem sessão aberta.
+- **Atualização automática no rolling é uma decisão, não um padrão.** Um timer que roda `apt full-upgrade` sozinho num Kali pode substituir um pacote no meio de um teste em andamento, ou puxar uma atualização de kernel que exige reboot no pior momento. O arranjo sensato é agendar apenas `apt update` e a notificação — `apt list --upgradable` no journal —, deixando a decisão de atualizar para uma pessoa. Se ainda assim quiser automatizar, `RandomizedDelaySec=` e uma janela fora do horário de trabalho são o mínimo.
+- **Toda tarefa agendada em máquina de teste precisa de janela e de log.** Num engajamento autorizado, o escopo inclui **quando** as ações podem acontecer. Um scanner agendado que dispara fora da janela contratada é um problema contratual, não técnico. Timers resolvem isso melhor que o cron por três motivos: `OnCalendar=` é verificável com `systemd-analyze calendar` antes de ativar, o journal registra cada disparo com carimbo confiável (@sec-cap042), e `systemctl list-timers` mostra numa tela tudo que está agendado na máquina.
+- **`systemctl list-timers --all` é item de checklist ao receber uma máquina de terceiros.** Junto com `crontab -l`, `sudo crontab -l -u root`, `ls /etc/cron.d/` e `atq`, esses cinco comandos revelam tudo que está agendado. Numa máquina de laboratório reaproveitada, é comum encontrar tarefas esquecidas de outro projeto ainda disparando — e, num contexto defensivo, é exatamente onde se procura persistência deixada por um atacante.
+- **Tarefas pesadas em VM pedem limite de recurso, e isso o cron não oferece.** Um scanner agendado que consome toda a CPU trava a VM inteira. Como o timer aciona uma `.service`, valem `CPUQuota=50%`, `MemoryMax=1G` e `Nice=10` — a tarefa roda, e a máquina continua utilizável.
+- **Em sessão live, nada disso sobrevive.** Crontabs, jobs do `at` e units de timer criados numa sessão sem persistência desaparecem no desligamento. Agendamento é assunto de sistema instalado.
+
+> **Nota sobre a família RHEL.** O `cronie` substitui o `cron` do Debian, com a mesma sintaxe e o `anacron` embutido em vez de pacote separado. A diferença de rotina está no `run-parts`: o Debian aplica regras estritas de nome de arquivo (nada de ponto), o RHEL é mais permissivo — o que faz um script que roda no RHEL ser silenciosamente ignorado ao ser copiado para um Debian. Os timers do systemd são idênticos nas duas famílias, e é mais um argumento a favor deles: uma unit de timer é portável entre distribuições, uma linha de `cron.d` nem sempre é.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Os passos criam tarefas de teste e o passo 12 remove todas. **Antes de tocar no crontab, salve o que já existe** — é o passo 1.
+
+1. **Levante tudo que já está agendado e faça a cópia de segurança.**
+
+   ```bash
+   crontab -l 2>/dev/null > ~/crontab.bak; echo "salvo: $(wc -l < ~/crontab.bak) linhas"
+   sudo crontab -l -u root 2>/dev/null | head
+   ls -l /etc/cron.d/ /etc/cron.daily/
+   systemctl list-timers --all
+   atq 2>/dev/null || echo "atd nao instalado"
+   ```
+
+   Esperado: o inventário completo do agendamento da máquina. No Kali padrão, alguns timers do sistema (`apt-daily`, `logrotate`, `man-db`) e poucos crontabs.
+
+2. **Reproduza o ambiente do cron e veja a diferença.**
+
+   ```bash
+   echo "meu PATH: $PATH"
+   env -i /bin/sh -c 'echo "PATH do cron: $PATH"; echo "SHELL: $0"'
+   env -i /bin/sh -c 'nmap --version' 2>&1 | head -2
+   env -i /bin/sh -c '/usr/bin/nmap --version' 2>&1 | head -2
+   ```
+
+   Esperado: o `PATH` vazio ou mínimo no ambiente limpo, o `nmap` sem caminho absoluto falhando, e o mesmo comando com caminho absoluto funcionando. Esta é a causa raiz de "funciona no terminal e não no cron", demonstrada em quatro linhas.
+
+3. **Crie uma tarefa de cron que grava evidência.**
+
+   ```bash
+   mkdir -p ~/lab-agenda
+   cat > ~/lab-agenda/tarefa.sh <<'EOF'
+   #!/bin/bash
+   echo "cron rodou em $(/bin/date -Is) com PATH=$PATH" >> "$HOME/lab-agenda/cron.log"
+   EOF
+   chmod +x ~/lab-agenda/tarefa.sh
+   ~/lab-agenda/tarefa.sh && cat ~/lab-agenda/cron.log
+   ```
+
+   Esperado: a primeira linha no log, escrita pela execução manual. O script usa caminho absoluto para `date` de propósito.
+
+4. **Agende-a para cada minuto e observe.**
+
+   ```bash
+   (crontab -l 2>/dev/null; echo "* * * * * $HOME/lab-agenda/tarefa.sh >> $HOME/lab-agenda/cron-erros.log 2>&1") | crontab -
+   crontab -l | tail -2
+   ```
+
+   Aguarde dois minutos e verifique:
+
+   ```bash
+   cat ~/lab-agenda/cron.log
+   journalctl -u cron.service --since "5 min ago" | tail -10
+   ```
+
+   Esperado: novas linhas a cada minuto, e o `PATH` registrado sendo o mínimo do cron — não o seu. O journal do serviço `cron` mostra cada disparo.
+
+5. **Prove que a saída perdida é o problema.**
+
+   ```bash
+   (crontab -l; echo "* * * * * /caminho/que/nao/existe.sh") | crontab -
+   ```
+
+   Aguarde dois minutos:
+
+   ```bash
+   journalctl -u cron.service --since "3 min ago" | grep -i -E 'error|not found|CMD' | tail -5
+   ```
+
+   Esperado: o cron registra o disparo, mas o erro do comando inexistente foi enviado por e-mail — que não existe. Sem redirecionar, a falha é invisível. Remova essa linha:
+
+   ```bash
+   crontab -l | grep -v 'nao/existe' | crontab -
+   crontab -l | tail -2
+   ```
+
+6. **Teste expressões de calendário do systemd antes de usá-las.**
+
+   ```bash
+   systemd-analyze calendar "*:0/2"
+   systemd-analyze calendar "Mon..Fri 09:00"
+   systemd-analyze calendar "*-*-01 03:30:00" --iterations=3
+   systemd-analyze calendar "sexta 25:00" 2>&1 | head -2
+   ```
+
+   Esperado: as três primeiras normalizadas com a próxima ocorrência calculada; a quarta rejeitada com erro. Este é o teste que o cron nunca ofereceu.
+
+7. **Crie o par service + timer.**
+
+   ```bash
+   sudo tee /etc/systemd/system/lab-agenda.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Tarefa agendada do laboratorio
+
+   [Service]
+   Type=oneshot
+   ExecStart=/bin/sh -c 'echo "timer rodou em $(date -Is)"'
+   Nice=10
+   EOF
+   sudo tee /etc/systemd/system/lab-agenda.timer > /dev/null <<'EOF'
+   [Unit]
+   Description=Dispara a tarefa do laboratorio a cada 2 minutos
+
+   [Timer]
+   OnBootSec=1min
+   OnUnitActiveSec=2min
+   Persistent=true
+   RandomizedDelaySec=15s
+
+   [Install]
+   WantedBy=timers.target
+   EOF
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now lab-agenda.timer
+   ```
+
+   Esperado: nenhum erro. Note que foi o **timer** que recebeu `enable --now`, não o serviço.
+
+8. **Confirme o agendamento e aguarde o disparo.**
+
+   ```bash
+   systemctl list-timers lab-agenda.timer
+   systemctl status lab-agenda.timer | head -8
+   ```
+
+   Aguarde três minutos:
+
+   ```bash
+   journalctl -u lab-agenda.service --since "10 min ago"
+   systemctl list-timers lab-agenda.timer
+   ```
+
+   Esperado: as colunas `NEXT` e `LAST` preenchidas, e as mensagens no journal — sem que a unit tenha configurado log algum. Compare com o esforço do passo 4.
+
+9. **Verifique que o serviço é estático e o timer é quem foi habilitado.**
+
+   ```bash
+   systemctl is-enabled lab-agenda.service
+   systemctl is-enabled lab-agenda.timer
+   ls -l /etc/systemd/system/timers.target.wants/ | grep lab
+   ```
+
+   Esperado: o serviço `static` (sem seção `[Install]`, e é o correto), o timer `enabled`, e o link em `timers.target.wants/`.
+
+10. **Agende uma execução única com `at`.**
+
+    ```bash
+    sudo systemctl start atd 2>/dev/null
+    echo "echo 'at rodou em '\$(date -Is) >> $HOME/lab-agenda/at.log" | at now + 2 minutes
+    atq
+    ```
+
+    Aguarde três minutos:
+
+    ```bash
+    cat ~/lab-agenda/at.log 2>/dev/null || echo "ainda nao rodou"
+    atq
+    ```
+
+    Esperado: o job na fila, depois o arquivo criado e a fila vazia. Se o `at` não estiver instalado: `sudo apt install at`.
+
+11. **Compare o custo de investigar uma falha em cada mecanismo.**
+
+    ```bash
+    journalctl -u lab-agenda.service -n 20 -o short-iso
+    tail -5 ~/lab-agenda/cron.log
+    journalctl -u cron.service --since "20 min ago" | tail -5
+    ```
+
+    Esperado: para o timer, uma linha de comando dá a história completa com carimbos confiáveis. Para o cron, é preciso saber de antemão em qual arquivo você mandou a saída — e se esqueceu de redirecionar, ela não existe em lugar nenhum.
+
+12. **Remova tudo e restaure o estado inicial.**
+
+    ```bash
+    sudo systemctl disable --now lab-agenda.timer
+    sudo rm -f /etc/systemd/system/lab-agenda.timer /etc/systemd/system/lab-agenda.service
+    sudo systemctl daemon-reload
+    crontab ~/crontab.bak 2>/dev/null || crontab -r
+    crontab -l 2>/dev/null || echo "crontab vazio (era o estado original)"
+    for j in $(atq 2>/dev/null | cut -f1); do atrm "$j"; done
+    rm -rf ~/lab-agenda ~/crontab.bak
+    systemctl list-timers --all | grep lab || echo "nenhum timer do laboratorio"
+    ```
+
+    Esperado: crontab de volta ao original, nenhum timer nem job residual. Confirme com `systemctl --failed`, que deve continuar vazio.
+
+## Resumo
+
+- **A causa quase sempre é o ambiente, não o agendador.** O cron executa com `PATH` mínimo, `SHELL=/bin/sh` e sem nenhum arquivo de perfil. `env -i /bin/sh -c 'seu-script'` reproduz esse contexto em dez segundos e revela o problema antes da madrugada.
+- **`crontab -r` apaga a tabela inteira sem confirmar.** Manter a tabela num arquivo versionado e instalá-la com `crontab arquivo` elimina a classe inteira de acidente.
+- **Tabelas do sistema têm um campo a mais**, o usuário. Copiar uma linha pessoal para `/etc/cron.d/` sem esse campo faz a tarefa nunca rodar — e arquivos com ponto no nome ali dentro são ignorados em silêncio no Debian.
+- **Quando dia do mês e dia da semana são ambos específicos, o cron aplica OU.** `0 0 13 * 5` roda todo dia 13 e toda sexta, não nas sextas-feiras 13.
+- **Sem redirecionamento, a saída do cron vira e-mail que não existe** — e com ela some o erro. `>> arquivo.log 2>&1` é o mínimo para que a falha seja investigável.
+- **O `anacron` recupera tarefas de máquinas que estavam desligadas**, com granularidade de dias; o equivalente no systemd é `Persistent=true`.
+- **Um timer são sempre dois arquivos**, `.timer` e `.service`, e é o **timer** que se habilita. O serviço costuma ser `static`, existindo só para ser acionado.
+- **`systemd-analyze calendar` valida a expressão antes de ativar** e mostra a próxima ocorrência — o teste que o cron nunca ofereceu.
+- **Timers dão log no journal, dependências entre units, limites de recurso e não sobrepõem execuções.** Se a tarefa importa a ponto de alguém notar quando falhar, ela merece um timer; para lembrete pessoal e portabilidade entre Unixes, o cron continua certo.

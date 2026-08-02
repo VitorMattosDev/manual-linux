@@ -1,3 +1,581 @@
 # Targets, modo de recuperação e resolução de problemas de boot {#sec-cap044}
 
-*(em elaboracao)*
+Uma linha acrescentada ao `/etc/fstab` na sexta à tarde, apontando para um disco de dados que seria conectado na segunda. Reboot de rotina. Na segunda de manhã, a máquina exibe `You are in emergency mode` e pede a senha de root — e é só isso que ela vai fazer, indefinidamente, porque o systemd não consegue montar um dispositivo que não existe e considera isso motivo suficiente para não continuar.
+
+O problema é trivial: uma linha a mais, um `nofail` a menos. A dificuldade não é a correção, é chegar até ela. Este capítulo é sobre isso — sobre a escada de métodos de recuperação, de trocar um alvo no menu do GRUB até montar o sistema a partir de um live USB, e sobre o catálogo de falhas que aparecem na prática, cada uma com o sintoma que a identifica.
+
+É o capítulo que fecha o volume porque usa tudo que veio antes: a cadeia de boot do @sec-cap039, o modelo de units do @sec-cap040, os verbos do @sec-cap041 e os logs do @sec-cap042.
+
+## Alvos como ferramenta de recuperação
+
+Um target, como visto no @sec-cap040, é um agrupamento com nome. Para recuperação, três deles importam por oferecerem sistemas progressivamente menores:
+
+| Target | O que sobe | Quando usar |
+|---|---|---|
+| `multi-user.target` | tudo menos a interface gráfica | problema no ambiente gráfico |
+| `rescue.target` | raiz montada, sistemas de arquivos locais, um shell | serviço quebrado, configuração errada |
+| `emergency.target` | apenas a raiz, somente leitura, e um shell | `fstab` quebrado, raiz problemática |
+
+: Alvos de recuperação, do maior para o menor {#tbl-alvos-recuperacao}
+
+A diferença entre `rescue` e `emergency` decide qual usar. O `rescue.target` executa `sysinit.target` antes: monta o que está no `fstab`, ativa a *swap*, inicia o journal. É confortável — e é exatamente por isso que **não serve quando o problema é o `fstab`**, já que a tentativa de montar é o que falha. O `emergency.target` não monta nada além da raiz, e em modo somente leitura.
+
+```bash
+systemctl get-default
+sudo systemctl set-default multi-user.target   # muda o padrao permanente
+sudo systemctl isolate rescue.target           # troca agora
+```
+
+O `isolate` para tudo que não pertence ao alvo. Numa máquina remota, `systemctl isolate rescue.target` derruba a rede e o SSH junto — é a forma mais rápida conhecida de perder acesso a um servidor. Em VM local, é apenas prático.
+
+Para um boot único, sem alterar nada em disco, o caminho é a tecla `e` no menu do GRUB e um parâmetro na linha do kernel:
+
+```text
+systemd.unit=rescue.target
+systemd.unit=emergency.target
+```
+
+## A escada da recuperação
+
+Existe uma ordem certa de tentativa, e ela vai do menos ao mais invasivo. Pular degraus custa tempo e risco.
+
+::: {#fig-escada-recuperacao}
+```{.tikz}
+%%| filename: escada-de-metodos-de-recuperacao
+%%| alt: Escada de cinco degraus de recuperacao, do kernel anterior no menu ate o live USB com chroot, em ordem crescente de invasividade
+\begin{tikzpicture}[
+    dg/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=5pt,text width=8.4cm,minimum height=1.15cm},
+    d1/.style={dg,draw=manualgreen,fill=manualgreen!13},
+    d2/.style={dg,draw=manualgreen,fill=manualgreen!10},
+    d3/.style={dg,draw=manualyellow,fill=manualyellow!16},
+    d4/.style={dg,draw=manualred,fill=manualred!10},
+    d5/.style={dg,draw=manualred,fill=manualred!14},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    lb/.style={font=\scriptsize,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[d1] (a) at (0,4.6)  {\textbf{1. Kernel anterior no menu do GRUB}\\resolve atualização de kernel que quebrou o sistema};
+  \node[d2] (b) at (0,3.2)  {\textbf{2. Tecla \texttt{e}: parâmetro temporário}\\\texttt{nomodeset}, \texttt{systemd.unit=rescue.target} --- nada é gravado};
+  \node[d3] (c) at (0,1.8)  {\textbf{3. \texttt{rescue.target}}\\raiz montada, \texttt{fstab} aplicado, shell de root, sem rede};
+  \node[d4] (d) at (0,0.4)  {\textbf{4. \texttt{emergency.target}}\\só a raiz, somente leitura --- quando o \texttt{fstab} é o problema};
+  \node[d5] (e) at (0,-1.0) {\textbf{5. Live USB + \texttt{chroot}}\\quando o sistema não inicia de forma alguma};
+
+  \draw[fl] (5.0,-1.6) -- node[lb,sloped,above]{mais invasivo, mais poderoso} (5.0,5.2);
+
+  \node[nt,text width=14.2cm] at (1.6,-3.0) {A regra é sempre descer um degrau por vez. Boa parte dos casos que terminam em reinstalação teria sido resolvida no degrau 1 ou 2, e a pressa de ir direto ao live USB acrescenta a chance de montar a partição errada ou fazer \texttt{chroot} no sistema errado. Antes de descer um degrau, vale a pergunta: eu já li o log do boot que falhou? \texttt{journalctl -b -1 -p err} costuma dar a resposta no degrau 3.};
+\end{tikzpicture}
+```
+Os cinco degraus da recuperação, do menos ao mais invasivo.
+:::
+
+### Degrau 5: o procedimento de `chroot`
+
+Quando o sistema não inicia de forma alguma, a saída é iniciar por um live USB e entrar no sistema instalado como se fosse ele. O procedimento completo:
+
+```bash
+# 1. identificar as particoes
+lsblk -f
+sudo blkid
+
+# 2. montar a raiz
+sudo mount /dev/sda2 /mnt
+
+# 3. montar /boot e a ESP, se forem separados
+sudo mount /dev/sda1 /mnt/boot/efi
+
+# 4. dar ao ambiente os sistemas virtuais do kernel
+for d in /dev /dev/pts /proc /sys /run; do sudo mount --bind "$d" "/mnt$d"; done
+
+# 5. entrar
+sudo chroot /mnt /bin/bash
+```
+
+Os passos 3 e 4 são os esquecidos, e cada um produz uma falha característica. Sem `/boot/efi` montado, um `grub-install` "funciona" e escreve no lugar errado. Sem os *bind mounts*, `update-initramfs` falha porque não enxerga `/proc`, e `apt` falha porque não tem `/dev/null`.
+
+Dentro do `chroot`, os reparos mais comuns:
+
+```bash
+grub-install /dev/sda        # BIOS
+grub-install --target=x86_64-efi --efi-directory=/boot/efi   # UEFI
+update-grub
+update-initramfs -u -k all
+passwd root
+nano /etc/fstab
+```
+
+E a saída, na ordem inversa:
+
+```bash
+exit
+for d in /run /sys /proc /dev/pts /dev; do sudo umount -l "/mnt$d"; done
+sudo umount -R /mnt
+sudo reboot
+```
+
+::: {.callout-warning}
+## No `chroot`, confirme em qual sistema você está antes de qualquer comando
+
+Uma máquina com dois sistemas instalados, ou com um disco de backup conectado, oferece mais de uma partição raiz plausível. Um `grub-install` ou um `passwd root` executado no sistema errado é um estrago silencioso — nada dá erro, e o problema original continua exatamente onde estava.
+
+Antes de qualquer comando dentro do `chroot`:
+
+```bash
+cat /etc/os-release
+ls -la /home/
+cat /etc/hostname
+```
+
+Se o nome da máquina, a distribuição e os diretórios pessoais não forem os esperados, saia e monte a partição certa.
+:::
+
+## Catálogo de falhas
+
+### `fstab` quebrado
+
+**Sintoma:** `You are in emergency mode`, ou `Dependency failed for /mnt/dados` seguido de `Timed out waiting for device`.
+
+O systemd converte cada linha do `fstab` em uma unit `.mount`, e por padrão uma montagem que falha derruba `local-fs.target`, que é dependência do boot inteiro. Um disco desconectado impede o sistema de subir.
+
+```bash
+mount -o remount,rw /            # em emergency, a raiz esta somente leitura
+nano /etc/fstab
+findmnt --verify --verbose        # valida antes de reiniciar
+systemctl daemon-reload
+```
+
+A opção que previne todo esse cenário:
+
+```text
+UUID=abc-123  /mnt/dados  ext4  defaults,nofail,x-systemd.device-timeout=10  0  2
+```
+
+O `nofail` faz a montagem ser opcional; `x-systemd.device-timeout=10` reduz a espera de 90 segundos para dez. **Toda montagem que não seja essencial ao sistema deve ter `nofail`** — discos externos, compartilhamentos de rede, partições de dados.
+
+E a verificação obrigatória antes de reiniciar depois de mexer no `fstab`:
+
+```bash
+sudo findmnt --verify --verbose
+sudo mount -a
+```
+
+Se `mount -a` funciona sem erro, o boot vai funcionar. Fazer isso custa cinco segundos e evita o cenário que abre este capítulo.
+
+### GRUB caiu para `grub rescue>`
+
+**Sintoma:** um prompt `grub rescue>` ou `grub>`, sem menu.
+
+O `grub rescue>` é o modo mínimo: o GRUB não encontrou seus próprios módulos. A recuperação manual:
+
+```text
+grub rescue> ls
+(hd0) (hd0,gpt1) (hd0,gpt2)
+grub rescue> ls (hd0,gpt2)/
+grub rescue> set root=(hd0,gpt2)
+grub rescue> set prefix=(hd0,gpt2)/boot/grub
+grub rescue> insmod normal
+grub rescue> normal
+```
+
+Isso devolve o menu, e o boot segue. É uma correção **temporária** — o reparo definitivo é feito depois, com o sistema no ar:
+
+```bash
+sudo grub-install /dev/sda
+sudo update-grub
+```
+
+Do prompt `grub>` completo, é possível iniciar manualmente:
+
+```text
+grub> set root=(hd0,gpt2)
+grub> linux /boot/vmlinuz-6.12.13-amd64 root=/dev/sda2 ro
+grub> initrd /boot/initrd.img-6.12.13-amd64
+grub> boot
+```
+
+A causa mais frequente desse estado é a instalação do Windows sobrescrevendo o setor de boot, ou uma partição que mudou de número.
+
+### Prompt `(initramfs)`
+
+**Sintoma:** um shell mínimo com `(initramfs)` e, acima, `ALERT! UUID=... does not exist`.
+
+O initramfs não encontrou a raiz. Investigação de dentro do próprio prompt:
+
+```text
+(initramfs) ls /dev/sd* /dev/nvme*
+(initramfs) blkid
+(initramfs) cat /proc/cmdline
+```
+
+Compare o UUID pedido na linha do kernel com o que o `blkid` mostra. Divergiram? A partição foi recriada, formatada ou clonada, e o `grub.cfg` ficou apontando para o UUID antigo. Boot manual para chegar ao sistema:
+
+```text
+(initramfs) mount -t ext4 /dev/sda2 /root
+(initramfs) exit
+```
+
+E, uma vez dentro, a correção permanente é `update-grub` e a revisão do `/etc/fstab`.
+
+Se o dispositivo **não aparece** em `/dev`, o problema é outro: falta o módulo do controlador no initramfs. A correção é `update-initramfs -u` a partir de um `chroot`, possivelmente com `MODULES=most`.
+
+### Um serviço trava o boot
+
+**Sintoma:** o boot para numa linha `A start job is running for ...` e conta até 90 ou 120 segundos.
+
+```bash
+systemd-analyze blame | head
+systemctl --failed
+journalctl -b -1 -p err
+journalctl -b -1 -u nome-do-servico
+```
+
+O suspeito mais comum é `NetworkManager-wait-online.service` ou `systemd-networkd-wait-online.service` numa máquina sem rede — eles esperam conectividade que não vai chegar. Um serviço próprio com `Requires=` sobre algo indisponível produz o mesmo efeito.
+
+Para sair da situação e diagnosticar com calma, o boot em `rescue.target` (degrau 3) dá um sistema utilizável, e ali `systemctl disable` no serviço problemático resolve.
+
+### Raiz cheia ou somente leitura
+
+**Sintoma:** o sistema sobe, mas nada funciona; `Read-only file system` em qualquer escrita.
+
+O kernel remonta a raiz como somente leitura ao detectar erro no sistema de arquivos — é uma proteção, não um defeito.
+
+```bash
+dmesg | grep -i -E 'ext4|error|read-only'
+mount -o remount,rw /
+df -h; df -i
+```
+
+O `df -i` merece atenção: um disco com 40% livre pode estar sem **inodes**, o que produz `No space left on device` com espaço sobrando. Se o problema for corrupção, o reparo é `fsck` — e ele deve rodar com o sistema de arquivos **desmontado**, isto é, a partir de um live USB ou do `emergency.target` com a raiz remontada somente leitura.
+
+### Senha de root perdida
+
+Cenário legítimo de administração: uma máquina própria, com acesso físico, cuja senha se perdeu. Vale registrar o que isso implica: **quem tem acesso físico e não usa criptografia de disco tem acesso total ao sistema**, e o procedimento abaixo é a demonstração disso. É por essa razão que máquinas com dados sensíveis usam LUKS e senha no GRUB — o reparo abaixo simplesmente não funciona contra um disco criptografado.
+
+No menu do GRUB, tecla `e`, e na linha do kernel, substituir `ro quiet splash` por:
+
+```text
+rw init=/bin/bash
+```
+
+`Ctrl+X` e o kernel executa um shell no lugar do systemd, com a raiz já gravável:
+
+```bash
+passwd root
+sync
+exec /sbin/init
+```
+
+O `sync` antes de sair é essencial: sem systemd, não há desligamento limpo, e reiniciar sem sincronizar perde a alteração.
+
+## Ferramentas de diagnóstico do systemd
+
+Parâmetros de kernel que ajudam quando o boot não coopera:
+
+| Parâmetro | Efeito |
+|---|---|
+| `systemd.log_level=debug` | verbosidade máxima do PID 1 |
+| `systemd.log_target=console` | manda tudo para a tela, útil quando o journal não grava |
+| `systemd.unit=rescue.target` | sobe em modo de recuperação |
+| `systemd.mask=nome.service` | mascara uma unit só neste boot |
+| `systemd.debug_shell` | abre um shell de root no `tty9` durante o boot |
+| `rd.break` | para dentro do initramfs, antes do `switch_root` |
+
+: Parâmetros de kernel para diagnóstico do boot {#tbl-debug-boot}
+
+O `systemd.mask=` é particularmente elegante: permite pular exatamente o serviço que trava o boot, sem editar arquivo nenhum, num único boot. O `systemd.debug_shell` dá um shell utilizável em `Alt+F9` enquanto o boot ainda está travado em outra coisa.
+
+::: {#fig-arvore-diagnostico}
+```{.tikz}
+%%| filename: arvore-de-diagnostico-de-falha-de-boot
+%%| alt: Arvore de decisao partindo do sintoma na tela para a causa provavel e a acao de recuperacao correspondente
+\begin{tikzpicture}[
+    q/.style={rounded corners=3pt,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.2cm,minimum height=1.2cm,draw=manualblue,fill=manualblue!12},
+    r/.style={rounded corners=3pt,thick,align=left,font=\scriptsize,inner sep=5pt,text width=6.6cm,minimum height=1.2cm,draw=manualgreen,fill=manualgreen!13},
+    fl/.style={manualgray,thick,-{Stealth[length=4.5pt]}},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[q] (a) at (0,3.0)  {sem menu, prompt \texttt{grub>}};
+  \node[q] (b) at (0,1.5)  {prompt \texttt{(initramfs)}};
+  \node[q] (c) at (0,0)    {\texttt{emergency mode}};
+  \node[q] (d) at (0,-1.5) {trava em \texttt{A start job is running}};
+  \node[q] (e) at (0,-3.0) {sobe, mas sem gráfico};
+
+  \node[r] (ra) at (7.4,3.0)  {\texttt{set root} + \texttt{normal} para entrar;\\depois \texttt{grub-install} e \texttt{update-grub}};
+  \node[r] (rb) at (7.4,1.5)  {comparar \texttt{blkid} com \texttt{/proc/cmdline};\\\texttt{update-initramfs -u} via \texttt{chroot}};
+  \node[r] (rc) at (7.4,0)    {\texttt{mount -o remount,rw /}, corrigir o\\\texttt{fstab}, validar com \texttt{findmnt -{}-verify}};
+  \node[r] (rd) at (7.4,-1.5) {\texttt{journalctl -b -1 -p err};\\\texttt{systemd.mask=} no próximo boot};
+  \node[r] (re) at (7.4,-3.0) {\texttt{nomodeset} pela tecla \texttt{e};\\investigar o driver de vídeo};
+
+  \draw[fl] (a) -- (ra);  \draw[fl] (b) -- (rb);  \draw[fl] (c) -- (rc);
+  \draw[fl] (d) -- (rd);  \draw[fl] (e) -- (re);
+
+  \node[nt,text width=14.2cm] at (3.6,-4.6) {O sintoma na tela é o dado mais valioso e o mais frequentemente descartado --- quem fotografa a tela antes de reiniciar já resolveu metade do problema. Em todos os cinco caminhos, o passo seguinte à recuperação é o mesmo: \texttt{journalctl -b -1 -p err} para entender por que aconteceu, e não apenas fazer voltar a funcionar. Um sistema que subiu depois de um reparo cuja causa não se entendeu vai cair de novo.};
+\end{tikzpicture}
+```
+Do sintoma na tela à ação de recuperação correspondente.
+:::
+
+## Depois do reparo: verificar
+
+Corrigir e reiniciar não encerra o trabalho. A sequência de verificação:
+
+```bash
+systemctl --failed
+systemd-analyze
+journalctl -b -p err
+journalctl -b -1 -p err          # o boot que falhou
+findmnt --verify
+df -h /boot /boot/efi /
+```
+
+E a medida preventiva que mais paga: manter **dois kernels instalados**. O Debian e o Kali fazem isso por padrão, e é o degrau 1 da escada de recuperação. Um `apt autoremove` agressivo que remove o kernel anterior elimina a rede de proteção mais barata que existe.
+
+## 🐉 No Kali
+
+- **O live USB do Kali é a ferramenta de recuperação, e você já a tem.** O mesmo pendrive usado para instalar serve para reparar: ele traz `cryptsetup`, `lvm2`, `gdisk`, `testdisk`, `ntfs-3g` e o ferramental de sistema de arquivos completo, o que é mais do que a maioria dos live USB de distribuições comuns oferece. Manter um pendrive do Kali no bolso da mochila é a diferença entre um reparo de vinte minutos e uma reinstalação.
+- **Recuperar um Kali com criptografia exige abrir o LUKS antes do `chroot`.** A sequência acrescenta dois passos ao procedimento da seção anterior: `sudo cryptsetup luksOpen /dev/sda3 raiz`, depois `sudo vgchange -ay` se houver LVM, e só então `mount /dev/mapper/...` em `/mnt`. Sem a senha, não há recuperação — o que é justamente o propósito da criptografia, e vale lembrar antes de habilitá-la.
+- **`systemctl --failed` depois de cada `apt full-upgrade` é hábito de rolling.** No Kali, uma atualização pode trocar versão principal de um serviço e deixá-lo em `failed` sem nenhum aviso na tela. Descobrir isso na hora, e não semanas depois quando o serviço fizer falta, custa um comando.
+- **Cuidado redobrado ao remover kernels antigos.** `apt autoremove` costuma tirar kernels que o sistema julga desnecessários. Num rolling, onde o kernel novo chega com frequência, o kernel anterior é a rede de segurança contra uma regressão de driver — especialmente com adaptadores Wi-Fi de terceiros e drivers DKMS. Confirme sempre com `ls /boot/vmlinuz-*` que restou mais de um.
+- **Modo forense e recuperação são coisas diferentes.** O modo forense do live Kali não monta nada automaticamente e não toca na *swap*, justamente para preservar a mídia. Recuperar um sistema exige montar e escrever. Se houver qualquer chance de a máquina ser objeto de investigação, o procedimento correto é imagem primeiro (`dd` para um destino externo, com hash), reparo depois — porque o `chroot` e o `grub-install` alteram o disco de forma irreversível.
+- **Senha de root, GRUB e o limite do que a criptografia protege.** O procedimento de `init=/bin/bash` funciona em qualquer máquina sem disco criptografado, e é a demonstração mais direta de que segurança física é pré-requisito de segurança lógica. Numa máquina Kali que sai de casa — e a maioria sai —, LUKS não é preciosismo; é o que impede que quem tenha o equipamento por dez minutos tenha também tudo que está nele.
+
+> **Nota sobre a família RHEL.** Os alvos e o `systemctl` são idênticos. A recuperação diverge em dois pontos práticos. O primeiro é o parâmetro `rd.break`, do `dracut`, que para dentro do initramfs com a raiz montada em `/sysroot` — o procedimento oficial de reset de senha no RHEL passa por ali, com `chroot /sysroot` e, crucialmente, `touch /.autorelabel` antes de reiniciar, sem o que o SELinux impede o login com a senha nova. O segundo é o próprio SELinux: um sistema que sobe e recusa todo login costuma ser rótulo de arquivo errado, não senha errada, e `journalctl -b | grep -i avc` é onde isso aparece.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Este laboratório quebra o boot de propósito e o conserta.** Tire um *snapshot* antes de começar — não é recomendação, é pré-requisito.
+
+1. **Registre o estado saudável, para comparação.**
+
+   ```bash
+   systemctl get-default
+   systemctl --failed
+   systemd-analyze
+   ls /boot/vmlinuz-*
+   cp /etc/fstab ~/fstab.bak
+   ```
+
+   Esperado: nenhuma unit em falha e mais de um kernel em `/boot`. Guarde o tempo do `systemd-analyze` para comparar depois.
+
+2. **Troque de alvo com o sistema no ar.**
+
+   ```bash
+   sudo systemctl isolate multi-user.target
+   ```
+
+   A interface gráfica desaparece. Faça login no console e confirme:
+
+   ```bash
+   systemctl list-units --type=target --state=active
+   who -r 2>/dev/null; systemctl get-default
+   sudo systemctl isolate graphical.target
+   ```
+
+   Esperado: o gráfico volta. Note que `get-default` não mudou — `isolate` age agora, não no boot.
+
+3. **Valide o `fstab` antes de qualquer alteração.**
+
+   ```bash
+   findmnt --verify --verbose
+   sudo mount -a && echo "fstab consistente"
+   ```
+
+   Esperado: nenhum erro. Este é o comando que teria evitado o cenário de abertura do capítulo.
+
+4. **Quebre o `fstab` de propósito.**
+
+   ```bash
+   echo "UUID=00000000-1111-2222-3333-444444444444 /mnt/inexistente ext4 defaults 0 2" | \
+       sudo tee -a /etc/fstab
+   sudo findmnt --verify --verbose | tail -5
+   tail -2 /etc/fstab
+   ```
+
+   Esperado: a verificação acusa o problema **antes** do reboot. Leia a mensagem — é exatamente o que o systemd vai reclamar.
+
+5. **Reinicie e observe o modo de emergência.**
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo reboot
+   ```
+
+   Esperado: o boot para, espera 90 segundos pelo dispositivo, e entrega `You are in emergency mode`, pedindo a senha de root. Se a VM não tiver senha de root definida, use `Ctrl+D` e o boot pode continuar — nesse caso, force o modo com `systemd.unit=emergency.target` pela tecla `e`.
+
+6. **Repare a partir do modo de emergência.**
+
+   No prompt de emergência:
+
+   ```bash
+   mount -o remount,rw /
+   journalctl -b -p err | tail -20
+   nano /etc/fstab
+   ```
+
+   Remova a linha acrescentada no passo 4, salve, e valide antes de reiniciar:
+
+   ```bash
+   findmnt --verify --verbose
+   mount -a && echo "consistente"
+   systemctl daemon-reload
+   reboot
+   ```
+
+   Esperado: o sistema sobe normalmente. Repare na ordem: **validar antes de reiniciar**, para não voltar ao mesmo lugar.
+
+7. **Refaça com `nofail` e veja a diferença.**
+
+   ```bash
+   echo "UUID=00000000-1111-2222-3333-444444444444 /mnt/inexistente ext4 defaults,nofail,x-systemd.device-timeout=5 0 2" | \
+       sudo tee -a /etc/fstab
+   sudo systemctl daemon-reload
+   sudo reboot
+   ```
+
+   Depois do boot:
+
+   ```bash
+   systemctl --failed
+   journalctl -b | grep -i inexistente | head -5
+   systemd-analyze | head -1
+   ```
+
+   Esperado: o sistema sobe normalmente. A montagem falhou, foi registrada, e não bloqueou nada — a diferença que uma palavra faz.
+
+8. **Limpe o `fstab`.**
+
+   ```bash
+   sudo cp ~/fstab.bak /etc/fstab
+   sudo findmnt --verify
+   sudo systemctl daemon-reload
+   tail -3 /etc/fstab
+   ```
+
+   Esperado: o arquivo original de volta e a verificação limpa.
+
+9. **Provoque um serviço que trava o boot.**
+
+   ```bash
+   sudo tee /etc/systemd/system/lab-travador.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Servico que trava o boot de proposito
+   Before=multi-user.target
+   DefaultDependencies=no
+   After=sysinit.target
+
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   ExecStart=/bin/sleep 45
+   TimeoutStartSec=60
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl daemon-reload
+   sudo systemctl enable lab-travador
+   sudo reboot
+   ```
+
+   Esperado: o boot exibe `A start job is running for Servico que trava o boot de proposito` com um contador subindo até 45 segundos. É o sintoma exato do serviço problemático.
+
+10. **Diagnostique e contorne pelo parâmetro de kernel.**
+
+    Depois que o sistema subir:
+
+    ```bash
+    systemd-analyze blame | head -5
+    systemd-analyze critical-chain | head -10
+    journalctl -b -u lab-travador
+    ```
+
+    Esperado: o serviço no topo do `blame`, com os 45 segundos. Agora reinicie, use a tecla `e` e acrescente à linha do kernel:
+
+    ```text
+    systemd.mask=lab-travador.service
+    ```
+
+    Esperado: o boot passa direto, sem espera. Confirme com:
+
+    ```bash
+    systemctl status lab-travador
+    cat /proc/cmdline
+    ```
+
+    A unit aparece mascarada **apenas neste boot** — nada foi gravado em disco.
+
+11. **Faça o reparo definitivo e verifique.**
+
+    ```bash
+    sudo systemctl disable lab-travador
+    sudo rm -f /etc/systemd/system/lab-travador.service
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed
+    sudo reboot
+    ```
+
+    Depois do boot:
+
+    ```bash
+    systemctl --failed
+    systemd-analyze
+    journalctl -b -p err
+    ls /boot/vmlinuz-*
+    ```
+
+    Esperado: nenhuma falha e o tempo de boot de volta ao valor do passo 1. Compare os dois números.
+
+12. **Percorra o degrau 5 num ambiente controlado.**
+
+    Ainda com a VM saudável, inicie a partir da ISO do Kali em modo live e execute o procedimento de `chroot` — apenas para praticá-lo com o sistema funcionando, quando o erro não custa nada:
+
+    ```bash
+    lsblk -f
+    sudo mount /dev/sda2 /mnt
+    sudo mount /dev/sda1 /mnt/boot/efi 2>/dev/null
+    for d in /dev /dev/pts /proc /sys /run; do sudo mount --bind "$d" "/mnt$d"; done
+    sudo chroot /mnt /bin/bash
+    ```
+
+    Dentro do `chroot`, **antes de qualquer outra coisa**, confirme onde está:
+
+    ```bash
+    cat /etc/os-release | head -2
+    cat /etc/hostname
+    ls /home/
+    update-grub
+    exit
+    ```
+
+    E saia limpo:
+
+    ```bash
+    for d in /run /sys /proc /dev/pts /dev; do sudo umount -l "/mnt$d"; done
+    sudo umount -R /mnt
+    sudo reboot
+    ```
+
+    Esperado: o `update-grub` roda dentro do sistema instalado, não do live. Praticar isso agora é o que torna o procedimento utilizável no dia em que a máquina não iniciar.
+
+13. **Encerre confirmando o estado.**
+
+    ```bash
+    systemctl --failed
+    systemctl get-default
+    findmnt --verify
+    rm -f ~/fstab.bak
+    ```
+
+    Esperado: tudo como no passo 1. Só então descarte o *snapshot*.
+
+## Resumo
+
+- **`rescue.target` monta o `fstab`; `emergency.target` não.** Essa diferença decide qual usar: quando o problema é a própria montagem, o modo confortável falha exatamente pelo mesmo motivo que o sistema falhou.
+- **A recuperação tem cinco degraus, do menos ao mais invasivo**: kernel anterior, parâmetro temporário pela tecla `e`, `rescue`, `emergency`, live USB com `chroot`. Boa parte das reinstalações teria terminado no degrau 1 ou 2.
+- **`isolate` age agora, `set-default` age no próximo boot.** E `systemctl isolate rescue.target` numa máquina remota derruba a rede junto — é a forma mais rápida de perder um servidor.
+- **`nofail` em toda montagem não essencial** é a prevenção do modo de emergência por disco ausente, e `x-systemd.device-timeout=` corta a espera de 90 segundos.
+- **`findmnt --verify` e `mount -a` validam o `fstab` antes do reboot.** Cinco segundos que substituem uma sessão de recuperação.
+- **No `chroot`, os passos esquecidos são a ESP e os *bind mounts*** de `/dev`, `/proc`, `/sys` e `/run` — sem eles, `grub-install` escreve no lugar errado e `update-initramfs` falha. E confirmar em qual sistema se está, antes de qualquer comando, evita o estrago silencioso.
+- **`systemd.mask=` no parâmetro de kernel pula um serviço problemático num único boot**, sem editar nada em disco; `systemd.debug_shell` dá um shell em `Alt+F9` enquanto o boot ainda está travado.
+- **Um `df -h` que mostra espaço livre não descarta disco cheio**: `df -i` pode revelar exaustão de inodes, que produz `No space left on device` com espaço sobrando.
+- **Manter dois kernels instalados é a rede de proteção mais barata que existe** — e um `apt autoremove` distraído a remove.
+- **Reparar não é entender.** Depois que o sistema voltar, `journalctl -b -1 -p err` diz por que caiu; sem essa etapa, ele cai de novo.
