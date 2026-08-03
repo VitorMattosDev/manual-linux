@@ -1,3 +1,436 @@
 # Do comando ao script: o primeiro script Bash {#sec-cap051}
 
-*(em elaboracao)*
+Toda manhã a mesma sequência: atualizar o índice de pacotes, conferir o espaço em disco, olhar o journal em busca de falhas do último boot e arquivar os relatórios de ontem. São seis comandos. Digitados um a um, levam dois minutos e meio — e, na terça-feira em que o café atrasou, o quarto comando saiu com uma opção trocada e o relatório do dia foi arquivado por cima do da véspera.
+
+O problema não é o tempo. É que a sequência existe apenas na memória de quem a digita. Ela não pode ser revisada, não pode ser corrigida uma vez para sempre, não pode ser entregue a outra pessoa e não pode ser executada às três da manhã por um agendador. Um procedimento que só existe nos dedos de alguém não é um procedimento: é um hábito.
+
+Um script transforma esse hábito em artefato. Ele é apenas um arquivo de texto com os mesmos comandos que você digitaria, na mesma ordem, com a mesma sintaxe do @sec-cap006 — e é exatamente essa continuidade que faz do shell uma linguagem de programação incomum: você já sabe escrevê-la antes de saber que está programando.
+
+## O script é o terminal, gravado
+
+Não há uma "linguagem de script" separada da linha de comando. O que o Bash lê de um arquivo é o que ele leria do teclado. A prova cabe em três linhas:
+
+```bash
+# no terminal, interativamente
+cd /var/log
+ls -lh --sort=size | head -5
+```
+
+Grave essas mesmas duas linhas num arquivo chamado `maiores-logs.sh` e mande o Bash lê-lo:
+
+```bash
+bash maiores-logs.sh
+```
+
+A saída é idêntica. Nenhuma tradução, nenhuma compilação, nenhuma diferença de sintaxe. O shell é um interpretador que aceita comandos de duas fontes — o terminal e o arquivo — e trata as duas do mesmo jeito.
+
+Isso tem uma consequência prática imediata e muito subestimada: **a melhor forma de escrever um script é testar cada linha no terminal primeiro**. Você monta o pipeline interativamente, confere a saída, ajusta, e só então copia para o arquivo. E o histórico do @sec-cap014 é o rascunho:
+
+```bash
+history 20                             # os ultimos 20 comandos
+history 20 | cut -c 8- > rascunho.sh   # sem o numero da linha
+```
+
+## O cabeçalho: shebang
+
+Um arquivo de texto com comandos dentro não é, por si só, executável. Falta dizer ao sistema **quem deve interpretá-lo**. Essa é a função da primeira linha:
+
+```bash
+#!/usr/bin/env bash
+```
+
+Os dois primeiros bytes do arquivo — `#` e `!` — formam o que se chama de *shebang* (contração de *hash-bang*). Quando o kernel recebe a ordem de executar um arquivo e encontra esses dois bytes no início, ele não tenta executá-lo como binário: lê o resto da linha, entende como o caminho de um interpretador, e executa **esse interpretador** passando o arquivo como argumento.
+
+::: {#fig-caminho-execucao}
+```{.tikz}
+%%| filename: do-enter-ao-processo
+%%| alt: Sequencia da execucao de um script: shell le a linha, fork, execve, kernel le o shebang, carrega o interpretador e o interpretador le o arquivo linha a linha
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=2.75cm,minimum height=1.5cm},
+    us/.style={bx,draw=manualgray,fill=manualgray!12},
+    sh/.style={bx,draw=manualblue,fill=manualblue!13},
+    kr/.style={bx,draw=manualred,fill=manualred!11},
+    ip/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={very thick,-{Stealth[length=5pt]}}
+  ]
+  \node[us] (a) at (0,1.6)    {\textbf{1.} você digita\\[2pt]\texttt{./relatorio.sh}\\e tecla Enter};
+  \node[sh] (b) at (3.55,1.6) {\textbf{2.} o shell\\[2pt]\texttt{fork()} cria o filho\\\texttt{execve()} pede o arquivo};
+  \node[kr] (c) at (7.1,1.6)  {\textbf{3.} o kernel\\[2pt]lê os dois primeiros\\bytes do arquivo};
+  \node[kr] (d) at (10.65,1.6){\textbf{4.} o kernel\\[2pt]carrega \texttt{/bin/bash}\\e lhe entrega o arquivo};
+  \node[ip] (e) at (14.2,1.6) {\textbf{5.} o Bash\\[2pt]lê e executa\\linha a linha};
+
+  \draw[fl,manualgray] (a) -- (b);
+  \draw[fl,manualgray] (b) -- (c);
+  \draw[fl,manualgray] (c) -- (d);
+  \draw[fl,manualgray] (d) -- (e);
+
+  \node[nt,text width=15.0cm] at (7.1,-0.9) {O passo 3 é a razão de o bit de execução ser obrigatório: sem ele o \texttt{execve()} falha antes de qualquer leitura, e o erro é \texttt{Permission denied}. Se o arquivo não tiver \emph{shebang} algum, o kernel devolve \texttt{Exec format error} e o shell, por cortesia histórica, tenta interpretá-lo ele mesmo --- comportamento que não vale para \texttt{cron}, para o \texttt{systemd} nem para outra linguagem, e é por isso que o \emph{shebang} nunca é opcional.};
+\end{tikzpicture}
+```
+Do Enter ao processo: o percurso de um script até virar execução.
+:::
+
+Existem três formas usuais de escrever a linha, e a escolha entre elas tem consequência:
+
+| Forma | Comportamento | Quando usar |
+|---|---|---|
+| `#!/bin/bash` | caminho fixo e absoluto | quando você controla o sistema e quer garantia de qual binário roda |
+| `#!/usr/bin/env bash` | procura `bash` no `PATH` | quando o script pode rodar em macOS, BSD ou com Bash instalado fora de `/bin` |
+| `#!/bin/sh` | shell POSIX (no Debian/Kali é o `dash`) | quando o script usa **só** recursos POSIX — nada de arrays, `[[ ]]` ou `local` |
+
+: Variações de *shebang* e o que cada uma significa {#tbl-shebang}
+
+A terceira linha da tabela é a que mais causa surpresa. No Debian e no Kali, `/bin/sh` é um link simbólico para o `dash`, um shell pequeno e rápido que **não** entende boa parte da sintaxe do Bash. Um script com `#!/bin/sh` no topo e `[[ $a == b* ]]` no corpo falha com `[[: not found` — e a mensagem não deixa nada óbvio sobre a causa.
+
+```bash
+ls -l /bin/sh              # no Kali: -> dash
+readlink -f /bin/sh
+```
+
+A regra prática: se você escreve Bash, declare Bash. Portabilidade que não se testa é portabilidade imaginária, e o assunto volta com detalhe no @sec-cap057.
+
+## A permissão de execução
+
+Escrever o *shebang* não basta. O bit `x` do @sec-cap020 é o que autoriza o kernel a sequer olhar para o arquivo:
+
+```bash
+cat > ola.sh <<'FIM'
+#!/usr/bin/env bash
+echo "Ola do script, rodando como $(whoami)"
+FIM
+
+./ola.sh                   # bash: ./ola.sh: Permission denied
+chmod +x ola.sh
+ls -l ola.sh               # -rwxr-xr-x
+./ola.sh                   # funciona
+```
+
+Duas mensagens de erro parecidas confundem quem está começando, e distingui-las economiza muito tempo:
+
+- **`Permission denied`** — o arquivo foi encontrado, mas falta o bit `x`. Resolve com `chmod +x`.
+- **`command not found`** — o arquivo não foi encontrado no `PATH`. Resolve com `./` na frente ou colocando o diretório no `PATH`.
+
+O `./` é a causa da segunda mensagem. O diretório atual **não** está no `PATH` num sistema Linux bem configurado, e isso é deliberado: se estivesse, bastaria alguém deixar um arquivo chamado `ls` num diretório compartilhado para que o próximo `ls` digitado ali executasse código alheio. O `./` é a forma explícita de dizer "sim, quero executar este arquivo daqui mesmo".
+
+::: {.callout-warning}
+## Nunca acrescente `.` ao `PATH`
+
+Encontra-se na internet o conselho de pôr `PATH="$PATH:."` no `.bashrc` para não precisar digitar `./`. É uma das piores trocas de segurança por conveniência que existem no Linux, e é exatamente o vetor descrito acima: um `ls`, um `sudo` ou um `git` falsos plantados em `/tmp` passam a ser executados por qualquer um que entre no diretório e digite o nome real.
+
+Se digitar `./` incomoda, a solução correta é um diretório próprio no `PATH`:
+
+```bash
+mkdir -p ~/bin
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+```
+
+No Debian e no Kali, o `.profile` padrão já acrescenta `~/bin` ao `PATH` automaticamente se o diretório existir — basta criá-lo e reabrir a sessão.
+:::
+
+## As quatro formas de rodar um script
+
+Um mesmo arquivo pode ser executado de maneiras que **não** são equivalentes, e a diferença mais importante é se o script roda num processo separado ou dentro do shell atual:
+
+```bash
+./script.sh          # subprocesso; exige bit x e shebang
+bash script.sh       # subprocesso; ignora o bit x, ignora o shebang
+source script.sh     # NO SHELL ATUAL; nao exige bit x
+. script.sh          # identico a source (forma POSIX)
+```
+
+::: {#fig-source-vs-exec}
+```{.tikz}
+%%| filename: executar-contra-fontear
+%%| alt: Comparacao entre executar um script num subshell, cujas alteracoes se perdem, e usar source, que altera o shell atual
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt},
+    sh/.style={bx,draw=manualblue,fill=manualblue!12,text width=5.6cm,minimum height=1.05cm},
+    sb/.style={bx,draw=manualgreen,fill=manualgreen!13,text width=5.0cm,minimum height=1.05cm},
+    ti/.style={font=\scriptsize\bfseries,align=center},
+    lb/.style={font=\scriptsize,manualgray,align=left,text width=6.5cm},
+    fl/.style={thick,-{Stealth[length=4pt]}}
+  ]
+  \node[ti,manualgreen] at (3.2,4.6) {\texttt{./script.sh} --- subprocesso};
+  \node[sh] (s1) at (3.2,3.6) {shell atual (PID 4021)\\\texttt{VAR} continua valendo \texttt{antes}};
+  \node[sb] (p1) at (3.2,2.05) {subshell (PID 4088)\\\texttt{VAR=depois} \quad \texttt{cd /tmp}};
+  \draw[fl,manualgray] (s1) -- node[right,font=\scriptsize,manualgray,xshift=2pt]{\texttt{fork}} (p1);
+  \node[lb] at (3.2,0.4) {O subprocesso recebe uma \textbf{cópia} do ambiente. Ao terminar, a cópia é descartada: o diretório atual e as variáveis do shell que o chamou permanecem exatamente como estavam.};
+
+  \node[ti,manualblue] at (11.3,4.6) {\texttt{source script.sh} --- mesmo processo};
+  \node[sh,minimum height=2.6cm] (s2) at (11.3,2.83) {shell atual (PID 4021)\\[3pt]as linhas do arquivo são lidas\\como se tivessem sido digitadas\\[3pt]\texttt{VAR} passa a valer \texttt{depois}\\o diretório atual vira \texttt{/tmp}};
+  \node[lb] at (11.3,0.4) {Não há processo novo nem cópia. É o mecanismo por trás do \texttt{.bashrc}, dos arquivos em \texttt{/etc/profile.d/} e de qualquer script cuja finalidade seja \emph{alterar} a sessão em curso.};
+\end{tikzpicture}
+```
+Executar cria um processo novo; `source` altera o shell que já existe.
+:::
+
+A regra que resume tudo: **um script executado não consegue mudar o shell que o chamou**. Nenhum `cd`, `export` ou definição de função sobrevive ao fim do processo filho. Quem quer mudar a sessão precisa de `source`.
+
+Isso explica um mistério comum do dia a dia: por que `source ~/.bashrc` funciona e `bash ~/.bashrc` não parece fazer nada. O segundo funciona perfeitamente — ele apenas aplica todas as configurações num processo que morre no instante seguinte.
+
+A forma `bash script.sh` tem seu lugar: ela dispensa o bit `x` e ignora o *shebang*, o que a torna útil para testar um script rapidamente ou para rodar com um interpretador diferente do declarado (`sh script.sh`, `bash -x script.sh` para depurar).
+
+## Anatomia de um script de verdade
+
+Com o mecanismo entendido, o cenário de abertura vira um arquivo. Este é um script completo, no formato que vale a pena adotar desde o primeiro dia:
+
+```bash
+#!/usr/bin/env bash
+#
+# rotina-matinal.sh - conferencia diaria do sistema
+# Autor: seu nome | Uso: ./rotina-matinal.sh
+
+set -euo pipefail
+
+DESTINO="$HOME/relatorios"
+DATA="$(date +%Y-%m-%d)"
+RELATORIO="$DESTINO/sistema-$DATA.txt"
+
+mkdir -p "$DESTINO"
+
+echo "=== Relatorio de $DATA ===" > "$RELATORIO"
+
+echo "--- Espaco em disco ---" >> "$RELATORIO"
+df -h / /var /home >> "$RELATORIO"
+
+echo "--- Memoria ---" >> "$RELATORIO"
+free -h >> "$RELATORIO"
+
+echo "--- Falhas no ultimo boot ---" >> "$RELATORIO"
+journalctl -p err -b --no-pager >> "$RELATORIO"
+
+echo "--- Servicos com falha ---" >> "$RELATORIO"
+systemctl --failed --no-pager >> "$RELATORIO"
+
+echo "Relatorio gravado em $RELATORIO"
+```
+
+Cinco elementos merecem atenção, porque são o esqueleto de todo script bem escrito:
+
+**O bloco de comentário do topo.** Nome do arquivo, o que faz, quem escreveu e como se usa. Parece cerimônia até o dia em que você abre um script de dois anos atrás e não faz ideia do que ele espera receber. Tudo depois de `#` até o fim da linha é ignorado pelo shell — exceto, claro, o *shebang* da primeira linha, que só é especial por estar onde está.
+
+**O `set -euo pipefail`.** Três interruptores que mudam o comportamento padrão do Bash em caso de erro: `-e` aborta na primeira falha, `-u` aborta ao usar variável não definida, `-o pipefail` faz um *pipeline* falhar se qualquer etapa falhar. Sem eles, o comportamento padrão do shell é **continuar depois de um erro**, o que num script de manutenção significa executar o passo 7 com a premissa do passo 6 falsa. O @sec-cap056 detalha os códigos de saída por trás disso, e o tratamento de erros ganha um capítulo inteiro no Volume 12.
+
+**As variáveis em maiúsculas no topo.** Tudo que possa precisar mudar fica junto, no começo, com nome descritivo. Alterar o destino do relatório é editar uma linha, não caçar seis ocorrências espalhadas.
+
+**As aspas em `"$DESTINO"` e `"$RELATORIO"`.** Não são decoração. Sem elas, um caminho com espaço vira dois argumentos e o script quebra de maneira difícil de diagnosticar. O @sec-cap053 é inteiro sobre isso.
+
+**O `>` na primeira gravação e `>>` nas seguintes.** O primeiro cria ou zera o arquivo; os demais acrescentam. Trocar os dois por engano é o erro que produz um relatório com o conteúdo de todos os dias anteriores, ou um relatório com só a última seção. É o redirecionamento do @sec-cap012, aplicado.
+
+## Como um script é lido
+
+Um detalhe do funcionamento do Bash surpreende quem vem de linguagens compiladas: **o shell lê o arquivo enquanto executa**, não antes. Ele não carrega o script inteiro na memória, valida e depois roda — ele lê um comando, executa, lê o próximo.
+
+A consequência prática é que um erro de sintaxe na linha 50 **não impede** que as linhas 1 a 49 sejam executadas. Num script que apaga arquivos antes de recriá-los, isso é a diferença entre um erro inofensivo e um estrago.
+
+Existe uma checagem barata e obrigatória antes de rodar qualquer script pela primeira vez:
+
+```bash
+bash -n rotina-matinal.sh     # -n: le e valida a sintaxe, nao executa nada
+```
+
+E existe uma proteção mais forte para scripts que você edita enquanto rodam: envolver o corpo inteiro numa função `main` e chamá-la na última linha. Assim, o shell precisa ter lido o arquivo até o fim antes de executar qualquer coisa. É a técnica de estruturação que o Volume 12 explora, e a razão pela qual instaladores distribuídos por `curl | bash` responsáveis são escritos assim.
+
+::: {.callout-important}
+## Editar um script enquanto ele está rodando corrompe a execução
+
+Como o Bash lê por posição de byte, salvar alterações num script em execução faz com que ele continue lendo a partir do deslocamento antigo — agora apontando para o meio de outra linha. O resultado são erros de sintaxe impossíveis e, em scripts destrutivos, comandos parciais executados.
+
+A regra: nunca editar um script longo enquanto ele roda. Se precisar, edite uma cópia e substitua com `mv` — que troca o inode do @sec-cap015 e deixa o processo em curso lendo o arquivo antigo, intacto.
+:::
+
+## O erro que só acontece com quem edita no Windows
+
+Um script escrito ou editado num editor do Windows costuma vir com terminadores de linha CRLF em vez de LF. O caractere de retorno de carro invisível ao final de cada linha passa a fazer parte do argumento, e o resultado é uma das mensagens de erro mais desconcertantes do Linux:
+
+```
+bash: ./script.sh: /usr/bin/env^M: bad interpreter: No such file or directory
+```
+
+O `^M` é o retorno de carro que o shell tentou incluir no nome do interpretador. Diagnóstico e correção:
+
+```bash
+file script.sh                       # "with CRLF line terminators"
+cat -A script.sh | head -3           # o ^M$ aparece no fim de cada linha
+sudo apt install -y dos2unix
+dos2unix script.sh
+# ou, sem instalar nada:
+sed -i 's/\r$//' script.sh
+```
+
+Vale configurar o Git para não reintroduzir o problema (`git config --global core.autocrlf input` em máquinas Unix) e o editor para gravar em LF.
+
+## 🐉 No Kali
+
+- **O `~/bin` já está previsto, mas só se você criá-lo.** O `.profile` padrão do Kali contém um bloco condicional que acrescenta `$HOME/bin` e `$HOME/.local/bin` ao `PATH` **se o diretório existir**. Como ele não existe numa instalação nova, o efeito é confuso: você cria o diretório, põe o script lá e nada acontece até reabrir a sessão. Um `source ~/.profile` resolve na hora — e é mais um exemplo de por que `source` existe.
+- **O shell padrão do Kali é o Zsh desde 2020.** Isso muda o prompt e a experiência interativa, mas **não muda nada em script**: com `#!/usr/bin/env bash` no topo, o script roda em Bash independentemente do shell do usuário. O erro correspondente é testar uma linha no Zsh interativo, ver funcionar e supor que valerá igual num script Bash — `setopt` e o globbing estendido do Zsh não existem lá. Testar o trecho com `bash -c '...'` elimina a dúvida.
+- **Scripts em `/usr/local/bin` são a convenção certa para ferramentas próprias.** O @sec-cap005 já situou o diretório: ele existe justamente para o que o administrador instala à mão, e nenhum pacote do APT escreve ali. Um `sudo install -m 755 meu-script.sh /usr/local/bin/meu-script` deixa o comando disponível para todos os usuários, sem extensão e sem `./`.
+- **Um script que envolve ferramenta de laboratório precisa ser mais explícito, não menos.** Automatizar uma varredura significa que a lista de alvos passa a vir de um arquivo, e um erro de caminho pode apontar a ferramenta para fora do escopo autorizado. A prática que se recomenda: validar a lista de alvos no começo do script, exibi-la, e exigir confirmação antes de agir. Uso de ferramenta ofensiva fora do escopo contratado é crime pela Lei 12.737/2012, e "o script leu o arquivo errado" não é defesa.
+- **O `kali-tweaks` é, ele mesmo, um bom objeto de estudo.** É um programa escrito em shell com interface de texto, instalado no sistema, e pode ser lido: `less $(which kali-tweaks)` e os arquivos em `/usr/share/kali-tweaks/`. Ler script de gente experiente é a forma mais rápida de aprender convenções — e o `kali-tweaks` está à mão.
+
+> **Nota sobre a família RHEL.** O *shebang* e a mecânica de execução são idênticos, mas há uma diferença que morde: em RHEL, Rocky e AlmaLinux, `/bin/sh` também é um link, porém para o **Bash** em modo POSIX, não para o `dash`. Um script com `#!/bin/sh` e sintaxe de Bash funciona ali e falha no Debian/Kali — a mesma máquina que "sempre funcionou" produz `[[: not found` na primeira execução em Debian. Além disso, o SELinux pode impedir a execução de um script com contexto de arquivo errado mesmo com o bit `x` presente, com um `Permission denied` que não se resolve com `chmod`; o diagnóstico é `ls -Z` e `restorecon`, assunto do Volume 14.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Todos os passos são inofensivos e ficam contidos em `~/lab-scripts`, removido no passo final.
+
+1. **Prepare o terreno e comprove que script é terminal gravado.**
+
+   ```bash
+   mkdir -p ~/lab-scripts && cd ~/lab-scripts
+   uptime; df -h / | tail -1
+   printf '%s\n' 'uptime' 'df -h / | tail -1' > primeiro.sh
+   bash primeiro.sh
+   ```
+
+   Esperado: a saída de `bash primeiro.sh` é igual à dos comandos digitados. Nenhum *shebang*, nenhuma permissão — `bash arquivo` só precisa do arquivo.
+
+2. **Tente executar sem o bit de execução.**
+
+   ```bash
+   ./primeiro.sh
+   ls -l primeiro.sh
+   ```
+
+   Esperado: `Permission denied`. O `ls -l` mostra `-rw-r--r--`, sem nenhum `x`. Foi o `execve()` que falhou, no passo 3 da @fig-caminho-execucao.
+
+3. **Dê a permissão e observe que ainda falta algo.**
+
+   ```bash
+   chmod +x primeiro.sh
+   ls -l primeiro.sh
+   ./primeiro.sh
+   ```
+
+   Esperado: agora funciona. Sem *shebang*, o kernel recusa o arquivo e o Bash, por conta própria, o interpreta — comportamento de cortesia em que **não** se deve confiar, como o passo 8 vai mostrar.
+
+4. **Escreva um script completo, com cabeçalho.**
+
+   ```bash
+   cat > infosis.sh <<'FIM'
+   #!/usr/bin/env bash
+   # infosis.sh - resumo rapido do sistema
+   set -euo pipefail
+
+   echo "Maquina : $(hostname)"
+   echo "Kernel  : $(uname -r)"
+   echo "Uptime  : $(uptime -p)"
+   echo "Usuario : $(whoami)"
+   echo "Disco / : $(df -h / | awk 'NR==2 {print $4" livres"}')"
+   FIM
+   chmod +x infosis.sh
+   ./infosis.sh
+   ```
+
+   Esperado: cinco linhas formatadas. As aspas simples no `<<'FIM'` impedem que o `$(...)` seja expandido **na hora de criar o arquivo** — assunto do @sec-cap053, e um detalhe que quebra muito laboratório copiado da internet.
+
+5. **Valide a sintaxe sem executar.**
+
+   ```bash
+   cp infosis.sh quebrado.sh
+   echo 'if [ -f /etc/passwd ]; then' >> quebrado.sh
+   bash -n quebrado.sh
+   echo "codigo de saida: $?"
+   bash -n infosis.sh && echo "infosis.sh: sintaxe ok"
+   ```
+
+   Esperado: `bash -n quebrado.sh` reclama de `unexpected end of file` e retorna código diferente de zero, sem ter executado nada. É a checagem que deve preceder toda primeira execução.
+
+6. **Veja a diferença entre executar e usar `source`.**
+
+   ```bash
+   cat > muda.sh <<'FIM'
+   #!/usr/bin/env bash
+   MARCADOR="alterado pelo script"
+   cd /tmp
+   echo "dentro do script: PWD=$PWD MARCADOR=$MARCADOR"
+   FIM
+   chmod +x muda.sh
+
+   MARCADOR="valor original"
+   ./muda.sh
+   echo "depois de ./    : PWD=$PWD MARCADOR=$MARCADOR"
+
+   source muda.sh
+   echo "depois de source: PWD=$PWD MARCADOR=$MARCADOR"
+   cd ~/lab-scripts
+   ```
+
+   Esperado: depois de `./muda.sh`, o `PWD` e o `MARCADOR` **não mudaram**; depois de `source muda.sh`, ambos mudaram. É a @fig-source-vs-exec em duas execuções.
+
+7. **Confirme que são processos diferentes.**
+
+   ```bash
+   echo "shell atual: $$"
+   printf '%s\n%s\n' '#!/usr/bin/env bash' 'echo "o script roda no PID $$, filho de $PPID"' > pid.sh
+   chmod +x pid.sh
+   ./pid.sh
+   source pid.sh
+   ```
+
+   Esperado: com `./`, o PID exibido é diferente do shell atual e o `PPID` é igual a ele. Com `source`, o PID exibido **é** o do shell atual — nenhum processo foi criado.
+
+8. **Reproduza o erro de `/bin/sh`.**
+
+   ```bash
+   readlink -f /bin/sh
+   cat > sintaxe.sh <<'FIM'
+   #!/bin/sh
+   nome="kali"
+   if [[ $nome == ka* ]]; then
+       echo "casou"
+   fi
+   FIM
+   chmod +x sintaxe.sh
+   ./sintaxe.sh
+   sed -i '1s|.*|#!/usr/bin/env bash|' sintaxe.sh
+   ./sintaxe.sh
+   ```
+
+   Esperado: com `#!/bin/sh` (que é `dash` no Kali), o erro é `[[: not found`. Trocado o *shebang* para `bash`, imprime `casou`. Mesmo arquivo, mesma permissão — o que mudou foi só quem interpreta.
+
+9. **Provoque e conserte o erro do CRLF.**
+
+   ```bash
+   cp infosis.sh crlf.sh
+   sed -i 's/$/\r/' crlf.sh
+   ./crlf.sh
+   file crlf.sh
+   cat -A crlf.sh | head -2
+   sed -i 's/\r$//' crlf.sh && ./crlf.sh
+   ```
+
+   Esperado: primeiro o `bad interpreter`, depois `with CRLF line terminators` no `file`, os `^M$` visíveis no `cat -A` e, após a limpeza, o script voltando a funcionar.
+
+10. **Instale o script como um comando de verdade.**
+
+    ```bash
+    mkdir -p ~/bin
+    cp infosis.sh ~/bin/infosis
+    chmod +x ~/bin/infosis
+    infosis                       # provavelmente: command not found
+    source ~/.profile
+    which infosis && infosis
+    ```
+
+    Esperado: antes do `source ~/.profile`, `command not found`, porque o `PATH` da sessão foi montado quando `~/bin` ainda não existia. Depois, `which` encontra o comando e ele roda sem `./` e sem extensão.
+
+11. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-scripts ~/bin/infosis
+    ls ~/lab-scripts 2>/dev/null; echo "limpo"
+    ```
+
+    Esperado: o diretório não existe mais. O `~/bin` pode ficar — ele será útil no resto do volume.
+
+## Resumo
+
+- **Um script é o terminal gravado.** A sintaxe é a mesma da linha de comando, o interpretador é o mesmo, e a melhor forma de escrever um script é testar cada comando interativamente antes de copiá-lo para o arquivo.
+- **O *shebang* diz quem interpreta.** O kernel lê os dois primeiros bytes do arquivo, carrega o interpretador indicado e lhe entrega o script. `#!/usr/bin/env bash` é o padrão portável; `#!/bin/sh` no Debian e no Kali significa `dash`, que não entende `[[ ]]`, arrays nem `local`.
+- **`Permission denied` e `command not found` são problemas diferentes.** O primeiro é falta do bit `x` (`chmod +x`); o segundo é o arquivo fora do `PATH` (use `./` ou instale em `~/bin`). Acrescentar `.` ao `PATH` é uma falha de segurança séria, nunca a solução.
+- **Executar cria um processo; `source` não.** Um script executado recebe uma cópia do ambiente e nada do que ele altera sobrevive ao seu fim. Para mudar o shell atual — variáveis, `cd`, funções — só `source` (ou `.`) serve.
+- **O shell lê o arquivo enquanto executa.** Um erro de sintaxe no fim não impede a execução do começo. `bash -n` valida sem executar e deve preceder toda primeira execução; editar um script em execução corrompe a leitura em curso.
+- **O esqueleto de um script decente cabe em cinco itens:** *shebang*, bloco de comentário com nome e uso, `set -euo pipefail`, variáveis de configuração no topo e todas as expansões entre aspas.
+- **CRLF quebra o *shebang* de forma ilegível.** O erro `bad interpreter` com um `^M` no meio significa terminadores de linha do Windows; `dos2unix` ou `sed -i 's/\r$//'` resolvem, e configurar editor e Git evita a recorrência.

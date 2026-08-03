@@ -1,3 +1,503 @@
 # Boas práticas: shebang, permissões e portabilidade {#sec-cap057}
 
-*(em elaboracao)*
+O arquivo se chama `limpa.sh` e tem dezenove linhas. Foi escrito numa tarde de 2023 para resolver um problema daquele dia: apagar arquivos temporários de um diretório que estava enchendo. Não tem *shebang*, não tem comentário, tem um caminho absoluto codificado que aponta para o diretório pessoal de quem o escreveu, e roda todo dia às quatro da manhã em três servidores por meio de uma linha no `crontab` do root.
+
+Ninguém mexe nele. Duas pessoas já tentaram entender o que ele faz e desistiram. Ele está com permissão `777` num diretório gravável pelo grupo `devs`, o que significa que qualquer membro do grupo pode reescrevê-lo e, na madrugada seguinte, executar qualquer coisa como root.
+
+Este último capítulo do volume é sobre não escrever esse arquivo. Ele reúne as decisões que separam um script descartável de um que pode ser lido, corrigido, auditado e executado numa máquina que você não configurou — e a maior parte delas custa poucos segundos no momento de escrever.
+
+## O molde
+
+Comece todo script a partir daqui. Cada linha existe por um motivo, e todos já apareceram nos capítulos anteriores:
+
+```bash
+#!/usr/bin/env bash
+#
+# nome-do-script - resumo em uma linha
+#
+# Uso:     nome-do-script [-v] [-n] ARQUIVO...
+# Saidas:  0 sucesso | 1 erro | 2 uso incorreto | 3 dependencia ausente
+# Autor:   Fulano <fulano@exemplo.org>
+# Versao:  1.2.0
+
+set -euo pipefail
+
+readonly VERSAO="1.2.0"
+readonly PROGRAMA="${0##*/}"
+readonly AQUI="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# Configuracao (pode vir do ambiente, com padrao seguro)
+DESTINO="${DESTINO:-/var/backups}"
+SIMULAR="${SIMULAR:-0}"
+
+erro()  { printf '%s: %s\n' "$PROGRAMA" "$*" >&2; }
+morre() { erro "$*"; exit 1; }
+info()  { (( VERBOSO )) && printf '%s\n' "$*" || true; }
+
+uso() {
+    cat <<FIM
+$PROGRAMA $VERSAO - resumo em uma linha
+
+Uso: $PROGRAMA [-v] [-n] ARQUIVO...
+
+  -v  saida detalhada
+  -n  simular: mostra o que faria, sem fazer
+  -h  esta ajuda
+FIM
+}
+
+main() {
+    command -v gzip >/dev/null || { erro "gzip nao encontrado"; exit 3; }
+    (( $# > 0 ))               || { uso >&2; exit 2; }
+
+    local arquivo
+    for arquivo in "$@"; do
+        [[ -r "$arquivo" ]] || { erro "ilegivel: $arquivo"; continue; }
+        if (( SIMULAR )); then
+            printf 'SIMULACAO: gzip -- %q\n' "$arquivo"
+        else
+            gzip -- "$arquivo"
+        fi
+    done
+}
+
+main "$@"
+```
+
+Sete decisões desse molde merecem justificativa.
+
+**`main "$@"` na última linha.** O shell lê o arquivo enquanto executa (@sec-cap051); com tudo dentro de funções e a chamada no fim, ele precisa ter lido o arquivo inteiro antes de executar qualquer coisa. Isso torna o script imune a edição durante a execução e a *download* truncado.
+
+**`AQUI` calculado a partir de `BASH_SOURCE`.** Um script frequentemente precisa de arquivos que estão ao lado dele. Usar `$PWD` é errado — depende de onde o usuário estava — e usar `$0` falha quando o script foi chamado por `source`. A construção com `cd -- ... && pwd -P` resolve links simbólicos e dá o caminho real do diretório do script.
+
+**`PROGRAMA="${0##*/}"`** extrai o nome do arquivo sem chamar `basename`. Mensagens de erro prefixadas com o nome do programa são o padrão do Unix e ajudam quando o script é chamado dentro de um *pipeline*.
+
+**Configuração com padrão via `${VAR:-padrao}`.** O comportamento pode ser ajustado pelo ambiente sem editar o arquivo, e o padrão é seguro se ninguém ajustar nada.
+
+**`--` antes dos argumentos de dado.** `gzip -- "$arquivo"` protege contra um nome de arquivo que comece com hífen. Vale para `rm`, `cp`, `mv`, `grep` e praticamente tudo.
+
+**`%q` na mensagem de simulação.** Mostra exatamente a forma que o shell veria, com escapes visíveis — muito mais útil do que `echo` quando o nome tem espaços.
+
+**Modo de simulação.** Todo script destrutivo deveria ter um, e o `-n` deveria ser barato de digitar. Um `--dry-run` que ninguém usa é melhor do que um comando `rm` que ninguém revisou.
+
+::: {.callout-note}
+## Sobre `IFS=$'\n\t'`
+
+Vários guias recomendam acrescentar `IFS=$'\n\t'` ao cabeçalho, como parte de um "modo estrito". A ideia é reduzir o dano da divisão em palavras acidental, limitando-a a quebras de linha e tabulações.
+
+A recomendação deste manual é **não** usá-la. Ela muda um comportamento global do shell para compensar um defeito local — expansão sem aspas — e ao fazê-lo altera o funcionamento de `read` sem `IFS=` próprio, de `set --`, de arrays e de código de terceiros que você venha a chamar com `source`. Aspas em toda expansão, como no @sec-cap053, resolve o mesmo problema sem efeito colateral, e o `shellcheck` verifica isso sozinho.
+:::
+
+## Permissões: onde um script vira escalada de privilégio
+
+Um script executado com privilégio elevado é código que roda como root. A pergunta que decide a permissão dele não é "quem precisa executar?", e sim **"quem pode reescrever?"**.
+
+::: {#fig-escalada-por-permissao}
+```{.tikz}
+%%| filename: escalada-de-privilegio-por-permissao-de-script
+%%| alt: Comparacao entre um script gravavel pelo grupo e um script gravavel so pelo root, mostrando como o primeiro permite escalada de privilegio
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=5pt,text width=6.4cm},
+    ru/.style={bx,draw=manualred,fill=manualred!10,minimum height=2.5cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!12,minimum height=2.5cm},
+    ti/.style={font=\scriptsize\bfseries,align=center},
+    et/.style={font=\scriptsize\ttfamily,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4pt]}}
+  ]
+  \node[ti,manualred] at (3.4,5.2) {vulnerável};
+  \node[et] at (3.4,4.72) {-rwxrwxr-x root:devs /opt/limpa.sh};
+  \node[ru] (a) at (3.4,3.15) {\textbf{1.} o \emph{crontab} do root executa o script todo dia às 4h\\[3pt]
+      \textbf{2.} qualquer membro de \texttt{devs} pode reescrever o arquivo\\[3pt]
+      \textbf{3.} às 4h01, o conteúdo escrito por esse membro roda \textbf{como root}};
+
+  \node[ti,manualgreen] at (11.3,5.2) {correto};
+  \node[et] at (11.3,4.72) {-rwxr-xr-x root:root /usr/local/bin/limpa};
+  \node[ok] (b) at (11.3,3.15) {\textbf{1.} o \emph{crontab} do root executa o script todo dia às 4h\\[3pt]
+      \textbf{2.} só o root grava --- os demais apenas leem e executam\\[3pt]
+      \textbf{3.} às 4h01, roda o que o root aprovou};
+
+  \node[nt,text width=14.6cm] at (7.3,0.2) {A mesma pergunta se aplica ao \textbf{diretório}: um script perfeito dentro de um diretório gravável pelo grupo pode ser substituído com um \texttt{mv}, sem que ninguém precise da permissão de escrita no arquivo. E se aplica a tudo que o script \emph{lê}: um arquivo de configuração ou uma biblioteca carregada com \texttt{source} tem o mesmo poder que o script, e portanto exige o mesmo dono e as mesmas permissões.\\[4pt]
+      A regra, em uma frase: \textbf{tudo que um processo privilegiado executa ou carrega deve ser gravável apenas por quem já tem esse privilégio} --- o arquivo, o diretório que o contém e todos os diretórios acima dele.};
+\end{tikzpicture}
+```
+A permissão de escrita num script privilegiado é permissão de virar root.
+:::
+
+Na prática:
+
+```bash
+# script de uso geral, instalado no sistema
+sudo install -o root -g root -m 755 meu-script /usr/local/bin/meu-comando
+
+# script pessoal, sem motivo para outros lerem
+install -m 700 script.sh ~/bin/script
+
+# arquivo de configuracao com segredo
+install -m 600 credenciais ~/.config/app/credenciais
+
+# NUNCA
+chmod 777 qualquer-coisa
+```
+
+O `777` não tem caso de uso legítimo. Ele aparece como "solução" para um problema de permissão que quase sempre se resolve com o grupo certo, com ACL (@sec-cap024) ou com o dono correto.
+
+Duas verificações que valem virar hábito antes de instalar um script no sistema:
+
+```bash
+# quem pode gravar no script, no diretorio e nos diretorios acima?
+namei -l /usr/local/bin/meu-comando
+
+# ha algum script gravavel por todos sendo executado por root?
+sudo find /usr/local/bin /opt -type f -perm -o+w -ls
+```
+
+::: {.callout-warning}
+## SUID em script de shell não funciona — e a tentação de contornar isso é perigosa
+
+O kernel Linux **ignora** o bit SUID (@sec-cap023) em arquivos com *shebang*. É proteção deliberada: um script SUID seria explorável por corrida entre a leitura do *shebang* e a abertura do arquivo pelo interpretador.
+
+A saída correta para "preciso que o usuário X rode este script como root" é o `sudoers`, com uma regra específica:
+
+```
+# em /etc/sudoers.d/limpeza, criado com visudo -f
+operador ALL=(root) NOPASSWD: /usr/local/bin/limpa
+```
+
+E aí a permissão do arquivo volta a ser o ponto crítico: com essa regra no lugar, quem puder **gravar** em `/usr/local/bin/limpa` tem root sem senha. Uma regra `NOPASSWD` apontando para um arquivo gravável pelo grupo é uma das escaladas de privilégio mais encontradas em auditoria de sistema real.
+
+Evite também curingas na regra do `sudoers` (`/usr/local/bin/*`) e regras que permitam passar argumentos arbitrários a um interpretador — `sudo /usr/bin/python3` é equivalente a `sudo su`.
+:::
+
+## Portabilidade: escolher a camada e ficar nela
+
+Não existe "portável" em abstrato. Existem camadas, e cada uma custa recursos e compra alcance:
+
+::: {#fig-camadas-portabilidade}
+```{.tikz}
+%%| filename: camadas-de-portabilidade
+%%| alt: Camadas concentricas de portabilidade de script, do POSIX sh puro ate bash recente com utilitarios GNU, com o que cada camada oferece e onde roda
+\begin{tikzpicture}[
+    cx/.style={rounded corners=4pt,draw,thick,align=left,font=\scriptsize,inner sep=6pt,text width=11.4cm,anchor=north west},
+    c1/.style={cx,draw=manualgray,fill=manualgray!8},
+    c2/.style={cx,draw=manualblue,fill=manualblue!9},
+    c3/.style={cx,draw=manualgreen,fill=manualgreen!10},
+    c4/.style={cx,draw=manualyellow,fill=manualyellow!14},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    ex/.style={font=\scriptsize\bfseries,align=center}
+  ]
+  \node[c1,text=manualgray] (n1) at (1.9,6.7) {\textbf{\texttt{\#!/bin/sh} --- POSIX puro.} Roda em \texttt{dash}, \texttt{busybox ash}, \texttt{ksh}, Alpine, \emph{initramfs} e contêiner mínimo. Sem \texttt{[[ ]]}, sem arrays, sem \texttt{local}, sem \texttt{\$\{var,,\}}, sem \texttt{\$RANDOM}, sem \texttt{\{1..10\}}. É a camada dos scripts de inicialização e de instalação.};
+
+  \node[c2,text=manualblue] (n2) at (1.9,5.05) {\textbf{\texttt{\#!/usr/bin/env bash} --- Bash 3.} Roda em Linux, macOS (que ainda traz o Bash 3.2) e BSD com Bash instalado. Ganha \texttt{[[ ]]}, \texttt{=\textasciitilde{}}, arrays indexados, \texttt{local}, \texttt{(( ))}, \texttt{\$RANDOM} e expansão de chaves.};
+
+  \node[c3,text=manualgreen] (n3) at (1.9,3.4) {\textbf{Bash 4 e posteriores.} Arrays associativos (\texttt{declare -A}), \texttt{\$\{var,,\}} e \texttt{\$\{var\^{}\^{}\}}, \texttt{mapfile}, \texttt{globstar}. Ausente no macOS de fábrica.};
+
+  \node[c4,text=manualyellow!62!black] (n4) at (1.9,2.15) {\textbf{Mais os utilitários GNU.} \texttt{sed -i}, \texttt{date -d}, \texttt{readlink -f}, \texttt{sort -V}, \texttt{find -printf}. Sintaxe diferente no BSD e no macOS, ausentes no \texttt{busybox}.};
+
+  \draw[very thick,-{Stealth[length=5pt]},manualgray] (1.15,6.65) -- (1.15,1.25);
+  \node[ex,manualgray,rotate=90,anchor=south] at (0.85,5.6) {mais portátil};
+  \node[ex,manualgray,rotate=90,anchor=south] at (0.85,1.9) {mais recursos};
+
+  \node[nt,text width=13.4cm] at (7.0,-0.05) {A escolha se faz uma vez, se declara no \emph{shebang} e se verifica com ferramenta. Descer uma camada custa esforço real: sem arrays, montar uma linha de comando com argumentos que contenham espaço vira um exercício de \texttt{eval} --- exatamente o que se quer evitar. A recomendação prática para script de administração de Linux: fique na camada azul (\texttt{bash}), e desça para a cinza apenas quando o script precisar rodar antes de o sistema estar completo.};
+\end{tikzpicture}
+```
+As camadas de portabilidade: cada uma custa recursos e compra alcance.
+:::
+
+As substituições mais frequentes ao descer para POSIX:
+
+| Bash | POSIX `sh` |
+|---|---|
+| `[[ $a == b* ]]` | `case "$a" in b*) ... esac` |
+| `[[ -n $a && -z $b ]]` | `[ -n "$a" ] && [ -z "$b" ]` |
+| `(( n > 10 ))` | `[ "$n" -gt 10 ]` |
+| `$((n++))` | `n=$((n+1))` |
+| `arr=(a b c)` | parâmetros posicionais: `set -- a b c` |
+| `${var,,}` | `printf '%s' "$var" \| tr 'A-Z' 'a-z'` |
+| `source arq` | `. arq` |
+| `echo -e` | `printf` |
+| `local x` | (não existe; use nomes distintos ou subshell) |
+
+: Recursos do Bash e seus equivalentes POSIX {#tbl-bash-posix}
+
+E há a portabilidade dos **utilitários**, que é independente do shell e igualmente traiçoeira:
+
+```bash
+sed -i 's/a/b/' arq          # GNU; no BSD/macOS exige sed -i '' 's/a/b/'
+date -d '2 days ago'         # GNU; no BSD e date -v-2d
+readlink -f caminho          # GNU; no macOS antigo nao existe
+find . -printf '%p\n'        # GNU; nao existe no BSD
+xargs -r                     # GNU; no BSD o comportamento ja e esse
+grep -P 'regex'              # GNU com PCRE; ausente em muitas builds
+```
+
+A verificação não precisa ser adivinhada:
+
+```bash
+sudo apt install -y devscripts shellcheck
+checkbashisms script.sh          # aponta bashisms num script #!/bin/sh
+shellcheck -s sh script.sh       # analisa como POSIX sh
+dash script.sh                   # o teste definitivo no Debian/Kali
+```
+
+## `shellcheck` como parte do processo
+
+O `shellcheck` encontra sozinho a maior parte dos defeitos deste volume. Ele não é opcional em código que outra pessoa vai executar:
+
+```bash
+shellcheck script.sh                # analise normal
+shellcheck -s bash -S warning *.sh  # so avisos e acima, em varios arquivos
+shellcheck -f gcc script.sh         # formato que editores entendem
+```
+
+Quando um aviso é realmente inaplicável, silencie **aquela ocorrência**, com justificativa:
+
+```bash
+# shellcheck disable=SC2016  # o $ e literal de proposito: e um padrao para o awk
+awk '{print $1}' arquivo
+```
+
+Desligar por arquivo inteiro, ou por diretiva no topo, esconde os casos futuros. E os avisos mais comuns valem ser reconhecidos de cabeça: **SC2086** (expansão sem aspas), **SC2046** (substituição de comando sem aspas), **SC2006** (crase), **SC2045** (analisar a saída de `ls`), **SC2164** (`cd` sem tratar falha) e **SC2181** (testar `$?` em vez de usar o comando direto no `if`).
+
+Um gancho de pré-commit no Git é a forma de garantir que isso rode sempre:
+
+```bash
+# .git/hooks/pre-commit
+#!/usr/bin/env bash
+set -euo pipefail
+mapfile -t arquivos < <(git diff --cached --name-only --diff-filter=ACM -- '*.sh')
+(( ${#arquivos[@]} == 0 )) && exit 0
+shellcheck "${arquivos[@]}"
+```
+
+## Idempotência, temporários e limpeza
+
+Um script bem escrito pode ser executado duas vezes seguidas sem estragar nada. Isso significa preferir operações que já toleram o estado de destino:
+
+```bash
+mkdir -p "$DESTINO"                       # nao falha se ja existe
+rm -f "$LOCK"                             # nao falha se nao existe
+ln -sfn "$ALVO" "$LINK"                   # substitui o link, sem acumular
+grep -qxF "$LINHA" "$ARQ" || printf '%s\n' "$LINHA" >> "$ARQ"   # so acrescenta uma vez
+install -d -m 750 "$DIR"                  # cria com a permissao certa de uma vez
+```
+
+Temporários são criados com `mktemp`, nunca com nome previsível, e removidos por `trap`:
+
+```bash
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp"' EXIT INT TERM
+# ... trabalhe dentro de "$tmp" ...
+```
+
+O `trap ... EXIT` roda na saída, tenha ela sido normal, por erro sob `set -e` ou por sinal. É a única forma confiável de não deixar lixo em `/tmp`, e o Volume 12 aprofunda o mecanismo.
+
+E, para o script que não pode rodar duas vezes ao mesmo tempo, `flock` resolve sem inventar arquivo de trava:
+
+```bash
+exec 9>"/var/lock/$PROGRAMA.lock"
+flock -n 9 || { erro "ja esta rodando"; exit 1; }
+```
+
+## 🐉 No Kali
+
+- **Num rolling, script é código vivo.** O Kali atualiza pacotes continuamente, e uma ferramenta pode mudar de opções ou de formato de saída entre duas execuções do mesmo script. As três defesas: verificar a existência da ferramenta com `command -v` antes de usá-la, preferir saída estruturada (`-oX`, `--json`) a analisar texto de tela, e datar o script com uma linha de versão para saber com o que ele foi testado.
+- **`/usr/local/bin` é o lugar certo, e o `install` com dono explícito é o comando certo.** `sudo install -o root -g root -m 755 script /usr/local/bin/nome` deixa o comando disponível para todos, sem extensão, e com a permissão que a @fig-escalada-por-permissao exige. Nenhum pacote do APT escreve nesse diretório, então não há conflito na próxima atualização.
+- **Regra `NOPASSWD` no `sudoers` apontando para script é a escalada mais encontrada em máquina de laboratório.** Se você monta ambiente de treino, saiba que está criando o vetor de propósito; se você administra máquina de trabalho, revise: `sudo -l` lista o que o seu usuário pode fazer, e cada linha que aponte para um arquivo gravável por não-root é root disponível. Vale o mesmo para `sudo` de interpretador (`python3`, `perl`, `awk`, `vim`) — todos permitem executar comandos arbitrários.
+- **Um script que roda em live USB ou no *initramfs* está na camada cinza da @fig-camadas-portabilidade.** Nesses contextos o shell disponível é o `busybox ash`, não o Bash, e recursos como arrays e `[[ ]]` simplesmente não existem. Se o script precisa funcionar num ambiente de recuperação, escreva-o em POSIX puro desde o início e teste com `dash script.sh` — descobrir isso durante uma recuperação real é o pior momento possível.
+- **Automação de ferramenta de segurança merece registro e modo de simulação por padrão.** Um script que dispara varredura deve, na ordem: validar o alvo contra a lista do escopo autorizado, exibir o que fará, exigir confirmação (ou um `--sim` explícito), registrar horário, comando e código de saída. Isso serve para depurar, e serve para demonstrar depois que o trabalho ficou dentro do contratado — o uso não autorizado, ainda que por erro de script, é crime pela Lei 12.737/2012.
+
+> **Nota sobre a família RHEL.** Duas diferenças afetam script de administração. A primeira já apareceu no @sec-cap051: `/bin/sh` é o Bash em modo POSIX, e não o `dash`, de modo que um script com *bashisms* e `#!/bin/sh` passa em RHEL, Rocky e AlmaLinux e falha no Debian e no Kali. Testar com `dash` é a única forma de detectar isso — e ela só existe no lado Debian. A segunda é o SELinux: um script instalado em `/usr/local/bin` pode precisar de `restorecon -v` para receber o contexto correto, e um script chamado por unidade do systemd que não tenha o rótulo esperado é recusado com `Permission denied` apesar do bit `x` presente. Os utilitários são GNU nas duas famílias, então a camada amarela da @fig-camadas-portabilidade não muda.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-boas`. O passo 6 usa `sudo` para instalar um script em `/usr/local/bin`; o passo 11 o remove.
+
+1. **Escreva um script a partir do molde.**
+
+   ```bash
+   mkdir -p ~/lab-boas && cd ~/lab-boas
+   cat > comprime <<'FIM'
+   #!/usr/bin/env bash
+   # comprime - comprime arquivos com gzip
+   # Saidas: 0 ok | 1 erro | 2 uso | 3 dependencia
+   set -euo pipefail
+   readonly VERSAO="1.0.0"
+   readonly PROGRAMA="${0##*/}"
+   readonly AQUI="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+   VERBOSO="${VERBOSO:-0}"
+   SIMULAR="${SIMULAR:-0}"
+
+   erro() { printf '%s: %s\n' "$PROGRAMA" "$*" >&2; }
+   uso()  { printf 'uso: %s [-v] [-n] ARQUIVO...\n' "$PROGRAMA"; }
+
+   main() {
+       command -v gzip >/dev/null || { erro "gzip ausente"; exit 3; }
+       while getopts ":vnhV" opt; do
+           case "$opt" in
+               v) VERBOSO=1 ;;
+               n) SIMULAR=1 ;;
+               h) uso; exit 0 ;;
+               V) printf '%s %s\n' "$PROGRAMA" "$VERSAO"; exit 0 ;;
+               *) uso >&2; exit 2 ;;
+           esac
+       done
+       shift $((OPTIND - 1))
+       (( $# > 0 )) || { uso >&2; exit 2; }
+       (( VERBOSO )) && printf 'script em: %s\n' "$AQUI" || true
+       local a
+       for a in "$@"; do
+           [[ -r "$a" ]] || { erro "ilegivel: $a"; continue; }
+           if (( SIMULAR )); then printf 'SIMULACAO: gzip -- %q\n' "$a"
+           else gzip -- "$a"; fi
+       done
+   }
+   main "$@"
+   FIM
+   chmod +x comprime
+   ./comprime -h; ./comprime -V; ./comprime; echo "sem argumentos -> $?"
+   ```
+
+   Esperado: ajuda, versão, e código 2 quando não recebe arquivo. O `getopts` é assunto do Volume 10, mas já funciona aqui.
+
+2. **Teste o modo de simulação com nomes hostis.**
+
+   ```bash
+   touch "arquivo normal.txt" -- "-nome-com-hifen.txt" 2>/dev/null || touch "arquivo normal.txt" ./-nome-com-hifen.txt
+   ./comprime -n ./*.txt
+   ls
+   ```
+
+   Esperado: o `%q` mostra os nomes escapados e nada é comprimido. O `--` dentro do script é o que permite tratar o arquivo iniciado por hífen.
+
+3. **Comprove que `AQUI` é o diretório do script, não o seu.**
+
+   ```bash
+   ./comprime -v -n "arquivo normal.txt"
+   cd /tmp && ~/lab-boas/comprime -v -n /etc/hostname; cd ~/lab-boas
+   ```
+
+   Esperado: nas duas chamadas, `script em:` mostra `~/lab-boas`, independentemente do diretório de onde o script foi chamado.
+
+4. **Passe pelo `shellcheck`.**
+
+   ```bash
+   sudo apt install -y shellcheck devscripts
+   shellcheck comprime && echo "sem apontamentos"
+   ```
+
+   Esperado: nenhum apontamento, ou apontamentos informativos apenas. Compare com o script ruim do passo seguinte.
+
+5. **Veja o `shellcheck` encontrar os defeitos do volume inteiro.**
+
+   ```bash
+   cat > ruim.sh <<'FIM'
+   #!/bin/bash
+   DIR=$1
+   cd $DIR
+   for f in `ls`; do
+       if [ $f = "alvo.txt" ]; then
+           cp $f /tmp/
+       fi
+   done
+   if [ $? -ne 0 ]; then echo "erro"; fi
+   FIM
+   shellcheck ruim.sh | grep -E '^In|SC[0-9]+' | head -20
+   ```
+
+   Esperado: SC2086 (aspas), SC2164 (`cd` sem tratar falha), SC2045 (`ls` em laço), SC2006 (crase) e SC2181 (`$?` em `if`) — cada um deles um capítulo deste volume.
+
+6. **Instale com dono e permissão corretos.**
+
+   ```bash
+   sudo install -o root -g root -m 755 comprime /usr/local/bin/comprime
+   ls -l /usr/local/bin/comprime
+   namei -l /usr/local/bin/comprime
+   comprime -V
+   ```
+
+   Esperado: `-rwxr-xr-x root root`, e o caminho inteiro gravável só pelo root. O comando roda de qualquer diretório, sem `./`.
+
+7. **Encontre scripts com permissão perigosa.**
+
+   ```bash
+   cp comprime perigoso.sh; chmod 777 perigoso.sh; ls -l perigoso.sh
+   find . -maxdepth 1 -type f -perm -o+w -ls
+   sudo find /usr/local/bin /opt -type f -perm -o+w -ls 2>/dev/null; echo "(vazio e o esperado)"
+   ```
+
+   Esperado: o `perigoso.sh` aparece na busca local; `/usr/local/bin` e `/opt` não devem devolver nada. Essa busca é uma verificação de rotina razoável em qualquer máquina.
+
+8. **Confirme que SUID não funciona em script.**
+
+   ```bash
+   sudo cp comprime /tmp/suid-teste; sudo chmod 4755 /tmp/suid-teste
+   ls -l /tmp/suid-teste
+   /tmp/suid-teste -V; id -u
+   sudo rm -f /tmp/suid-teste
+   ```
+
+   Esperado: o bit `s` aparece no `ls`, mas o script roda com o seu UID — o kernel ignorou o SUID por causa do *shebang*. O caminho legítimo é uma regra específica no `sudoers`.
+
+9. **Meça a distância até o POSIX.**
+
+   ```bash
+   checkbashisms comprime
+   shellcheck -s sh comprime | head -20
+   sed '1s|.*|#!/bin/sh|' comprime > posix.sh; chmod +x posix.sh
+   ./posix.sh -V
+   ```
+
+   Esperado: `checkbashisms` lista `[[ ]]`, `(( ))` e `local`; o `shellcheck -s sh` lista os mesmos pontos com código próprio; e o `posix.sh` falha ao rodar sob `dash`. É a @fig-camadas-portabilidade em três comandos.
+
+10. **Pratique idempotência e limpeza automática.**
+
+    ```bash
+    cat > idem.sh <<'FIM'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf -- "$tmp"; printf "limpou %s\n" "$tmp"' EXIT
+    mkdir -p ~/lab-boas/saida
+    grep -qxF "linha unica" ~/lab-boas/saida/lista.txt 2>/dev/null || \
+        printf 'linha unica\n' >> ~/lab-boas/saida/lista.txt
+    printf 'temporario em %s\n' "$tmp"
+    wc -l < ~/lab-boas/saida/lista.txt
+    FIM
+    chmod +x idem.sh
+    ./idem.sh; ./idem.sh; ./idem.sh
+    ls /tmp | grep -c "^tmp\." || echo "nenhum temporario esquecido"
+    ```
+
+    Esperado: o arquivo continua com **uma** linha após três execuções, e o diretório temporário é removido a cada saída pelo `trap`.
+
+11. **Ponha o `shellcheck` num gancho do Git e limpe.**
+
+    ```bash
+    git init -q repo-teste && cd repo-teste
+    mkdir -p .git/hooks
+    cat > .git/hooks/pre-commit <<'FIM'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mapfile -t arqs < <(git diff --cached --name-only --diff-filter=ACM -- '*.sh')
+    (( ${#arqs[@]} == 0 )) && exit 0
+    shellcheck "${arqs[@]}"
+    FIM
+    chmod +x .git/hooks/pre-commit
+    cp ../ruim.sh . && git add ruim.sh && git commit -m "teste" || echo "commit bloqueado pelo shellcheck"
+    cd ~ && sudo rm -f /usr/local/bin/comprime && rm -rf ~/lab-boas
+    ```
+
+    Esperado: o commit é recusado e o `shellcheck` explica por quê. É a forma mais barata de garantir que a verificação aconteça sempre, e não só quando alguém lembra.
+
+## Resumo
+
+- **Comece todo script pelo mesmo molde:** *shebang*, bloco de comentário com uso e códigos de saída, `set -euo pipefail`, constantes `readonly`, funções de mensagem, e `main "$@"` na última linha — que garante que o arquivo foi lido por inteiro antes de qualquer execução.
+- **Descubra o diretório do próprio script com `BASH_SOURCE`**, nunca com `$PWD` nem com `$0` puro, e proteja todo argumento de dado com `--`.
+- **A pergunta que define a permissão de um script privilegiado é "quem pode reescrever?".** Quem grava no arquivo, no diretório que o contém ou em qualquer diretório acima dele executa código como root na próxima chamada. `777` não tem uso legítimo; `install -o root -g root -m 755` é o comando certo.
+- **SUID não funciona em script de shell** — o kernel ignora o bit por causa do *shebang*. A saída é uma regra específica no `sudoers`, o que torna a permissão de escrita ainda mais crítica e desaconselha curingas e `sudo` de interpretador.
+- **Portabilidade é uma escolha de camada:** POSIX `sh` (roda em `dash`, `busybox`, *initramfs*), Bash 3 (Linux e macOS), Bash 4+ (arrays associativos, `${var,,}`), mais utilitários GNU. Declare a camada no *shebang* e verifique com `checkbashisms`, `shellcheck -s sh` e uma execução real sob `dash`.
+- **`shellcheck` não é opcional** em código que outra pessoa vai executar. Silencie apontamentos por ocorrência e com justificativa, nunca por arquivo, e coloque a verificação num gancho de pré-commit.
+- **Um script deve poder rodar duas vezes:** `mkdir -p`, `rm -f`, `ln -sfn`, `install -d`, e o `grep -qxF ... ||` antes de acrescentar linha a arquivo.
+- **Temporário se cria com `mktemp` e se remove com `trap ... EXIT`**, que roda na saída normal, no erro sob `set -e` e no sinal. Para execução única simultânea, `flock` num descritor.
+- **Todo script destrutivo merece modo de simulação**, e o `-n` deve ser barato de digitar — um `--dry-run` disponível vale mais do que um comando `rm` que ninguém revisou.

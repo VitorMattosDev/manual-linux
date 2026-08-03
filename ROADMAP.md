@@ -90,13 +90,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 9 — Fundamentos de Shell Scripting
 
-- [ ] **cap 051** - Do comando ao script: o primeiro script Bash - `vol09/cap051-do-comando-ao-script-o-primeiro-script-bash.qmd`
-- [ ] **cap 052** - Variáveis, o ambiente e o escopo de exportação - `vol09/cap052-variaveis-o-ambiente-e-o-escopo-de-exportacao.qmd`
-- [ ] **cap 053** - Aspas, expansões e substituição de comandos - `vol09/cap053-aspas-expansoes-e-substituicao-de-comandos.qmd`
-- [ ] **cap 054** - Entrada e saída: read, echo e printf - `vol09/cap054-entrada-e-saida-read-echo-e-printf.qmd`
-- [ ] **cap 055** - Condicionais: test, colchetes duplos e if - `vol09/cap055-condicionais-test-colchetes-duplos-e-if.qmd`
-- [ ] **cap 056** - Códigos de saída e o encadeamento de comandos - `vol09/cap056-codigos-de-saida-e-o-encadeamento-de-comandos.qmd`
-- [ ] **cap 057** - Boas práticas: shebang, permissões e portabilidade - `vol09/cap057-boas-praticas-shebang-permissoes-e.qmd`
+- [x] **cap 051** - Do comando ao script: o primeiro script Bash - `vol09/cap051-do-comando-ao-script-o-primeiro-script-bash.qmd`
+- [x] **cap 052** - Variáveis, o ambiente e o escopo de exportação - `vol09/cap052-variaveis-o-ambiente-e-o-escopo-de-exportacao.qmd`
+- [x] **cap 053** - Aspas, expansões e substituição de comandos - `vol09/cap053-aspas-expansoes-e-substituicao-de-comandos.qmd`
+- [x] **cap 054** - Entrada e saída: read, echo e printf - `vol09/cap054-entrada-e-saida-read-echo-e-printf.qmd`
+- [x] **cap 055** - Condicionais: test, colchetes duplos e if - `vol09/cap055-condicionais-test-colchetes-duplos-e-if.qmd`
+- [x] **cap 056** - Códigos de saída e o encadeamento de comandos - `vol09/cap056-codigos-de-saida-e-o-encadeamento-de-comandos.qmd`
+- [x] **cap 057** - Boas práticas: shebang, permissões e portabilidade - `vol09/cap057-boas-praticas-shebang-permissoes-e.qmd`
 
 ### Volume 10 — Scripting Intermediário
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (44 concluidos).
+**Total:** 103 capitulos em 16 volumes (57 concluidos).
 

@@ -1,3 +1,456 @@
 # Variáveis, o ambiente e o escopo de exportação {#sec-cap052}
 
-*(em elaboracao)*
+O script de backup funciona. Foi testado no terminal umas vinte vezes, roda em quatro segundos, grava o arquivo no lugar certo. Colocado no `cron` para rodar às duas da manhã, falha todas as noites com `nmap: command not found` — uma ferramenta que está instalada, que responde no terminal, e cujo caminho o `which` mostra sem hesitar.
+
+Nada no script mudou. O que mudou foi **o ambiente** em que ele roda. O `cron` não inicia uma sessão de login, não lê o `.bashrc`, não herda nada da sua sessão gráfica: ele executa o script com um punhado mínimo de variáveis, e o `PATH` dele costuma ser apenas `/usr/bin:/bin`.
+
+Este capítulo é sobre esse punhado de variáveis — o que são, quem as cria, quem as herda e por que uma variável perfeitamente visível numa janela do terminal simplesmente não existe na janela ao lado.
+
+## Atribuição: a sintaxe implacável
+
+Uma variável do shell se cria atribuindo valor a um nome. A sintaxe é mais rígida do que parece:
+
+```bash
+nome="kali"           # correto
+nome = "kali"         # ERRADO: o shell entende "execute o comando 'nome'"
+nome ="kali"          # ERRADO: mesma coisa
+nome= "kali"          # ERRADO: executa "kali" com nome vazio no ambiente
+```
+
+**Não pode haver espaço em volta do `=`.** A razão está no @sec-cap006: o shell separa a linha em palavras por espaço e trata a primeira como o comando. Com espaços, `nome` deixa de ser uma atribuição e vira um nome de comando — daí o `nome: command not found` que confunde tanto quem vem de outras linguagens.
+
+Recuperar o valor exige o cifrão:
+
+```bash
+nome="kali"
+echo "$nome"                    # kali
+echo "${nome}"                  # identico, forma explicita
+echo "${nome}_linux"            # kali_linux
+echo "$nome_linux"              # VAZIO: procurou a variavel "nome_linux"
+```
+
+A quarta linha mostra por que as chaves existem. Sem elas, o shell engole todo caractere válido de nome — letras, dígitos e sublinhado — na hora de decidir onde o nome termina. As chaves marcam a fronteira explicitamente, e por isso valem como hábito sempre que houver texto colado logo depois.
+
+Nomes válidos começam por letra ou sublinhado e contêm letras, dígitos e sublinhados. A convenção quase universal:
+
+```bash
+CAMINHO_LOG="/var/log/app"      # MAIUSCULAS: constantes e de ambiente
+contador=0                      # minusculas: variaveis locais do script
+```
+
+Não é regra do shell, é convenção — e existe por um motivo prático: reduz a chance de você escolher um nome que colida com uma variável de ambiente do sistema. Sobrescrever `PATH` ou `HOME` sem perceber produz falhas espetaculares e difíceis de rastrear.
+
+## Duas categorias: variável do shell e variável de ambiente
+
+Toda variável nasce **do shell**: existe apenas no processo que a criou. O `export` a promove a **variável de ambiente**, e a diferença é o que os processos filhos enxergam.
+
+::: {#fig-heranca-ambiente}
+```{.tikz}
+%%| filename: heranca-de-ambiente
+%%| alt: Shell pai com duas variaveis, uma exportada e outra nao; o processo filho herda apenas a exportada e suas alteracoes nao voltam ao pai
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=5pt},
+    pai/.style={bx,draw=manualblue,fill=manualblue!11,text width=5.9cm,minimum height=2.55cm},
+    fil/.style={bx,draw=manualgreen,fill=manualgreen!12,text width=5.9cm,minimum height=2.55cm},
+    ti/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={very thick,-{Stealth[length=5pt]}},
+    nao/.style={very thick,manualred,-{Stealth[length=5pt]},dashed}
+  ]
+  \node[ti,manualblue] at (3.0,4.6) {shell pai --- PID 4021};
+  \node[pai] (p) at (3.0,3.05) {\texttt{TOKEN="abc"}\\
+      \texttt{export CAMINHO="/opt"}\\[4pt]
+      \textcolor{manualgray}{visível para o próprio shell:}\\
+      \textcolor{manualgray}{as duas}};
+
+  \node[ti,manualgreen] at (11.6,4.6) {processo filho --- PID 4088};
+  \node[fil] (f) at (11.6,3.05) {\texttt{\$CAMINHO} $\rightarrow$ \texttt{/opt} \quad \textcolor{manualgreen}{herdada}\\
+      \texttt{\$TOKEN} $\rightarrow$ \textcolor{manualred}{vazia} \quad \textcolor{manualred}{não exportada}\\[4pt]
+      \texttt{CAMINHO="/tmp"} \textcolor{manualgray}{altera só a cópia}};
+
+  \draw[fl,manualgreen] (p.east) -- node[above,font=\scriptsize,manualgreen]{\texttt{fork} + \texttt{exec}} node[below,font=\scriptsize,manualgray]{cópia do ambiente} (f.west);
+  \draw[nao] (f.south) to[bend left=13] node[above,font=\scriptsize,manualred,pos=0.5]{nunca de volta} (p.south);
+
+  \node[nt,text width=14.6cm] at (7.3,-0.35) {A herança é de mão única e por cópia. Um processo filho recebe um retrato do ambiente do pai no instante do \texttt{fork} e pode alterá-lo à vontade --- nada disso chega ao pai, e alterações feitas no pai depois do \texttt{fork} não chegam ao filho. É a mesma mecânica que faz um script executado com \texttt{./} não conseguir mudar o diretório do shell que o chamou, vista no capítulo anterior por outro ângulo.};
+\end{tikzpicture}
+```
+O ambiente é herdado por cópia, do pai para o filho, e nunca no sentido inverso.
+:::
+
+Na prática:
+
+```bash
+TOKEN="abc"                 # variavel do shell
+export CAMINHO="/opt"       # variavel de ambiente
+export TOKEN                # promove uma ja existente
+export A=1 B=2              # varias de uma vez
+
+bash -c 'echo "CAMINHO=[$CAMINHO] TOKEN=[$TOKEN]"'
+```
+
+Três comandos mostram o estado, e a diferença entre eles é justamente a categoria:
+
+```bash
+printenv            # SO as variaveis de ambiente (exportadas)
+env                 # o mesmo, e permite rodar comando com ambiente alterado
+set                 # TUDO: shell, ambiente e funcoes (saida longa)
+declare -p          # tudo, com os atributos de cada variavel
+declare -x          # so as exportadas, com a declaracao
+```
+
+```bash
+printenv PATH                 # uma variavel especifica
+declare -p PATH TOKEN         # mostra o -x em PATH e a ausencia dele em TOKEN
+```
+
+Existe ainda uma forma de exportar **só para um comando**, sem sujar o ambiente da sessão:
+
+```bash
+LANG=C ls -l /etc | head -3         # esta execucao usa LANG=C
+echo "$LANG"                        # inalterado
+env -i bash -c 'echo "PATH=[$PATH]"'   # -i: ambiente completamente vazio
+```
+
+O prefixo temporário é o instrumento certo para forçar mensagens em inglês antes de pesquisar um erro (`LC_ALL=C comando`), para testar com `PATH` reduzido, ou para passar uma credencial a um único comando sem deixá-la na sessão.
+
+## As variáveis que o sistema já define
+
+Um shell recém-aberto já traz dezenas de variáveis. Estas são as que aparecem em todo script:
+
+| Variável | Conteúdo | Observação |
+|---|---|---|
+| `PATH` | diretórios onde procurar comandos, separados por dois-pontos | a causa nº 1 de falha em `cron` |
+| `HOME` | diretório pessoal do usuário | o `~` expande a partir dela |
+| `USER`, `LOGNAME` | nome do usuário | `id -un` é mais confiável em script |
+| `PWD`, `OLDPWD` | diretório atual e o anterior | mantidas pelo `cd`; `cd -` usa a segunda |
+| `SHELL` | shell **de login** registrado em `/etc/passwd` | não é o shell em execução |
+| `LANG`, `LC_ALL` | idioma e formatação de números, datas e ordenação | mudam a saída de comandos |
+| `TERM` | tipo de terminal | vazio ou `dumb` em `cron`; quebra `clear` e cores |
+| `EDITOR`, `VISUAL` | editor preferido | usado por `crontab -e`, `git commit`, `visudo` |
+| `TMPDIR` | diretório de temporários | quando ausente, vale `/tmp` |
+| `IFS` | separadores de campo na divisão de palavras | espaço, tabulação e nova linha, por padrão |
+| `PS1` | o texto do prompt | só existe em shell interativo |
+
+: Variáveis de ambiente presentes em qualquer sessão {#tbl-vars-ambiente}
+
+Duas armadilhas dessa tabela merecem destaque agora, porque custam horas depois.
+
+**`SHELL` não é o shell em execução.** Ela guarda o que está registrado em `/etc/passwd` para o usuário. Se você abriu um Bash dentro de uma sessão Zsh, `$SHELL` continua dizendo `/usr/bin/zsh`. Para saber quem está de fato interpretando:
+
+```bash
+echo "$SHELL"                 # o shell de LOGIN configurado
+ps -p $$ -o comm=             # o shell REALMENTE em execucao
+echo "${BASH_VERSION:-nao e bash}"
+```
+
+**`LANG` muda a saída dos comandos.** Um script que interpreta a saída de `ls -l` ou de `date` quebra quando o idioma muda, porque nomes de mês, separador decimal e ordenação alfabética mudam junto. Script que analisa saída de comando deve fixar `LC_ALL=C` no topo — é a diferença entre funcionar na sua máquina e funcionar em todas.
+
+## As variáveis especiais do shell
+
+Além das de ambiente, o Bash mantém um conjunto de variáveis que ele mesmo preenche a cada comando:
+
+```bash
+echo "$?"        # codigo de saida do ultimo comando (assunto do cap. 56)
+echo "$$"        # PID do shell atual
+echo "$PPID"     # PID do processo pai
+echo "$!"        # PID do ultimo comando lancado em segundo plano
+echo "$0"        # nome do script (ou do shell, se interativo)
+echo "$#"        # quantidade de argumentos recebidos
+echo "$@"        # todos os argumentos, cada um como palavra separada
+echo "$*"        # todos os argumentos, como uma unica palavra
+echo "$_"        # ultimo argumento do comando anterior
+echo "$RANDOM"   # inteiro pseudoaleatorio de 0 a 32767
+echo "$SECONDS"  # segundos desde o inicio do shell ou do script
+echo "$LINENO"   # numero da linha atual - util em mensagem de erro
+```
+
+`$@` e `$*` parecem iguais e não são; a diferença aparece quando há argumento com espaço, e o Volume 10 dedica boa parte de um capítulo a ela. `$RANDOM` serve para nome de arquivo temporário e para escalonar tarefas, mas **não** é criptograficamente seguro — para isso existem `/dev/urandom` e `openssl rand`.
+
+`$SECONDS` é surpreendentemente útil e pouco conhecido:
+
+```bash
+inicio=$SECONDS
+sleep 2
+echo "levou $((SECONDS - inicio)) segundos"
+```
+
+## Vazio, não definido e o valor padrão
+
+Uma distinção que o shell leva a sério: uma variável pode estar **não definida** ou **definida e vazia**, e os dois estados se comportam de modo diferente:
+
+```bash
+unset VAZIA
+declare -p VAZIA 2>/dev/null || echo "nao definida"
+
+VAZIA=""
+declare -p VAZIA               # definida, valor vazio
+
+echo "${VAZIA:-padrao}"        # com dois-pontos: nao definida OU vazia -> padrao
+echo "${VAZIA-padrao}"         # sem dois-pontos: so se NAO DEFINIDA -> vazia
+```
+
+O par de expansões abaixo é o que mais se usa no dia a dia e resolve metade dos problemas de configuração de script:
+
+```bash
+DESTINO="${1:-/tmp/backup}"          # usa o argumento, ou /tmp/backup
+NIVEL="${NIVEL:=info}"               # atribui o padrao se estiver vazia
+: "${API_URL:?a variavel API_URL e obrigatoria}"   # aborta com mensagem
+```
+
+A terceira linha é um idioma valioso: o `:` é o comando nulo, que não faz nada, e serve apenas para forçar a avaliação da expansão. Se `API_URL` não estiver definida, o script morre ali com uma mensagem clara, em vez de seguir adiante com uma URL vazia. Este e outros usos de `${...}` são o assunto do @sec-cap053 e do Volume 10.
+
+O `set -u` do capítulo anterior é a rede que apanha o que escapa: com ele ligado, usar variável não definida aborta o script em vez de expandir para vazio.
+
+```bash
+set -u
+echo "$NAO_EXISTE"       # bash: NAO_EXISTE: unbound variable  -> aborta
+echo "${NAO_EXISTE:-}"   # a forma de dizer "sei que pode nao existir"
+```
+
+## Atributos: `declare` e `readonly`
+
+O Bash não tem tipos, mas tem atributos que mudam o comportamento de uma variável:
+
+```bash
+declare -i contador=0        # inteiro: atribuicao vira contexto aritmetico
+contador="5+3"; echo "$contador"      # 8, nao "5+3"
+
+declare -r VERSAO="1.4.0"    # somente leitura
+VERSAO="2.0"                 # bash: VERSAO: readonly variable
+
+declare -u MAIUS="kali"; echo "$MAIUS"   # KALI
+declare -l MINUS="KALI"; echo "$MINUS"   # kali
+
+declare -x EXPORTADA="sim"   # equivalente a export
+readonly CONFIG="/etc/app.conf"   # forma classica de -r
+```
+
+`readonly` no topo de um script é uma proteção barata para caminhos e constantes: um erro de digitação que reatribuiria a variável vira erro imediato em vez de comportamento estranho lá na frente.
+
+Há ainda `declare -a` e `declare -A` para arrays indexados e associativos, e `local` para variáveis restritas a uma função — os três são assunto do Volume 10.
+
+## Onde nascem as variáveis do seu ambiente
+
+O `cron` do cenário de abertura falha porque não lê nenhum dos arquivos que a sua sessão lê. Entender quais arquivos são lidos em cada situação é o que resolve essa classe inteira de problema:
+
+::: {#fig-arquivos-inicializacao}
+```{.tikz}
+%%| filename: quais-arquivos-o-bash-le
+%%| alt: Tres colunas comparando quais arquivos de inicializacao sao lidos por shell de login, shell interativo nao-login e shell nao-interativo como cron
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=4.3cm},
+    hd/.style={bx,minimum height=1.05cm},
+    it/.style={bx,minimum height=0.62cm,font=\scriptsize},
+    vz/.style={it,draw=manualred,fill=manualred!8,text=manualred},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4pt]},manualgray}
+  ]
+  \node[hd,draw=manualblue,fill=manualblue!13] (h1) at (0,6.6)
+        {\textbf{shell de login}\\\scriptsize console, \texttt{ssh}, \texttt{su -}};
+  \node[it,draw=manualblue,fill=manualblue!8] (a1) at (0,5.55) {\texttt{/etc/profile}};
+  \node[it,draw=manualblue,fill=manualblue!8] (a2) at (0,4.8)  {\texttt{/etc/profile.d/*.sh}};
+  \node[it,draw=manualblue,fill=manualblue!8] (a3) at (0,4.05) {\texttt{\textasciitilde/.bash\_profile}};
+  \node[it,draw=manualblue,fill=manualblue!8] (a4) at (0,3.3)  {\texttt{\textasciitilde/.profile}};
+  \node[it,draw=manualblue,fill=manualblue!8] (a5) at (0,2.55) {\scriptsize (que costuma chamar o \texttt{.bashrc})};
+
+  \node[hd,draw=manualgreen,fill=manualgreen!13] (h2) at (5.0,6.6)
+        {\textbf{interativo, sem login}\\\scriptsize nova aba do terminal};
+  \node[it,draw=manualgreen,fill=manualgreen!8] (b1) at (5.0,5.55) {\texttt{/etc/bash.bashrc}};
+  \node[it,draw=manualgreen,fill=manualgreen!8] (b2) at (5.0,4.8)  {\texttt{\textasciitilde/.bashrc}};
+  \node[it,draw=manualgray,fill=manualgray!8]   (b3) at (5.0,4.05) {\scriptsize e mais nada};
+  \node[nt,text width=4.3cm] at (5.0,2.9) {O ambiente restante vem \textbf{herdado} do processo que abriu o terminal --- e foi aquele que leu o \texttt{/etc/profile}.};
+
+  \node[hd,draw=manualred,fill=manualred!11] (h3) at (10.0,6.6)
+        {\textbf{não interativo}\\\scriptsize script, \texttt{cron}, \texttt{systemd}};
+  \node[vz] (c1) at (10.0,5.55) {nenhum arquivo lido};
+  \node[vz] (c2) at (10.0,4.8)  {\texttt{PATH} mínimo};
+  \node[vz] (c3) at (10.0,4.05) {sem \texttt{TERM}, sem \emph{aliases}};
+  \node[nt,text width=4.3cm] at (10.0,2.75) {Só o que a variável \texttt{BASH\_ENV} apontar é lido --- e ela quase nunca está definida.};
+
+  \node[nt,text width=14.4cm] at (5.0,0.7) {A coluna vermelha é a resposta ao mistério do \texttt{cron}: o \texttt{.bashrc} nunca foi lido, portanto o \texttt{PATH} que você acrescentou lá não existe. As três soluções, em ordem de preferência: usar caminho absoluto para cada comando; definir \texttt{PATH} explicitamente no topo do script; ou declarar \texttt{PATH=} no próprio \emph{crontab}. Chamar o \texttt{.bashrc} de dentro do script é a saída tentadora e errada --- ele contém código voltado a sessão interativa e pode abortar cedo em shell não interativo.};
+\end{tikzpicture}
+```
+Quais arquivos de inicialização cada tipo de shell lê — e por que o `cron` não lê nenhum.
+:::
+
+Além desses, há dois arquivos lidos pelo próprio sistema de login, antes de qualquer shell:
+
+- **`/etc/environment`** — pares `CHAVE=valor` simples, sem `export`, sem expansão, sem sintaxe de shell. É lido pelo PAM (@sec-cap025) e vale para sessões gráficas e SSH. É o lugar certo para uma variável que precisa existir em toda a máquina.
+- **`/etc/profile.d/*.sh`** — fragmentos de shell lidos por todo shell de login. É o lugar certo para o que exige lógica, e é como os pacotes acrescentam variáveis sem editar o `/etc/profile`.
+
+Para variáveis do seu usuário, a divisão é: `~/.profile` para o que deve valer na sessão inteira (inclusive aplicativos gráficos), `~/.bashrc` para o que só faz sentido no terminal (*aliases*, prompt, funções interativas). O Volume 15 volta ao tema pelo lado da personalização do shell.
+
+## Segredo em variável de ambiente é segredo exposto
+
+Há uma crença difundida de que passar uma senha por variável de ambiente é "mais seguro" do que por argumento de linha de comando. É mais seguro, mas por muito pouco — e a diferença não é a que se imagina.
+
+```bash
+# argumento: visivel para QUALQUER usuario da maquina
+comando --senha "s3nh4"
+ps aux | grep comando               # a senha aparece aqui
+
+# ambiente: visivel para o dono do processo e para o root
+export SENHA="s3nh4"
+cat /proc/$$/environ | tr '\0' '\n' | grep SENHA
+```
+
+O ambiente de um processo fica em `/proc/PID/environ`, legível pelo dono do processo e pelo root. Some-se a isso que **o ambiente é herdado por todo processo filho**: uma senha exportada na sessão vai junto para cada comando que você rodar depois, incluindo o instalador de pacote que decidiu enviar telemetria.
+
+::: {.callout-warning}
+## Onde um segredo deve ficar
+
+Em ordem de preferência, para script:
+
+1. **Arquivo com permissão `600`**, lido pelo script (`source ~/.config/app/credenciais`) — o dono lê, mais ninguém, e o segredo não passa por argumento nem por ambiente herdado.
+2. **Entrada padrão**: `comando --senha-stdin < arquivo`, padrão adotado por `docker login`, `gpg` e vários outros.
+3. **Gerenciador de segredos** — `pass`, `gopass`, `secret-tool` — quando há mais de um segredo e mais de uma pessoa.
+4. **Variável de ambiente**, aceitável para um único comando com prefixo temporário (`SENHA=x comando`, que não persiste na sessão), e nunca com `export` numa sessão de trabalho.
+
+E, em qualquer caso: **nunca** um segredo dentro de um script versionado em Git. O histórico do Git guarda tudo, e apagar a linha num commit posterior não apaga nada. Chaves de API vazadas por esse caminho são achado rotineiro em varredura de repositório público.
+:::
+
+## 🐉 No Kali
+
+- **O `PATH` do root no Kali inclui os diretórios `sbin`, e o do usuário comum também.** Ao contrário de outros Debian, o Kali põe `/usr/sbin` e `/sbin` no `PATH` de qualquer usuário, porque a maioria das ferramentas de rede da distribuição vive ali. É por isso que `ip`, `tcpdump` e `iptables` completam com Tab mesmo sem `sudo` — mas rodam com `Operation not permitted` sem privilégio. Ver com `printenv PATH` antes e depois de `sudo -i` deixa a diferença visível.
+- **`sudo` limpa o ambiente por padrão, e isso quebra script.** A opção `env_reset` está ligada no `/etc/sudoers` do Kali: `sudo` monta um ambiente novo, mantendo apenas o que estiver na lista `env_keep`. Um `export CHAVE=valor` seguido de `sudo meu-script.sh` chega ao script sem a `CHAVE`. As saídas são `sudo -E` (preserva o ambiente — use com cuidado, porque preserva tudo), `sudo CHAVE=valor comando`, ou acrescentar a variável a `env_keep` com `visudo`.
+- **Ferramentas do Kali leem variáveis de ambiente próprias, e vale conhecer as suas.** `PROXYCHAINS_CONF_FILE` para o `proxychains`, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` para praticamente todo cliente HTTP, `GOPATH` para as ferramentas escritas em Go que se instalam à parte. Configurar proxy em `~/.profile` e esquecer é uma fonte clássica de "a rede parou de funcionar" depois de um reboot.
+- **Num laboratório, `HISTFILE` e `HISTCONTROL` são variáveis de higiene.** `HISTCONTROL=ignorespace` faz o Bash não gravar comandos iniciados por espaço — o jeito de não deixar uma credencial de teste no `~/.bash_history`. No Zsh do Kali, o equivalente é `setopt HIST_IGNORE_SPACE`. Não é para esconder rastro: é para não escrever segredo em arquivo texto sem criptografia.
+- **Live USB com persistência tem uma pegadinha de ambiente.** No modo live sem persistência, tudo que você exporta em `~/.profile` desaparece no desligamento, e o script que "funcionava ontem" não funciona hoje porque a variável sumiu com o sistema de arquivos. Em sessão live, prefira o `PATH` explícito no topo do script e caminhos absolutos — a mesma disciplina que o `cron` exige.
+
+> **Nota sobre a família RHEL.** A mecânica é idêntica, com duas diferenças de arquivo. Primeira: em RHEL, Rocky e AlmaLinux o arquivo pessoal padrão é o `~/.bash_profile`, não o `~/.profile` — e o `.bash_profile`, quando existe, faz o Bash **ignorar** o `.profile` completamente, o que é uma armadilha ao migrar dotfiles entre as famílias. Segunda: o `/etc/environment` também é lido pelo PAM, mas o SELinux acrescenta uma camada — um processo confinado pode não enxergar variáveis que o shell do administrador enxerga. E, no `sudo` da família RHEL, o comportamento padrão de `secure_path` é ainda mais restritivo do que o do Debian: ele **substitui** o `PATH` por um valor fixo do `/etc/sudoers`, o que faz `sudo meu-comando` falhar mesmo com o comando num diretório presente no seu `PATH`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Todos os passos são inofensivos; o passo 10 limpa o que sobrou.
+
+1. **Comprove a rigidez da sintaxe de atribuição.**
+
+   ```bash
+   mkdir -p ~/lab-vars && cd ~/lab-vars
+   nome="kali"; echo "[$nome]"
+   nome = "kali"
+   nome ="kali"
+   ```
+
+   Esperado: a primeira linha funciona; as outras duas produzem `command not found`, porque o shell tratou `nome` como um comando. É a separação por espaço do @sec-cap006 agindo.
+
+2. **Veja por que as chaves existem.**
+
+   ```bash
+   arquivo="relatorio"
+   echo "$arquivo_2024.txt"
+   echo "${arquivo}_2024.txt"
+   ```
+
+   Esperado: a primeira imprime só `.txt` — o shell procurou uma variável chamada `arquivo_2024`, que não existe. A segunda imprime `relatorio_2024.txt`.
+
+3. **Separe variável do shell de variável de ambiente.**
+
+   ```bash
+   LOCAL="so-aqui"
+   export GLOBAL="vai-junto"
+   echo "no shell atual: LOCAL=[$LOCAL] GLOBAL=[$GLOBAL]"
+   bash -c 'echo "no filho     : LOCAL=[$LOCAL] GLOBAL=[$GLOBAL]"'
+   ```
+
+   Esperado: no shell atual as duas aparecem; no filho, só `GLOBAL`. É a @fig-heranca-ambiente em dois comandos.
+
+4. **Confirme que a herança não volta.**
+
+   ```bash
+   export CONTADOR="pai"
+   bash -c 'CONTADOR="filho"; echo "dentro do filho: $CONTADOR"'
+   echo "de volta no pai: $CONTADOR"
+   ```
+
+   Esperado: o filho mostra `filho`, o pai continua com `pai`. Alterar o ambiente herdado altera apenas a cópia.
+
+5. **Compare `printenv`, `set` e `declare -p`.**
+
+   ```bash
+   printenv | wc -l
+   set | wc -l
+   printenv | grep -c LOCAL          # 0: nao esta no ambiente
+   declare -p LOCAL GLOBAL
+   ```
+
+   Esperado: `set` produz bem mais linhas que `printenv`, `grep -c LOCAL` devolve `0`, e o `declare -p` mostra `declare -x GLOBAL` (com o `x` de exportada) e `declare -- LOCAL` (sem).
+
+6. **Use o prefixo temporário e o ambiente vazio.**
+
+   ```bash
+   date
+   LC_ALL=C date
+   echo "LC_ALL continua: [${LC_ALL:-vazia}]"
+   env -i bash -c 'echo "PATH=[$PATH]"; echo "HOME=[$HOME]"'
+   ```
+
+   Esperado: o `LC_ALL=C date` sai em inglês e a variável **não** persiste. O `env -i` mostra um ambiente praticamente vazio — é aproximadamente o que o `cron` entrega.
+
+7. **Reproduza o problema do `cron`.**
+
+   ```bash
+   cat > testa-path.sh <<'FIM'
+   #!/usr/bin/env bash
+   echo "PATH visto pelo script: $PATH"
+   nmap --version | head -1 || echo "FALHOU: nmap nao encontrado"
+   FIM
+   chmod +x testa-path.sh
+   ./testa-path.sh
+   env -i /bin/bash ./testa-path.sh
+   ```
+
+   Esperado: executado normalmente, funciona. Com `env -i`, o `PATH` fica vazio ou mínimo e o `nmap` não é encontrado — exatamente a falha noturna do cenário de abertura, reproduzida em um segundo.
+
+8. **Aplique as três correções.**
+
+   ```bash
+   cat > testa-path2.sh <<'FIM'
+   #!/usr/bin/env bash
+   export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   echo "PATH corrigido: $PATH"
+   command -v nmap || echo "ainda nao encontrado"
+   /usr/bin/uptime -p
+   FIM
+   chmod +x testa-path2.sh
+   env -i /bin/bash ./testa-path2.sh
+   ```
+
+   Esperado: agora funciona mesmo com ambiente vazio. `PATH` explícito no topo e caminho absoluto para os comandos críticos são as duas defesas, e ambas são visíveis no arquivo.
+
+9. **Explore vazio, não definido e valor padrão.**
+
+   ```bash
+   unset X
+   echo "1: [${X:-padrao}]"
+   X=""
+   echo "2: [${X:-padrao}]"
+   echo "3: [${X-padrao}]"
+   ( set -u; echo "4: [$X]" )
+   ( set -u; echo "5: [$NAO_EXISTE]" ) || echo "abortou, como esperado"
+   ( : "${OBRIGATORIA:?precisa estar definida}" ) || echo "abortou com mensagem"
+   ```
+
+   Esperado: `1` e `2` mostram `padrao`; `3` mostra vazio (a variável **existe**, apenas vazia); `4` funciona sob `set -u` porque `X` está definida; `5` aborta; a última linha aborta com a mensagem escrita por você.
+
+10. **Teste atributos e limpe o laboratório.**
+
+    ```bash
+    declare -i n=0; n="3*7"; echo "inteiro: $n"
+    readonly CONST="fixo"; CONST="outro"; echo "CONST=$CONST"
+    unset LOCAL GLOBAL CONTADOR X n
+    cd ~ && rm -rf ~/lab-vars
+    echo "limpo"
+    ```
+
+    Esperado: `n` vale `21` (o atributo `-i` avaliou a expressão), a reatribuição de `CONST` falha com `readonly variable` e o valor permanece `fixo`. O `unset` de `CONST` também falharia — variável somente leitura só some com o shell.
+
+## Resumo
+
+- **Atribuição não admite espaço em volta do `=`.** `nome="valor"` funciona; `nome = "valor"` faz o shell procurar um comando chamado `nome`. Recuperar exige o cifrão, e `${nome}` com chaves é o hábito seguro quando há texto colado logo depois.
+- **`export` é o que separa variável do shell de variável de ambiente.** Sem `export`, a variável existe só no processo atual; com `export`, ela é copiada para todo processo filho. `printenv` lista as exportadas, `set` lista tudo, `declare -p` mostra os atributos.
+- **A herança de ambiente é por cópia e de mão única.** O filho recebe um retrato do ambiente do pai e pode alterá-lo à vontade — nada disso volta. É a mesma razão pela qual um script executado não muda o diretório do shell que o chamou.
+- **`cron`, `systemd` e scripts não leem `.bashrc` nem `.profile`.** Shell não interativo não lê arquivo de inicialização nenhum, e o `PATH` que resulta é mínimo. A correção é `PATH` explícito no topo do script ou caminho absoluto nos comandos — nunca chamar o `.bashrc` de dentro do script.
+- **`SHELL` não é o shell em execução** (é o de login, vindo do `/etc/passwd`), e **`LANG` muda a saída dos comandos**. Script que interpreta saída de comando fixa `LC_ALL=C` no topo.
+- **Vazio e não definido são estados diferentes.** `${VAR:-padrao}` cobre os dois casos; `${VAR-padrao}` só o não definido; `${VAR:?mensagem}` aborta com mensagem própria. Com `set -u`, usar variável não definida derruba o script.
+- **Segredo em variável de ambiente é visível em `/proc/PID/environ` e é herdado por todo filho.** O lugar certo é um arquivo com permissão `600` lido pelo script, entrada padrão, ou um gerenciador de segredos — e nunca um valor literal dentro de script versionado em Git.

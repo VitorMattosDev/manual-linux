@@ -1,3 +1,500 @@
 # Aspas, expansões e substituição de comandos {#sec-cap053}
 
-*(em elaboracao)*
+O script de limpeza tinha uma linha só, e rodou por oito meses sem incidente:
+
+```bash
+rm -rf $DESTINO/*
+```
+
+No dia em que alguém configurou `DESTINO="/srv/Arquivos Antigos"`, o comando executado não foi o esperado. O shell dividiu o valor em duas palavras no espaço, e o `rm` recebeu três argumentos: `-rf`, `/srv/Arquivos`, e `Antigos/*`. O primeiro caminho não existia — erro inofensivo. O segundo foi interpretado a partir do diretório atual. E o diretório atual, naquele momento, era a raiz do projeto.
+
+Nenhum comando estava errado. Nenhuma permissão estava frouxa. O que faltava eram **duas aspas**.
+
+Este capítulo é sobre a ordem em que o shell reescreve a linha antes de executá-la, e sobre por que aspas duplas em volta de expansão não são uma questão de estilo: são o mecanismo que impede que um dado vire sintaxe.
+
+## A linha que você digita não é a linha que roda
+
+Entre o Enter e a chamada de sistema, o Bash reescreve o que foi digitado numa sequência fixa de etapas. A ordem importa mais do que qualquer regra decorada, porque quase todo comportamento surpreendente do shell é uma etapa acontecendo antes ou depois do que se imaginava.
+
+::: {#fig-ordem-expansoes}
+```{.tikz}
+%%| filename: a-ordem-das-expansoes
+%%| alt: As seis etapas de expansao do shell aplicadas a uma mesma linha de comando, mostrando a linha reescrita a cada passo
+\begin{tikzpicture}[
+    et/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.5cm,minimum height=0.82cm},
+    e1/.style={et,draw=manualblue,fill=manualblue!12},
+    e2/.style={et,draw=manualgreen,fill=manualgreen!12},
+    e3/.style={et,draw=manualyellow,fill=manualyellow!16},
+    e4/.style={et,draw=manualred,fill=manualred!10},
+    rs/.style={font=\scriptsize\ttfamily,align=left,anchor=west,text width=10.6cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4pt]},manualgray}
+  ]
+  \node[font=\scriptsize\bfseries,anchor=west] at (-1.9,7.35) {a linha digitada};
+  \node[rs,manualgray] at (2.1,7.35) {cp \textasciitilde/dados\{1,2\}.csv "\$DEST"/\$(date +\%F)};
+
+  \node[e1] (a) at (0,6.35) {\textbf{1.} chaves};
+  \node[rs] at (2.1,6.35) {cp \textasciitilde/dados1.csv \textasciitilde/dados2.csv "\$DEST"/\$(date +\%F)};
+
+  \node[e1] (b) at (0,5.35) {\textbf{2.} til};
+  \node[rs] at (2.1,5.35) {cp /home/kali/dados1.csv ... "\$DEST"/\$(date +\%F)};
+
+  \node[e2] (c) at (0,4.35) {\textbf{3.} variáveis, aritmética\\e substituição de comando};
+  \node[rs] at (2.1,4.35) {cp /home/kali/dados1.csv ... "/srv/Back up"/2026-08-03};
+
+  \node[e3] (d) at (0,3.15) {\textbf{4.} divisão em palavras};
+  \node[rs] at (2.1,3.15) {[cp] [/home/kali/dados1.csv] [/home/kali/dados2.csv]\\\phantom{[cp] }[/srv/Back up/2026-08-03]};
+
+  \node[e3] (e) at (0,1.95) {\textbf{5.} nomes de arquivo\\(\emph{globbing})};
+  \node[rs] at (2.1,1.95) {sem curinga na linha: nada muda};
+
+  \node[e4] (f) at (0,0.95) {\textbf{6.} remoção das aspas};
+  \node[rs] at (2.1,0.95) {as aspas somem; o \texttt{cp} recebe 3 argumentos};
+
+  \draw[fl] (a) -- (b);
+  \draw[fl] (b) -- (c);
+  \draw[fl] (c) -- (d);
+  \draw[fl] (d) -- (e);
+  \draw[fl] (e) -- (f);
+
+  \node[nt,text width=14.6cm] at (5.3,-0.55) {As etapas 4 e 5 são as perigosas, e as duas acontecem \textbf{depois} de a variável ter sido substituída pelo seu valor. É por isso que aspas duplas resolvem: elas não impedem a substituição da etapa 3, mas impedem que o resultado dela seja fatiado na 4 ou reinterpretado como curinga na 5. Sem as aspas em \texttt{"\$DEST"}, o espaço de \texttt{/srv/Back up} viraria dois argumentos --- e o \texttt{cp} copiaria para um destino inexistente.};
+\end{tikzpicture}
+```
+As seis etapas de expansão, aplicadas a uma mesma linha.
+:::
+
+Três consequências dessa ordem valem ser fixadas agora:
+
+- **A expansão de chaves acontece antes de tudo**, inclusive antes das variáveis. Por isso `{1..$n}` **não** funciona: quando as chaves são processadas, `$n` ainda é texto literal.
+- **A divisão em palavras acontece depois da substituição da variável.** O shell não sabe, e não tem como saber, se o espaço que apareceu veio da linha digitada ou do valor da variável. Para ele, é tudo a mesma linha.
+- **A remoção das aspas é a última etapa.** As aspas nunca chegam ao comando; elas existem só para o shell, e sua única função é desligar etapas.
+
+## As três formas de citar
+
+| Forma | O que desliga | O que continua funcionando |
+|---|---|---|
+| sem aspas | nada | tudo: variáveis, curingas, divisão em palavras |
+| `'aspas simples'` | **tudo** | nada — cada byte é literal |
+| `"aspas duplas"` | divisão em palavras e *globbing* | `$var`, `$(cmd)`, `$((...))`, `\` e crases |
+| `\c` (barra invertida) | o caractere seguinte | — |
+| `$'texto'` | como aspas simples, mas interpreta `\n`, `\t`, `\x41` | — |
+
+: As formas de citação e o que cada uma desliga {#tbl-aspas}
+
+```bash
+nome="Kali Linux"
+echo $nome                 # duas palavras -> "Kali Linux" com espaco unico
+echo "$nome"               # uma palavra   -> Kali Linux
+echo '$nome'               # literal       -> $nome
+echo "custa \$50"          # custa $50
+echo $'linha1\nlinha2'     # duas linhas de verdade
+```
+
+A diferença entre a primeira e a segunda linha parece cosmética — a saída do `echo` é praticamente igual. Ela deixa de ser cosmética assim que o valor tem espaços duplos, tabulações ou um asterisco:
+
+```bash
+espacos="a     b"
+echo $espacos              # a b        (colapsou os espacos)
+echo "$espacos"            # a     b    (preservou)
+
+curinga="*"
+echo $curinga              # lista TODOS os arquivos do diretorio atual
+echo "$curinga"            # *
+```
+
+A segunda dupla é a mais reveladora. Sem aspas, o valor `*` passa pela etapa 5 e é expandido para a lista de arquivos. O shell não distingue "um asterisco que eu digitei" de "um asterisco que veio de uma variável" — para ele, a etapa 5 vê apenas caracteres.
+
+## A regra de ouro
+
+> **Toda expansão vai entre aspas duplas, sempre — a menos que você tenha um motivo articulável para não usá-las.**
+
+Não é exagero de purista: é a única regra que dispensa julgamento caso a caso, e a violação dela é a causa da maioria absoluta dos defeitos em script de shell.
+
+::: {#fig-divisao-em-palavras}
+```{.tikz}
+%%| filename: divisao-em-palavras
+%%| alt: Comparacao dos argumentos recebidos por um comando com e sem aspas em volta de uma variavel que contem espaco
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.62cm},
+    ar/.style={bx,draw=manualgray,fill=manualgray!10},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!14},
+    ru/.style={bx,draw=manualred,fill=manualred!12},
+    ti/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    lb/.style={font=\scriptsize,manualgray,align=left,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[lb,font=\scriptsize\ttfamily,manualblue] at (-1.0,5.5) {DESTINO="/srv/Arquivos Antigos"};
+
+  \node[ti,manualred] at (-1.0,4.6) {sem aspas --- \texttt{rm -rf \$DESTINO/*}};
+  \node[ar,minimum width=1.5cm] at (0.15,3.75) {argv[0]};
+  \node[ar,minimum width=1.5cm] at (1.85,3.75) {argv[1]};
+  \node[ar,minimum width=3.9cm] at (5.05,3.75) {argv[2]};
+  \node[ar,minimum width=3.9cm] at (9.35,3.75) {argv[3]};
+  \node[ru,minimum width=1.5cm] at (0.15,3.05) {rm};
+  \node[ru,minimum width=1.5cm] at (1.85,3.05) {-rf};
+  \node[ru,minimum width=3.9cm] at (5.05,3.05) {/srv/Arquivos};
+  \node[ru,minimum width=3.9cm] at (9.35,3.05) {Antigos/*};
+  \node[lb,manualred] at (11.55,3.05) {relativo ao diretório atual};
+
+  \node[ti,manualgreen] at (-1.0,1.85) {com aspas --- \texttt{rm -rf "\$DESTINO"/*}};
+  \node[ar,minimum width=1.5cm] at (0.15,1.0) {argv[0]};
+  \node[ar,minimum width=1.5cm] at (1.85,1.0) {argv[1]};
+  \node[ar,minimum width=8.2cm] at (7.2,1.0) {argv[2]};
+  \node[ok,minimum width=1.5cm] at (0.15,0.3) {rm};
+  \node[ok,minimum width=1.5cm] at (1.85,0.3) {-rf};
+  \node[ok,minimum width=8.2cm] at (7.2,0.3) {/srv/Arquivos Antigos/relatorio.pdf};
+  \node[lb,manualgreen] at (11.55,0.3) {um argumento por arquivo real};
+
+  \node[nt,text width=14.6cm] at (5.6,-1.15) {O \texttt{/*} fica \textbf{fora} das aspas de propósito: é ele que precisa ser expandido pela etapa 5 para virar a lista de arquivos. Aspas em volta do caminho, curinga fora --- é a construção correta, e a que separa o dado (o valor da variável) da sintaxe (o curinga que você escreveu).};
+\end{tikzpicture}
+```
+Os argumentos que o comando realmente recebe, com e sem aspas.
+:::
+
+As exceções legítimas são poucas e vale conhecê-las, porque fora delas não há discussão:
+
+```bash
+# 1. quando voce QUER a divisao em palavras (raro, e melhor com array)
+opcoes="-l -a -h"
+ls $opcoes /tmp
+
+# 2. dentro de [[ ]], onde nao ha divisao em palavras (cap. 55)
+if [[ $nome == "Kali"* ]]; then echo "casou"; fi
+
+# 3. do lado direito de uma atribuicao simples
+destino=$origem            # nao ha divisao aqui; as aspas sao inofensivas
+```
+
+Mesmo nos casos 2 e 3, escrever as aspas não custa nada e mantém o hábito intacto. A recomendação prática: use sempre, e deixe o `shellcheck` apontar as poucas vezes em que elas atrapalham.
+
+## Substituição de comandos
+
+Trocar um comando pela sua saída é a construção que dá ao shell boa parte de seu poder:
+
+```bash
+hoje="$(date +%Y-%m-%d)"
+qtd="$(ls -1 /etc | wc -l)"
+echo "Em $hoje havia $qtd entradas em /etc"
+```
+
+Existem duas sintaxes, e uma delas é obsoleta:
+
+```bash
+moderno="$(comando)"       # use esta
+antigo=`comando`           # crase: evitar
+```
+
+O `$( )` venceu por três razões concretas: aninha sem tortura, não exige tratamento especial da barra invertida dentro, e é visualmente inequívoco (a crase e a aspa simples são quase idênticas em muitas fontes).
+
+```bash
+# aninhado com $( ) - legivel
+echo "kernel: $(uname -r) em $(hostname -s)"
+dono="$(stat -c %U "$(readlink -f /bin/sh)")"
+
+# o mesmo com crases - precisa escapar cada nivel
+dono=`stat -c %U \`readlink -f /bin/sh\``
+```
+
+Dois comportamentos da substituição de comandos surpreendem com frequência:
+
+**As novas linhas finais são removidas.** O shell descarta toda quebra de linha do fim da saída. É quase sempre o que se quer, e é a razão pela qual `x="$(cat arquivo)"` não deixa uma linha em branco pendurada. Quando você precisa preservá-las, o truque é acrescentar um caractere sentinela e removê-lo:
+
+```bash
+conteudo="$(cat arquivo.txt; printf x)"
+conteudo="${conteudo%x}"
+```
+
+**A substituição roda num subshell.** Como o @sec-cap051 mostrou, variáveis alteradas ali dentro não chegam ao script:
+
+```bash
+n=0
+echo "1 2 3" | tr ' ' '\n' | while read -r x; do n=$((n+1)); done
+echo "$n"        # 0, e nao 3 - o while rodou em outro processo
+```
+
+Este é um dos enganos mais frequentes do shell, e a solução — redirecionamento em vez de *pipe*, ou substituição de processo — é assunto do @sec-cap054 e do Volume 12.
+
+E, como toda expansão, **o resultado precisa de aspas**:
+
+```bash
+arquivos="$(find /tmp -name '*.log')"    # ok
+rm $arquivos                             # ERRADO: quebra em nome com espaco
+rm "$arquivos"                           # ERRADO: um unico argumento gigante
+find /tmp -name '*.log' -delete          # CERTO: sem passar pelo shell
+```
+
+A última linha ensina a lição maior: quando a lista pode conter nomes arbitrários, **não faça a lista passar pelo shell**. `find -exec`, `find -delete` e `xargs -0` existem justamente para isso.
+
+## Expansão aritmética
+
+O shell não faz contas em contexto normal — `a=1+1` guarda o texto `1+1`. Para aritmética inteira existe `$(( ))`:
+
+```bash
+a=7; b=3
+echo "$(( a + b ))"        # 10  - o cifrao e opcional aqui dentro
+echo "$(( a * b ))"        # 21
+echo "$(( a / b ))"        # 2   - divisao INTEIRA, sem arredondar
+echo "$(( a % b ))"        # 1   - resto
+echo "$(( 2 ** 10 ))"      # 1024
+echo "$(( a > b ))"        # 1   - verdadeiro vale 1, falso vale 0
+```
+
+Dentro de `$(( ))`, o cifrão é dispensável e não há divisão em palavras — é um contexto separado do resto do shell. Duas limitações precisam ficar claras:
+
+```bash
+echo "$(( 10 / 4 ))"                  # 2, nao 2.5
+echo "scale=2; 10/4" | bc             # 2.50 - use bc para decimais
+awk 'BEGIN {printf "%.2f\n", 10/4}'   # 2.50 - ou awk
+```
+
+**O Bash só faz aritmética inteira.** Não há ponto flutuante, e não vai haver. Cálculo com decimais em shell é trabalho para `bc`, `awk` ou `python3`. O Volume 10 aprofunda o assunto num capítulo dedicado à aritmética no shell.
+
+## Chaves, til e substituição de processo
+
+A **expansão de chaves** gera listas, e por ser a primeira etapa não enxerga variáveis:
+
+```bash
+echo {1..5}                    # 1 2 3 4 5
+echo {01..10}                  # 01 02 ... 10  (com zero a esquerda)
+echo {a..e}                    # a b c d e
+echo {0..20..5}                # 0 5 10 15 20  (com passo)
+echo arquivo{.txt,.bak}        # arquivo.txt arquivo.bak
+mkdir -p projeto/{src,doc,test}/{atual,antigo}
+cp config.conf{,.bak}          # o idioma classico de backup rapido
+
+n=5
+echo {1..$n}                   # {1..5} literal - NAO funciona
+seq 1 "$n"                     # a alternativa correta
+```
+
+A **expansão do til** resolve diretórios pessoais, e só funciona **fora de aspas** e no início da palavra:
+
+```bash
+echo ~                # /home/kali
+echo ~root            # /root
+echo ~-               # o diretorio anterior ($OLDPWD)
+echo "~"              # ~  literal! dentro de aspas nao expande
+echo "$HOME"          # a forma correta em script
+```
+
+Essa é a razão de a forma `"$HOME/dados"` ser preferível a `"~/dados"` em script: a segunda simplesmente não expande.
+
+A **substituição de processo** entrega a saída de um comando como se fosse um arquivo, e resolve problemas que de outro modo exigiriam arquivos temporários:
+
+```bash
+diff <(ls /etc) <(ls /etc.bak)             # comparar duas saidas
+diff <(sort a.txt) <(sort b.txt)
+comm -13 <(sort instalados.txt) <(sort esperados.txt)
+
+while read -r linha; do
+    echo "vi: $linha"
+done < <(grep erro /var/log/syslog)        # sem subshell, ao contrario do pipe
+```
+
+A última construção é a solução para o problema do contador zerado mostrado acima: `< <(comando)` alimenta o laço sem criar subshell, e as variáveis alteradas dentro dele sobrevivem.
+
+## `eval` e injeção de comando
+
+O `eval` monta uma linha a partir de texto e a executa. Ele resolve casos legítimos e raros — e é o caminho mais curto para uma vulnerabilidade grave:
+
+```bash
+comando="ls -l"
+eval "$comando"            # funciona
+
+# e o problema:
+entrada="/tmp; rm -rf ~"   # valor vindo de fora
+eval "ls $entrada"         # executa o rm tambem
+```
+
+::: {.callout-warning}
+## Dado nunca deve virar sintaxe
+
+O padrão de falha é sempre o mesmo: um valor que veio de fora — argumento, arquivo de configuração, campo de formulário, nome de arquivo — é colado dentro de uma linha que o shell vai interpretar. O ponto e vírgula, a crase, o `$(...)` e o `&&` que estiverem no dado passam a ser sintaxe.
+
+As defesas, em ordem:
+
+1. **Não use `eval`.** Na maioria dos casos há uma construção direta: arrays para montar linhas de comando, `${!var}` para referência indireta, `case` para despacho.
+2. **Valide antes de usar.** Um caminho, um nome de host ou um número devem ser conferidos contra o formato esperado, não sanitizados por remoção de caracteres — lista de permitidos, nunca lista de proibidos.
+3. **Passe dado como argumento, não como texto de comando.** `comando -- "$valor"` entrega o valor ao programa sem que o shell o reinterprete; o `--` encerra as opções e protege contra valores que começam com hífen.
+4. **`printf %q`** quando for realmente inevitável montar uma linha: ele escapa o valor de forma que o shell o leia como uma única palavra literal.
+
+O mesmo raciocínio vale para `bash -c "$linha"`, para `ssh host "$comando"` e para `find -exec sh -c "... $var ..."`. Em todos, o dado atravessa um shell.
+:::
+
+Fora do `eval`, a construção que salva quando você precisa montar um comando com número variável de argumentos é o array:
+
+```bash
+opcoes=(-l -a --color=always)
+ls "${opcoes[@]}" /tmp          # cada elemento vira um argumento, com espacos preservados
+```
+
+`"${array[@]}"` é a forma correta e é assunto do Volume 10 — mas vale registrá-la aqui, porque é ela que torna o `eval` desnecessário na maioria dos casos em que se pensa nele.
+
+## 🐉 No Kali
+
+- **Nome de arquivo com espaço é rotina em perícia, não exceção.** Evidência coletada de máquina Windows chega com `Área de Trabalho`, `Meus Documentos`, `Novo Documento (2).docx` — e com acentos, parênteses e cedilhas. Um script de triagem escrito sem aspas falha na primeira pasta e, pior, falha **parcialmente**: processa alguns arquivos, ignora outros, e o relatório sai incompleto sem nenhum erro visível. A combinação obrigatória nesse contexto é `find -print0` com `xargs -0`, ou `find -exec ... {} +`.
+- **Nome de arquivo pode conter quebra de linha, e atacante sabe disso.** Um artefato chamado literalmente `nota.txt\n/etc/passwd` quebra qualquer laço `for f in $(ls)`. É o argumento definitivo contra analisar a saída de `ls` em script: use *globbing* (`for f in *.txt`) ou `find -print0`. O `-print0` separa por byte nulo, o único caractere que não pode aparecer num nome de arquivo.
+- **A saída de ferramenta do Kali não é contrato estável.** `nmap`, `nikto` e `gobuster` mudam formato entre versões, e num rolling isso acontece sem aviso. Um script que faz `grep`/`cut` na saída de tela quebra no `apt full-upgrade` seguinte. Todas essas ferramentas oferecem saída estruturada — `nmap -oX`, `-oG`, `--json` em várias outras — e um `jq` ou `xmlstarlet` em cima dela é código que sobrevive à atualização. O Volume 11 trata desse caminho ao chegar em `jq` e dados estruturados.
+- **`proxychains` e `sudo` recebem um comando por argumento, e as aspas ali têm outro dono.** Em `proxychains nmap -sT "$ALVO"`, quem consome as aspas é o shell atual, e o `nmap` recebe o valor já expandido. Já em `ssh host "comando $VAR"` a linha atravessa **dois** shells: o local expande `$VAR` e o remoto reinterpreta o resultado inteiro. Um alvo com ponto e vírgula no meio vira comando na máquina remota. Em automação de teste autorizado, isso é a diferença entre um script e um incidente — e usar ferramenta fora do escopo contratado é crime pela Lei 12.737/2012, ainda que por acidente de aspas.
+- **`shellcheck` está a um `apt install` de distância e encontra isto sozinho.** A maior parte dos defeitos deste capítulo tem código próprio na ferramenta: SC2086 (expansão sem aspas), SC2046 (substituição de comando sem aspas), SC2006 (crase em vez de `$( )`), SC2045 (analisar a saída de `ls`). Rodar `shellcheck script.sh` antes de cada execução é o hábito de maior retorno de todo o volume, e o @sec-cap057 volta a ele.
+
+> **Nota sobre a família RHEL.** As regras de expansão vêm do próprio Bash e são idênticas em qualquer distribuição — não há divergência a registrar. A diferença prática está no entorno: RHEL, Rocky e AlmaLinux costumam trazer uma versão de Bash mais antiga que a do Kali rolling, e recursos como `${var@Q}` (a partir do Bash 4.4) podem não existir num RHEL mais antigo, com o script falhando de forma silenciosa em vez de alta. Checar `${BASH_VERSINFO[0]}` no topo de um script que use sintaxe recente é uma precaução barata em ambiente heterogêneo.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Os passos 3 e 4 criam e apagam arquivos **dentro de `~/lab-aspas`** e usam `echo` antes de qualquer comando destrutivo — leia os avisos.
+
+1. **Prepare o terreno com nomes hostis.**
+
+   ```bash
+   mkdir -p ~/lab-aspas && cd ~/lab-aspas
+   mkdir -p "Arquivos Antigos" simples
+   touch "Arquivos Antigos/relatorio final.pdf" "Arquivos Antigos/nota;perigosa.txt"
+   touch simples/a.log simples/b.log 'simples/com espaco.log'
+   ls -R
+   ```
+
+   Esperado: dois diretórios, um deles com espaço no nome, e arquivos com espaço e ponto e vírgula. É o cenário real de qualquer coleta de evidência.
+
+2. **Veja a divisão em palavras acontecer.**
+
+   ```bash
+   DESTINO="$PWD/Arquivos Antigos"
+   echo "sem aspas :"; for x in $DESTINO; do echo "  [$x]"; done
+   echo "com aspas :"; for x in "$DESTINO"; do echo "  [$x]"; done
+   ```
+
+   Esperado: sem aspas, o laço roda duas vezes e imprime dois pedaços do caminho; com aspas, roda uma vez com o caminho inteiro. É a @fig-divisao-em-palavras em execução.
+
+3. **Reproduza o acidente do início do capítulo, com segurança.**
+
+   ```bash
+   echo rm -rf $DESTINO/*         # note o "echo" na frente
+   echo rm -rf "$DESTINO"/*
+   ```
+
+   Esperado: a primeira linha mostra `rm -rf /home/.../Arquivos Antigos/*` **quebrado em dois caminhos**, o segundo dos quais relativo. A segunda mostra os arquivos reais, um por argumento. O `echo` na frente de comando destrutivo é o ensaio que deve preceder toda primeira execução.
+
+4. **Confirme que `*` numa variável é expandido.**
+
+   ```bash
+   cd simples
+   padrao="*.log"
+   echo $padrao          # expande: lista os arquivos
+   echo "$padrao"        # literal: *.log
+   ls $padrao            # funciona por acidente
+   ls "$padrao"          # erro: nao existe arquivo chamado *.log
+   cd ..
+   ```
+
+   Esperado: a etapa 5 da @fig-ordem-expansoes agindo sobre o **valor** da variável, não sobre o que você digitou.
+
+5. **Compare as três formas de citar.**
+
+   ```bash
+   v="mundo"
+   echo "ola $v e $(date +%Y)"
+   echo 'ola $v e $(date +%Y)'
+   echo ola\ $v\ com\ escape
+   printf '%s\n' $'coluna1\tcoluna2\nlinha2'
+   ```
+
+   Esperado: aspas duplas expandem tudo; aspas simples não expandem nada; a barra invertida protege apenas o próximo caractere; `$'...'` interpreta a tabulação e a quebra de linha de verdade.
+
+6. **Aninhe substituições de comando.**
+
+   ```bash
+   echo "sh real: $(readlink -f "$(command -v sh)")"
+   echo "kernel $(uname -r), com $(nproc) CPUs e $(free -h | awk 'NR==2{print $2}') de RAM"
+   ```
+
+   Esperado: duas linhas de informação. Repare nas aspas **dentro** da substituição, na primeira linha — cada nível de `$( )` tem seu próprio contexto de citação, o que é impossível de escrever com crases.
+
+7. **Veja as novas linhas finais sumirem.**
+
+   ```bash
+   printf 'linha\n\n\n' > tresquebras.txt
+   x="$(cat tresquebras.txt)"
+   printf '%s' "$x" | xxd | tail -2
+   y="$(cat tresquebras.txt; printf x)"; y="${y%x}"
+   printf '%s' "$y" | xxd | tail -2
+   ```
+
+   Esperado: no primeiro caso o valor termina em `linha` sem nenhum `0a`; no segundo, os três `0a` foram preservados pelo truque do sentinela.
+
+8. **Comprove que o *pipe* cria um subshell.**
+
+   ```bash
+   n=0
+   printf 'a\nb\nc\n' | while read -r _; do n=$((n+1)); done
+   echo "com pipe          : n=$n"
+
+   n=0
+   while read -r _; do n=$((n+1)); done < <(printf 'a\nb\nc\n')
+   echo "com substituicao  : n=$n"
+   ```
+
+   Esperado: `0` no primeiro caso e `3` no segundo. O `< <(...)` mantém o laço no shell atual.
+
+9. **Faça aritmética e encontre o limite.**
+
+   ```bash
+   a=17; b=5
+   echo "soma=$((a+b)) div=$((a/b)) resto=$((a%b)) pot=$((2**16))"
+   echo "media inteira: $(( (a+b)/2 ))"
+   echo "media exata  : $(echo "scale=2; ($a+$b)/2" | bc)"
+   inicio=$SECONDS; sleep 1; echo "levou $((SECONDS-inicio))s"
+   ```
+
+   Esperado: a divisão inteira trunca (`17/5` vira `3`), e só o `bc` produz o valor com decimais.
+
+10. **Trate nomes hostis do jeito certo.**
+
+    ```bash
+    echo "--- errado: for no ls ---"
+    for f in $(ls "Arquivos Antigos"); do echo "  [$f]"; done
+    echo "--- certo: globbing ---"
+    for f in "Arquivos Antigos"/*; do echo "  [$f]"; done
+    echo "--- certo: find -print0 ---"
+    find "Arquivos Antigos" -type f -print0 | xargs -0 -I{} echo "  [{}]"
+    ```
+
+    Esperado: o primeiro laço quebra os nomes nos espaços e produz linhas sem sentido; os outros dois entregam cada arquivo inteiro. O `-print0` é o único que também sobreviveria a um nome com quebra de linha.
+
+11. **Veja o `eval` fazer o que se teme dele.**
+
+    ```bash
+    entrada='arquivo.txt; echo "ISTO FOI INJETADO"'
+    eval "ls $entrada" 2>/dev/null
+    ls -- "$entrada" 2>&1 | head -1
+    ```
+
+    Esperado: com `eval`, a mensagem injetada aparece — o ponto e vírgula do dado virou sintaxe. Com `ls -- "$entrada"`, o valor inteiro é tratado como um nome de arquivo (inexistente) e nada é executado.
+
+12. **Rode o `shellcheck` e limpe o laboratório.**
+
+    ```bash
+    sudo apt install -y shellcheck
+    cat > ruim.sh <<'FIM'
+    #!/bin/bash
+    DIR=$1
+    for f in `ls $DIR`; do
+        cp $f /tmp/
+    done
+    FIM
+    shellcheck ruim.sh
+    cd ~ && rm -rf ~/lab-aspas
+    ```
+
+    Esperado: o `shellcheck` aponta SC2006 (crase), SC2045 (analisar `ls`) e SC2086 (expansões sem aspas) — os três defeitos deste capítulo, encontrados por uma ferramenta em menos de um segundo.
+
+## Resumo
+
+- **O shell reescreve a linha em seis etapas fixas:** chaves, til, variáveis/aritmética/substituição de comando, divisão em palavras, *globbing* e remoção das aspas. Quase todo comportamento surpreendente é uma etapa acontecendo antes ou depois do que se supunha.
+- **A divisão em palavras e o *globbing* acontecem depois da substituição da variável.** O shell não distingue o espaço ou o asterisco que você digitou daquele que veio de um valor — por isso `$var` sem aspas é imprevisível por construção.
+- **Aspas duplas em toda expansão, sempre.** Elas desligam as etapas 4 e 5 sem desligar a substituição. Aspas simples tornam tudo literal; `$'...'` interpreta `\n` e `\t`. As exceções são poucas e articuláveis; fora delas, não há discussão.
+- **`$(comando)` substitui a crase**, aninha com clareza e permite aspas em cada nível. Ele remove as novas linhas finais e roda num subshell — o que faz um contador incrementado dentro de `| while` voltar zerado.
+- **`$(( ))` só faz aritmética inteira.** `10/4` vale `2`. Decimais exigem `bc`, `awk` ou `python3`.
+- **A expansão de chaves é a primeira etapa e por isso não enxerga variáveis:** `{1..$n}` sai literal, e a alternativa é `seq`. O til não expande dentro de aspas — em script, use `"$HOME"`.
+- **`eval` transforma dado em sintaxe e é a via curta para injeção de comando.** Prefira arrays (`"${arr[@]}"`), valide por lista de permitidos, encerre opções com `--` e lembre que `ssh host "cmd $var"` atravessa dois shells.
+- **Nome de arquivo pode conter espaço, ponto e vírgula e até quebra de linha.** Nunca analise a saída de `ls`; use *globbing* ou `find -print0 | xargs -0`. E rode `shellcheck`: ele encontra sozinho a maior parte destes defeitos.

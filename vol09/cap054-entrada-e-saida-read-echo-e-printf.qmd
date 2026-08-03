@@ -1,3 +1,526 @@
 # Entrada e saída: read, echo e printf {#sec-cap054}
 
-*(em elaboracao)*
+O script de inventário produzia um relatório bonito na máquina de quem o escreveu: três colunas alinhadas, cabeçalho separado por uma linha de traços, tamanhos com duas casas decimais. Copiado para o servidor e chamado pelo `cron` com `sh inventario.sh`, o mesmo script passou a imprimir isto:
+
+```
+-e Servidor\tCPU\tMemoria
+```
+
+O `\t` saiu literal. O `-e` saiu literal. Nada estava errado com o servidor, com o `cron` ou com o arquivo — o que estava errado era o uso de `echo`, um comando cujo comportamento **muda conforme quem o executa**, e que é o único da caixa de ferramentas do shell cuja portabilidade é um problema real e não teórico.
+
+Este capítulo trata das três formas de o script conversar com o mundo: `echo`, que é conveniente e traiçoeiro; `printf`, que é o substituto correto; e `read`, que é a porta de entrada — e cujo uso ingênuo destrói dados silenciosamente.
+
+## `echo` e seus três comportamentos
+
+O problema do `echo` é histórico. Existem pelo menos três implementações em uso numa máquina Linux comum, e elas discordam:
+
+```bash
+echo -e "a\tb"          # bash builtin: interpreta o \t? depende
+/bin/echo -e "a\tb"     # coreutils: interpreta com -e
+sh -c 'echo -e "a\tb"'  # dash: imprime "-e a\tb"... ou "a<TAB>b"
+```
+
+O `dash` — que é o `/bin/sh` do Debian e do Kali — **sempre** interpreta as barras invertidas e **não** reconhece a opção `-e`, que ele trata como texto a imprimir. O Bash faz o inverso: só interpreta com `-e`. E o Bash compilado com `xpg_echo` ligado, ou rodando com `shopt -s xpg_echo`, se comporta como o `dash`. Não há um comportamento correto para memorizar; há três.
+
+Há ainda um segundo defeito, menos conhecido e mais insidioso:
+
+```bash
+valor="-n"
+echo "$valor"           # imprime NADA: o -n virou opcao
+valor="-e alguma coisa"
+echo "$valor"           # come o -e
+```
+
+Uma variável cujo valor começa com hífen é interpretada como opção. Se esse valor vem de fora — de um arquivo, de um argumento, do nome de um arquivo — o `echo` engole parte da saída sem avisar.
+
+A regra, portanto:
+
+> **`echo` só para texto literal simples, sem barras invertidas e sem variável que possa começar com hífen. Para todo o resto, `printf`.**
+
+## `printf`: previsível em qualquer shell
+
+O `printf` do shell segue a mesma especificação do `printf` de C, é definido pelo POSIX e se comporta igual em Bash, dash, Zsh e no binário `/usr/bin/printf`. A estrutura é sempre a mesma: uma **cadeia de formato** seguida dos argumentos que a preenchem.
+
+```bash
+printf 'Ola, %s! Voce tem %d mensagens.\n' "kali" 7
+```
+
+::: {#fig-anatomia-printf}
+```{.tikz}
+%%| filename: anatomia-do-printf
+%%| alt: Decomposicao de uma especificacao de formato do printf em sinalizador, largura, precisao e conversor, e ilustracao do reuso ciclico da cadeia de formato
+\begin{tikzpicture}[
+    pc/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=4pt,minimum height=0.72cm},
+    lb/.style={rounded corners=3pt,draw,thin,align=center,font=\scriptsize,inner sep=3pt,text width=2.35cm,minimum height=1.05cm},
+    ti/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thin,-{Stealth[length=3.5pt]},manualgray}
+  ]
+  \node[ti,manualblue] at (-0.4,5.35) {anatomia de uma especificação};
+
+  \node[pc,draw=manualgray,fill=manualgray!14] (p0) at (0.2,4.4)  {\%};
+  \node[pc,draw=manualblue,fill=manualblue!13] (p1) at (0.95,4.4) {-};
+  \node[pc,draw=manualgreen,fill=manualgreen!13](p2) at (1.9,4.4) {10};
+  \node[pc,draw=manualyellow,fill=manualyellow!17](p3) at (3.0,4.4){.2};
+  \node[pc,draw=manualred,fill=manualred!11]  (p4) at (3.95,4.4)  {f};
+
+  \node[lb,draw=manualgray]   (l0) at (0.2,2.75) {início da\\especificação};
+  \node[lb,draw=manualblue]   (l1) at (2.75,2.75) {\textbf{sinalizador}\\alinha à esquerda\\(padrão: direita)};
+  \node[lb,draw=manualgreen]  (l2) at (5.3,2.75) {\textbf{largura}\\ocupa 10 colunas,\\completa com espaço};
+  \node[lb,draw=manualyellow] (l3) at (7.85,2.75) {\textbf{precisão}\\2 casas decimais};
+  \node[lb,draw=manualred]    (l4) at (10.4,2.75) {\textbf{conversor}\\\texttt{f} = ponto flutuante};
+
+  \draw[fl] (p0.south) -- (l0.north);
+  \draw[fl] (p1.south) -- (l1.north);
+  \draw[fl] (p2.south) -- (l2.north);
+  \draw[fl] (p3.south) -- (l3.north);
+  \draw[fl] (p4.south) -- (l4.north);
+
+  \node[ti,manualgreen] at (-0.4,1.35) {a cadeia de formato é reaproveitada até acabarem os argumentos};
+  \node[cd,manualgray] at (-0.4,0.65) {printf '\%-8s \%5.1f\textbackslash n'\quad raiz 42.75\quad var 8.5\quad home 120.4};
+  \node[cd] at (-0.4,0.05) {raiz\ \ \ \ \ 42.8};
+  \node[cd] at (-0.4,-0.5) {var\ \ \ \ \ \ 8.5};
+  \node[cd] at (-0.4,-1.05) {home\ \ \ \ 120.4};
+
+  \node[nt,text width=8.2cm] at (9.0,-0.35) {Três argumentos para um formato de dois campos: o \texttt{printf} volta ao início da cadeia e recomeça, produzindo três linhas. Esse reuso cíclico é o que torna o \texttt{printf} a ferramenta natural para emitir tabelas --- e é também a razão de \texttt{printf '\%s\textbackslash n' "\$@"} imprimir cada argumento em sua própria linha, sem laço nenhum.};
+\end{tikzpicture}
+```
+A especificação de formato do `printf` e o reaproveitamento cíclico da cadeia.
+:::
+
+Os conversores que aparecem no dia a dia:
+
+| Conversor | Imprime | Exemplo |
+|---|---|---|
+| `%s` | texto, como veio | `printf '%s' "$var"` |
+| `%d`, `%i` | inteiro decimal | `printf '%d' 42` |
+| `%f` | ponto flutuante (6 casas por padrão) | `printf '%.2f' 3.14159` |
+| `%x`, `%X` | hexadecimal | `printf '%x' 255` → `ff` |
+| `%o` | octal — útil para permissões | `printf '%o' 493` → `755` |
+| `%b` | texto **com** barras invertidas interpretadas | o substituto seguro de `echo -e` |
+| `%q` | texto escapado para reentrada no shell | `printf '%q' "a b"` → `a\ b` |
+| `%%` | um sinal de porcentagem literal | — |
+
+: Conversores do `printf` usados com frequência {#tbl-printf}
+
+Três padrões cobrem a maior parte do uso real:
+
+```bash
+# 1. substituir echo, com previsibilidade
+printf '%s\n' "$mensagem"          # imune a valor que comeca com hifen
+printf '%s\n' "$@"                 # cada argumento em uma linha
+
+# 2. tabelas alinhadas
+printf '%-20s %10s %8s\n' "SERVICO" "ESTADO" "PID"
+printf '%-20s %10s %8s\n' "ssh" "ativo" "1042"
+printf '%-20s %10s %8s\n' "nginx" "parado" "-"
+
+# 3. barras invertidas de forma portavel
+printf '%b\n' "coluna1\tcoluna2"   # o \t vem do ARGUMENTO, com seguranca
+```
+
+O terceiro caso merece explicação. Barras invertidas na **cadeia de formato** sempre são interpretadas — é por isso que `\n` funciona ali. Mas um valor vindo de fora não deve entrar na cadeia de formato de jeito nenhum:
+
+```bash
+entrada="%d%d%d%d"
+printf "$entrada"                  # ERRADO: o valor virou formato
+printf '%s\n' "$entrada"           # CERTO: o valor e apenas dado
+```
+
+É a mesma lição do @sec-cap053, em outra roupa: **dado nunca deve virar sintaxe**. Um valor colocado na posição da cadeia de formato pode consumir argumentos que não existem, imprimir lixo da pilha ou, com `%n` em implementações de C, escrever em memória.
+
+## Mensagens de erro vão para o descritor 2
+
+Um script bem-comportado separa o que produz do que relata. A saída útil vai para a saída padrão; avisos, erros e progresso vão para a saída de erro. Isso é o que permite ao usuário fazer `meu-script > resultado.txt` e continuar vendo as mensagens na tela.
+
+```bash
+erro()  { printf 'ERRO: %s\n'  "$*" >&2; }
+aviso() { printf 'aviso: %s\n' "$*" >&2; }
+info()  { printf '%s\n'        "$*"; }
+
+[[ -r "$ARQUIVO" ]] || { erro "nao consigo ler $ARQUIVO"; exit 1; }
+```
+
+Três funções de quatro linhas que valem por qualquer biblioteca de log. O `>&2` é o redirecionamento do @sec-cap012 — e a diferença aparece na prática:
+
+```bash
+./script.sh > saida.txt            # erros continuam visiveis no terminal
+./script.sh > saida.txt 2>&1       # tudo no arquivo, se voce quiser
+./script.sh 2> /dev/null           # so a saida util
+```
+
+## Cores, e quando não usá-las
+
+Cor no terminal é uma sequência de escape ANSI. Escrevê-la à mão funciona, mas o modo robusto é perguntar ao `terminfo` através do `tput`:
+
+```bash
+if [[ -t 1 ]]; then                # a saida e um terminal?
+    VERM="$(tput setaf 1)"; VERD="$(tput setaf 2)"; NORM="$(tput sgr0)"
+    NEG="$(tput bold)"
+else
+    VERM=""; VERD=""; NORM=""; NEG=""
+fi
+
+printf '%sOK%s   servico ativo\n'   "$VERD" "$NORM"
+printf '%s%sFALHA%s servico parado\n' "$NEG" "$VERM" "$NORM"
+```
+
+O teste `[[ -t 1 ]]` — "o descritor 1 está ligado a um terminal?" — é a parte que a maioria dos scripts esquece. Sem ele, redirecionar a saída para um arquivo grava os códigos de escape crus, e o arquivo fica ilegível:
+
+```
+ESC[32mOKESC[0m   servico ativo
+```
+
+O mesmo cuidado vale para `clear`, `tput cup` e barras de progresso. Em `cron`, a variável `TERM` normalmente não existe, e o `tput` falha com `tput: No value for $TERM` — mais um motivo para o teste condicional.
+
+## `read`: a entrada de uma linha por vez
+
+O `read` lê uma linha da entrada padrão, remove o caractere de nova linha e atribui o resultado a uma ou mais variáveis:
+
+```bash
+read -r nome                       # le uma linha inteira
+read -r primeiro resto             # divide em duas: 1a palavra e o restante
+read -rp "Confirma? [s/N] " resp   # -p: escreve um prompt antes
+read -rsp "Senha: " senha; echo    # -s: nao ecoa o que e digitado
+read -rt 10 -p "10s: " x || echo "tempo esgotado"
+read -rn 1 -p "Tecle algo: " tecla; echo
+```
+
+As opções que importam:
+
+| Opção | Efeito |
+|---|---|
+| `-r` | **não** interpreta a barra invertida como escape — quase sempre obrigatória |
+| `-p TEXTO` | escreve um prompt antes de ler |
+| `-s` | não ecoa a digitação (senhas) |
+| `-t N` | desiste após N segundos e retorna falha |
+| `-n N` / `-N N` | lê no máximo N caracteres / exatamente N caracteres |
+| `-d C` | usa `C` como delimitador em vez da nova linha (`-d ''` para byte nulo) |
+| `-a ARR` | divide a linha em um array |
+| `-u N` | lê do descritor N em vez do 0 |
+
+: Opções do `read` {#tbl-read}
+
+O `-r` é a que mais dói quando falta. Sem ele, o `read` trata a barra invertida como escape e a **remove**:
+
+```bash
+printf 'C:\\Users\\kali\n' | read x;    echo "$x"    # C:Userskali
+printf 'C:\\Users\\kali\n' | read -r x; echo "$x"    # C:\Users\kali
+```
+
+Num script que processa caminhos do Windows, saídas de `find` ou qualquer texto que possa conter barra invertida, isso é perda silenciosa de dados. `read` sem `-r` deveria ser considerado erro de digitação.
+
+## O idioma canônico do laço de leitura
+
+Ler um arquivo linha a linha é uma das operações mais comuns em script — e uma das mais frequentemente escritas de forma errada. A construção correta tem quatro partes, e cada uma existe por um motivo:
+
+::: {#fig-idioma-read}
+```{.tikz}
+%%| filename: o-idioma-do-laco-de-leitura
+%%| alt: Decomposicao do laco while IFS= read -r linha do arquivo, com a funcao de cada parte e o que quebra sem ela
+\begin{tikzpicture}[
+    pc/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=4pt,minimum height=0.75cm},
+    lb/.style={rounded corners=3pt,draw,thin,align=left,font=\scriptsize,inner sep=4pt,text width=6.5cm,minimum height=1.15cm},
+    ti/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thin,-{Stealth[length=3.5pt]},manualgray}
+  ]
+  \node[ti,anchor=west] at (0.0,5.5) {while};
+  \node[pc,draw=manualblue,fill=manualblue!13]   (a) at (1.75,5.5) {IFS=};
+  \node[pc,draw=manualgray,fill=manualgray!12]   (m) at (3.0,5.5)  {read};
+  \node[pc,draw=manualgreen,fill=manualgreen!13] (b) at (4.15,5.5) {-r};
+  \node[pc,draw=manualgray,fill=manualgray!12]   (v) at (5.6,5.5)  {linha};
+  \node[ti,anchor=west] at (6.35,5.5) {; do ... done};
+  \node[pc,draw=manualyellow,fill=manualyellow!17] (c) at (9.9,5.5) {< "\$arq"};
+
+  \node[lb,draw=manualblue]   (la) at (3.55,4.0) {\textbf{\texttt{IFS=}} esvazia o separador \emph{só nesta linha}. Sem ele, o \texttt{read} apara espaços e tabulações do início e do fim --- e uma linha indentada perde a indentação.};
+  \node[lb,draw=manualgreen]  (lb2) at (11.0,4.0) {\textbf{\texttt{-r}} desliga o tratamento de barra invertida. Sem ele, \texttt{C:\textbackslash\textbackslash Users} vira \texttt{C:Users} e uma linha terminada em barra invertida é colada na seguinte.};
+  \node[lb,draw=manualyellow] (lc) at (3.55,2.35) {\textbf{\texttt{< "\$arq"}} redireciona o arquivo para o laço. Um \emph{pipe} (\texttt{cat arq | while ...}) funcionaria, mas cria um subshell: as variáveis alteradas dentro do laço voltam vazias.};
+  \node[lb,draw=manualred]    (ld) at (11.0,2.35) {\textbf{\texttt{|| [[ -n \$linha ]]}}, acrescentado após o \texttt{read}, salva a \textbf{última linha} quando o arquivo não termina em quebra de linha --- caso em que o \texttt{read} lê o conteúdo e ainda assim retorna falha.};
+
+  \draw[fl] (a.south) -- (la.north);
+  \draw[fl] (b.south) -- (lb2.north);
+  \draw[fl] (c.south) -- ++(0,-0.35) -| (lc.north);
+
+  \node[nt,text width=14.5cm] at (7.0,0.75) {Os quatro cuidados protegem coisas diferentes e nenhum substitui o outro. A forma completa, que vale memorizar como um bloco só:\\[3pt]
+  \hspace*{0.6cm}\texttt{while IFS= read -r linha || [[ -n "\$linha" ]]; do ... done < "\$arq"}\\[3pt]
+  Escrita assim, ela lida corretamente com indentação, barras invertidas, espaços no fim da linha, arquivo sem quebra final e variáveis que precisam sobreviver ao laço.};
+\end{tikzpicture}
+```
+As quatro partes do laço de leitura e o que cada uma protege.
+:::
+
+```bash
+# a forma correta
+while IFS= read -r linha || [[ -n "$linha" ]]; do
+    printf 'lida: [%s]\n' "$linha"
+done < "$ARQUIVO"
+
+# as formas erradas mais comuns
+for linha in $(cat "$ARQUIVO"); do ... done      # quebra em ESPACOS, nao em linhas
+cat "$ARQUIVO" | while read linha; do ... done   # subshell + perde indentacao
+while read linha; do ... done < "$ARQUIVO"       # come barra invertida e espacos
+```
+
+O `IFS` também trabalha a favor quando você **quer** dividir a linha, e essa é a forma mais limpa de processar arquivos de campos:
+
+```bash
+while IFS=: read -r usuario _ uid gid _ home shell; do
+    (( uid >= 1000 && uid < 65534 )) && printf '%-16s %-6s %s\n' "$usuario" "$uid" "$shell"
+done < /etc/passwd
+```
+
+Note que o `IFS=:` vale **apenas** para o comando `read` daquela linha — é o prefixo temporário do @sec-cap052. O `IFS` do resto do script permanece intacto, o que evita a classe inteira de defeito que surge ao alterar `IFS` globalmente.
+
+## O laço que come a própria entrada
+
+Um problema clássico e desconcertante: um comando dentro do laço consome a mesma entrada padrão que alimenta o `read`, e o laço processa só a primeira linha.
+
+```bash
+# o problema: o ssh le o resto do arquivo e o laco termina
+while IFS= read -r host; do
+    ssh "$host" uptime
+done < servidores.txt
+
+# solucao 1: negar stdin ao comando de dentro
+while IFS= read -r host; do
+    ssh -n "$host" uptime          # ou: ssh "$host" uptime < /dev/null
+done < servidores.txt
+
+# solucao 2: usar outro descritor para o laco
+while IFS= read -r -u 3 host; do
+    ssh "$host" uptime
+done 3< servidores.txt
+```
+
+Vale para `ssh`, `ffmpeg`, `mysql`, `apt` e qualquer programa que leia da entrada padrão sem que você tenha pedido. O sintoma é sempre o mesmo — o laço executa uma vez e termina — e a causa quase nunca é óbvia.
+
+## Interação com o usuário
+
+Um script que faz algo irreversível deve perguntar, e há um jeito certo de perguntar:
+
+```bash
+confirma() {
+    local resp
+    read -rp "${1:-Confirma?} [s/N] " resp
+    [[ "${resp,,}" == s || "${resp,,}" == sim ]]
+}
+
+if confirma "Apagar $ALVO"; then
+    rm -rf -- "$ALVO"
+else
+    printf 'cancelado\n' >&2
+    exit 1
+fi
+```
+
+Três decisões nessa função importam: o padrão é **não** (o `N` maiúsculo sinaliza isso, e uma resposta vazia recusa); `${resp,,}` converte para minúsculas antes de comparar; e o `--` no `rm` encerra as opções, protegendo contra um caminho que comece com hífen.
+
+Um script que possa rodar sem terminal precisa de uma saída de emergência:
+
+```bash
+if [[ ! -t 0 ]]; then
+    erro "sem terminal: use --sim para confirmar automaticamente"
+    exit 1
+fi
+```
+
+Sem esse teste, um script interativo chamado pelo `cron` fica travado esperando uma resposta que nunca virá — e o `read` sem `-t` espera para sempre.
+
+::: {.callout-warning}
+## Senha lida com `read -s` continua exposta
+
+O `-s` impede o eco na tela, o que resolve o ombro do colega. Não resolve mais nada:
+
+- a senha fica numa variável do shell, visível em `/proc/PID/environ` se for exportada e legível pelo root de todo modo;
+- se o script rodar com `set -x` ligado para depuração, **o valor aparece no rastreio**;
+- e se ela for passada adiante como argumento (`comando --senha "$senha"`), fica visível em `ps aux` para qualquer usuário da máquina.
+
+Para senha de verdade: `read -rs` seguido de passagem por entrada padrão (`printf '%s' "$senha" | comando --senha-stdin`), ou um gerenciador de segredos como o `pass`. E `set +x` antes de qualquer linha que toque na variável.
+:::
+
+## 🐉 No Kali
+
+- **Lista de alvos é o caso de uso número um de `read` em laboratório, e o que mais quebra.** Um arquivo `alvos.txt` costuma ter linhas em branco, comentários com `#`, espaços no fim e — se veio de planilha — terminadores CRLF. O laço canônico com uma limpeza no começo evita apontar a ferramenta para um alvo com um retorno de carro colado no nome: `[[ -z "${linha// }" || "$linha" == \#* ]] && continue`, mais um `linha="${linha%$'\r'}"`. Alvo errado por causa de um caractere invisível é como um teste autorizado vira acesso não autorizado, e a Lei 12.737/2012 não distingue intenção de descuido.
+- **`ssh -n` dentro do laço é obrigatório no Kali como em qualquer lugar.** Automatizar coleta em vários hosts é o exemplo canônico de laço que come a própria entrada. O sintoma — "só o primeiro servidor foi verificado" — é reportado como bug do script na mesma proporção em que é, na verdade, o `ssh` lendo `servidores.txt` até o fim.
+- **`tput` falha em muitos contextos do Kali.** Dentro de um contêiner sem `ncurses-base`, numa sessão `screen` mal configurada ou num shell reverso de laboratório, `TERM` está ausente ou é `dumb`, e o `tput` escreve erro na saída padrão. O par `[[ -t 1 ]]` mais `tput ... 2>/dev/null` cobre os dois casos, e o resultado é um script que fica em preto e branco em vez de encher o relatório de mensagens de erro.
+- **`dialog` e `whiptail` estão instalados e valem mais do que se imagina.** Para script de configuração com várias perguntas, `whiptail --yesno`, `--inputbox` e `--menu` produzem uma interface de texto navegável com poucas linhas — é o que o próprio `kali-tweaks` usa. Eles devolvem a escolha pelo código de saída e pela saída de erro, o que exige a inversão `3>&1 1>&2 2>&3` para capturar o valor. É estranho na primeira vez e vira idioma na segunda.
+- **`printf` é a forma certa de gerar relatório que outra ferramenta vai ler.** Alinhar colunas com espaços é bonito para humano e péssimo para máquina. Para um relatório que será processado depois, `printf '%s\t%s\t%s\n'` com tabulações — ou, melhor ainda, saída em JSON linha a linha — é o que permite ao `awk`, ao `jq` e à próxima etapa do *pipeline* funcionarem sem heurística. O Volume 11 trata desse encadeamento.
+
+> **Nota sobre a família RHEL.** Não há divergência de comportamento em `printf` nem em `read` — os dois vêm do Bash e seguem o POSIX. A diferença é indireta e vale para quem escreve script portável: em RHEL, Rocky e AlmaLinux, `/bin/sh` é o Bash em modo POSIX, e um `echo -e` ali funciona como no Bash, enquanto no Debian e no Kali o mesmo `echo -e` cai no `dash` e imprime o `-e` literal. É exatamente o cenário de abertura deste capítulo, e é a razão de a recomendação ser `printf` em qualquer script que possa atravessar as duas famílias. Já `tput` depende do pacote `ncurses` nas duas, com o mesmo cuidado de `TERM` ausente.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-io`.
+
+1. **Comprove os três comportamentos do `echo`.**
+
+   ```bash
+   mkdir -p ~/lab-io && cd ~/lab-io
+   echo    "a\tb"
+   echo -e "a\tb"
+   sh -c 'echo -e "a\tb"'
+   printf 'a\tb\n'
+   ```
+
+   Esperado: o `echo` do Bash não interpreta sem `-e`; o `sh` (dash) imprime `-e` literalmente **e** interpreta o `\t`; o `printf` faz a coisa certa sem opção nenhuma.
+
+2. **Veja o `echo` engolir um valor.**
+
+   ```bash
+   for v in "-n" "-e" "-neE" "texto normal"; do
+       printf 'valor [%s] -> echo imprime: [' "$v"; echo -n "$v"; printf ']\n'
+   done
+   ```
+
+   Esperado: `-n`, `-e` e `-neE` produzem saída vazia — foram tratados como opções. Só a última linha imprime o valor. Um nome de arquivo começado com hífen produziria o mesmo efeito.
+
+3. **Monte uma tabela alinhada.**
+
+   ```bash
+   printf '%-18s %8s %12s\n' "PROCESSO" "PID" "MEMORIA MiB"
+   printf '%-18s %8s %12s\n' "------------------" "--------" "------------"
+   ps -eo comm=,pid=,rss= --sort=-rss | head -5 | while read -r c p r; do
+       printf '%-18s %8s %12.1f\n' "$c" "$p" "$(echo "scale=1; $r/1024" | bc)"
+   done
+   ```
+
+   Esperado: uma tabela com colunas alinhadas. A largura fixa do `%-18s` garante o alinhamento independentemente do tamanho do nome, e o `%12.1f` alinha os números pela vírgula decimal.
+
+4. **Observe o reuso da cadeia de formato.**
+
+   ```bash
+   printf '%-8s %5s\n' raiz 42 var 8 home 120
+   printf '%s\n' um dois tres
+   printf '[%s]' a b c; echo
+   ```
+
+   Esperado: o primeiro comando produz três linhas com um formato de dois campos — é a @fig-anatomia-printf em ação. O segundo imprime cada argumento em sua própria linha, sem laço.
+
+5. **Nunca ponha dado na cadeia de formato.**
+
+   ```bash
+   entrada='%s %s %s valor: %d'
+   printf "$entrada"; echo
+   printf '%s\n' "$entrada"
+   ```
+
+   Esperado: a primeira linha imprime lixo (`valor: 0` e campos vazios), porque o valor foi interpretado como formato. A segunda imprime o texto tal como é.
+
+6. **Separe saída útil de mensagem de erro.**
+
+   ```bash
+   cat > mensagens.sh <<'FIM'
+   #!/usr/bin/env bash
+   erro() { printf 'ERRO: %s\n' "$*" >&2; }
+   printf 'resultado util\n'
+   erro "algo deu errado"
+   FIM
+   chmod +x mensagens.sh
+   ./mensagens.sh
+   echo "--- so o stdout ---"; ./mensagens.sh 2>/dev/null
+   echo "--- so o stderr ---"; ./mensagens.sh 2>&1 >/dev/null
+   ```
+
+   Esperado: a separação permite filtrar um ou outro. A ordem `2>&1 >/dev/null` — que parece invertida — é a forma correta de manter só o erro, e é a mecânica do @sec-cap012.
+
+7. **Prove por que o `-r` é obrigatório.**
+
+   ```bash
+   printf 'C:\\Users\\kali\n'  > caminhos.txt
+   printf 'fim\\\n'           >> caminhos.txt
+   printf 'segunda linha\n'   >> caminhos.txt
+   echo "--- sem -r ---"; while IFS= read    linha; do printf '[%s]\n' "$linha"; done < caminhos.txt
+   echo "--- com -r ---"; while IFS= read -r linha; do printf '[%s]\n' "$linha"; done < caminhos.txt
+   ```
+
+   Esperado: sem `-r`, as barras invertidas somem e a linha terminada em barra é **colada** na seguinte — duas linhas viram uma. Com `-r`, tudo é preservado.
+
+8. **Prove por que o `IFS=` é necessário.**
+
+   ```bash
+   printf '    linha indentada    \nsem indentacao\n' > indent.txt
+   echo "--- sem IFS= ---"; while read -r l; do printf '[%s]\n' "$l"; done < indent.txt
+   echo "--- com IFS= ---"; while IFS= read -r l; do printf '[%s]\n' "$l"; done < indent.txt
+   ```
+
+   Esperado: sem `IFS=`, os espaços do início e do fim desaparecem. Para um script que processa código-fonte ou arquivo de configuração indentado, isso é corrupção silenciosa.
+
+9. **Recupere a última linha sem quebra final.**
+
+   ```bash
+   printf 'a\nb\nc' > semquebra.txt      # note: sem \n no fim
+   xxd semquebra.txt | tail -1
+   echo "--- sem a guarda ---"; while IFS= read -r l; do echo "[$l]"; done < semquebra.txt
+   echo "--- com a guarda ---"; while IFS= read -r l || [[ -n "$l" ]]; do echo "[$l]"; done < semquebra.txt
+   ```
+
+   Esperado: sem a guarda, o `c` é perdido. Arquivos gerados por editores e por outras ferramentas frequentemente não terminam em quebra de linha.
+
+10. **Divida campos com `IFS` temporário.**
+
+    ```bash
+    printf '%-16s %-6s %s\n' "USUARIO" "UID" "SHELL"
+    while IFS=: read -r usuario _ uid _ _ _ shell; do
+        (( uid >= 1000 && uid < 65534 )) && printf '%-16s %-6s %s\n' "$usuario" "$uid" "$shell"
+    done < /etc/passwd
+    echo "IFS do script continua: [$(printf '%q' "$IFS")]"
+    ```
+
+    Esperado: os usuários humanos do sistema, em colunas. O `IFS` global permanece com espaço, tabulação e nova linha — o prefixo valeu só para o `read`.
+
+11. **Reproduza o laço que come a própria entrada.**
+
+    ```bash
+    printf 'linha1\nlinha2\nlinha3\n' > tres.txt
+    echo "--- com cat lendo stdin ---"
+    while IFS= read -r l; do echo "processando $l"; cat > /dev/null; done < tres.txt
+    echo "--- com < /dev/null ---"
+    while IFS= read -r l; do echo "processando $l"; cat < /dev/null > /dev/null; done < tres.txt
+    ```
+
+    Esperado: no primeiro laço só a `linha1` é processada — o `cat` leu o resto. No segundo, as três linhas passam. Troque `cat` por `ssh` e é o problema real.
+
+12. **Teste cores e a detecção de terminal.**
+
+    ```bash
+    cat > cores.sh <<'FIM'
+    #!/usr/bin/env bash
+    if [[ -t 1 ]]; then V="$(tput setaf 2)"; N="$(tput sgr0)"; else V=""; N=""; fi
+    printf '%sOK%s servico ativo\n' "$V" "$N"
+    FIM
+    chmod +x cores.sh
+    ./cores.sh
+    ./cores.sh > saida.txt; cat -v saida.txt
+    ```
+
+    Esperado: no terminal, o `OK` sai verde. Redirecionado para arquivo, o `cat -v` mostra texto limpo, **sem** os códigos `^[[32m`. Remova o `[[ -t 1 ]]` e repita para ver a diferença.
+
+13. **Escreva uma confirmação decente e limpe.**
+
+    ```bash
+    cat > confirma.sh <<'FIM'
+    #!/usr/bin/env bash
+    read -rp "Apagar tudo? [s/N] " r
+    if [[ "${r,,}" == s || "${r,,}" == sim ]]; then echo "apagaria agora"; else echo "cancelado"; fi
+    FIM
+    chmod +x confirma.sh
+    ./confirma.sh          # responda com Enter vazio
+    ./confirma.sh          # responda S
+    echo n | ./confirma.sh
+    cd ~ && rm -rf ~/lab-io
+    ```
+
+    Esperado: Enter vazio cancela (o padrão é o `N` maiúsculo), `S` e `s` confirmam. A última chamada mostra que a resposta pode vir da entrada padrão, o que permite testar o script sem digitar.
+
+## Resumo
+
+- **`echo` não é portável e não é seguro.** Bash, `dash` e `/bin/echo` discordam sobre `-e` e sobre barras invertidas, e um valor que comece com hífen é engolido como opção. Use `echo` só para texto literal simples.
+- **`printf` é o substituto correto em qualquer shell.** A cadeia de formato é reaproveitada ciclicamente até acabarem os argumentos, o que faz de `printf '%s\n' "$@"` e das tabelas com `%-20s` construções de uma linha.
+- **Dado nunca entra na cadeia de formato.** `printf "$var"` interpreta o valor como formato; a forma correta é `printf '%s\n' "$var"`. É a mesma regra de não deixar dado virar sintaxe.
+- **Mensagens de erro vão para o descritor 2** (`printf ... >&2`), o que permite ao usuário redirecionar a saída útil sem perder os avisos. Três funções curtas — `erro`, `aviso`, `info` — resolvem o assunto.
+- **Cor só quando a saída é um terminal.** `[[ -t 1 ]]` antes de definir as sequências do `tput` evita gravar códigos de escape em arquivo e evita o erro de `TERM` ausente em `cron`.
+- **`read` sem `-r` corrompe dados**: remove barras invertidas e cola linhas. Sem `IFS=`, apara espaços do início e do fim. As duas juntas são obrigatórias.
+- **O idioma canônico é `while IFS= read -r linha || [[ -n "$linha" ]]; do ... done < "$arq"`.** Redirecionamento em vez de *pipe* (para não criar subshell), `IFS=` para preservar espaços, `-r` para preservar barras invertidas e a guarda final para não perder a última linha de arquivo sem quebra.
+- **Um comando dentro do laço pode consumir a entrada do laço.** `ssh -n`, `< /dev/null` ou um descritor separado (`read -u 3 ... done 3< arquivo`) resolvem o clássico "só a primeira linha foi processada".

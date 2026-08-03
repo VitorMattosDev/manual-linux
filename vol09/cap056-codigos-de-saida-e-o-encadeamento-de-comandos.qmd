@@ -1,3 +1,463 @@
 # Códigos de saída e o encadeamento de comandos {#sec-cap056}
 
-*(em elaboracao)*
+O script de publicação tinha duas linhas no meio, e as duas eram corretas isoladamente:
+
+```bash
+cd /var/www/releases/atual
+rm -rf *
+```
+
+Na semana em que a estrutura de diretórios mudou e `atual` virou um link simbólico quebrado, o `cd` falhou. Escreveu a mensagem de erro na saída de erro, devolveu código 1, e o script — que não olhava para código nenhum — executou a linha seguinte. O `rm -rf *` rodou no diretório em que o script tinha sido iniciado.
+
+Uma quebra de linha entre dois comandos significa exatamente o mesmo que um ponto e vírgula: *execute o próximo, aconteça o que acontecer*. Trocar essa quebra de linha por `&&` teria transformado o desastre em uma mensagem de erro.
+
+Este capítulo é sobre o número que todo comando devolve ao terminar, sobre o que fazer com ele, e sobre os operadores que ligam comandos entre si de acordo com ele.
+
+## O código de saída
+
+Todo processo, ao terminar, devolve ao pai um inteiro de 0 a 255. A convenção do Unix é a que causa mais estranheza a quem vem de linguagens onde `1` é verdadeiro:
+
+> **0 significa sucesso. Qualquer outro valor significa alguma forma de falha.**
+
+A lógica é simples quando se pensa em termos de erro: só há um jeito de dar certo, e muitos de dar errado — o número diz *qual*.
+
+```bash
+ls /etc >/dev/null; echo "$?"        # 0
+ls /naoexiste 2>/dev/null; echo "$?" # 2
+grep xyz /etc/hostname; echo "$?"    # 1  (nao encontrou)
+comando-inventado; echo "$?"         # 127 (nao encontrado)
+```
+
+A variável `$?` guarda o código do **último comando concluído** e é sobrescrita a cada comando — inclusive pelo `echo` que a imprime. Se você vai usá-la duas vezes, guarde-a:
+
+```bash
+comando_importante
+rc=$?
+(( rc == 0 )) || printf 'falhou com codigo %d\n' "$rc" >&2
+```
+
+## O mapa dos 256 valores
+
+Nem todo número é arbitrário. Existem faixas com significado convencionado, e conhecê-las acelera muito o diagnóstico:
+
+::: {#fig-faixas-codigo-saida}
+```{.tikz}
+%%| filename: faixas-dos-codigos-de-saida
+%%| alt: As faixas convencionadas dos codigos de saida do Unix, de 0 a 255, com o significado de cada uma
+\begin{tikzpicture}[
+    fx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum height=1.0cm,text width=2.55cm},
+    ok/.style={fx,draw=manualgreen,fill=manualgreen!14},
+    er/.style={fx,draw=manualred,fill=manualred!11},
+    am/.style={fx,draw=manualyellow,fill=manualyellow!17},
+    cz/.style={fx,draw=manualgray,fill=manualgray!11},
+    az/.style={fx,draw=manualblue,fill=manualblue!12},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    lb/.style={font=\scriptsize\ttfamily,manualgray,align=center}
+  ]
+  \node[ok] (a) at (0,3.2)    {\texttt{0}\\[2pt]\textbf{sucesso}};
+  \node[er] (b) at (2.75,3.2) {\texttt{1}\\[2pt]erro genérico};
+  \node[er] (c) at (5.5,3.2)  {\texttt{2}\\[2pt]uso incorreto\\\scriptsize (sintaxe, opção inválida)};
+  \node[am] (d) at (8.25,3.2) {\texttt{64--78}\\[2pt]convenção do\\\texttt{sysexits.h}};
+  \node[cz] (e) at (11.0,3.2) {\texttt{126}\\[2pt]encontrado, mas\\não executável};
+  \node[cz] (f) at (13.75,3.2){\texttt{127}\\[2pt]comando não\\encontrado};
+
+  \node[az] (g) at (2.75,1.35) {\texttt{128+N}\\[2pt]morto pelo sinal \texttt{N}};
+  \node[az] (h) at (5.5,1.35)  {\texttt{130}\\[2pt]\texttt{Ctrl+C} (SIGINT, 2)};
+  \node[az] (i) at (8.25,1.35) {\texttt{137}\\[2pt]\texttt{SIGKILL} (9)\\\scriptsize tipicamente o OOM killer};
+  \node[az] (j) at (11.0,1.35) {\texttt{143}\\[2pt]\texttt{SIGTERM} (15)\\\scriptsize parada normal de serviço};
+  \node[cz] (k) at (13.75,1.35){\texttt{255}\\[2pt]fora de faixa\\ou erro do \texttt{ssh}};
+
+  \node[nt,text width=14.9cm] at (6.9,-0.15) {As faixas de 126 a 143 são as que economizam mais tempo de diagnóstico. Um serviço que sai com \textbf{137} não teve um defeito de lógica: foi morto pelo kernel, quase sempre por falta de memória --- procure no \texttt{dmesg}, não no código. Um \textbf{127} não é falha do programa, é o \texttt{PATH} sem o diretório certo. E um \textbf{126} é o bit de execução ausente ou o \emph{shebang} errado. Os valores de 64 a 78 vêm do cabeçalho \texttt{sysexits.h} (\texttt{EX\_USAGE}, \texttt{EX\_NOINPUT}, \texttt{EX\_NOPERM}) e são respeitados por parte das ferramentas de sistema, sobretudo servidores de correio.};
+\end{tikzpicture}
+```
+As faixas convencionadas de código de saída (o eixo não está em escala).
+:::
+
+```bash
+# reproduza cada faixa
+bash -c 'exit 0';          echo "$?"    # 0
+bash -c 'exit 42';         echo "$?"    # 42
+touch naoexec.sh; ./naoexec.sh 2>/dev/null; echo "$?"    # 126
+comando-que-nao-existe 2>/dev/null;      echo "$?"       # 127
+bash -c 'kill -TERM $$';                 echo "$?"       # 143
+bash -c 'exit 256';                      echo "$?"       # 0  (deu a volta!)
+```
+
+A última linha guarda uma armadilha real: o código é um byte. `exit 256` vira 0, e `exit -1` vira 255. Um script que use um contador de erros como código de saída pode reportar sucesso ao acumular exatamente 256 falhas.
+
+## `exit` e códigos próprios
+
+```bash
+exit 0        # sucesso explicito
+exit 1        # falha
+exit          # devolve o $? do ultimo comando executado
+```
+
+O `exit` sem argumento é útil e pouco usado: ele propaga o código do último comando, o que é o comportamento certo no fim de um bloco de tratamento de erro.
+
+Um script que será chamado por outro deve documentar os próprios códigos, e a forma de fazer isso é dar nome a eles:
+
+```bash
+#!/usr/bin/env bash
+# Codigos de saida:
+#   0  sucesso
+#   1  erro generico
+#   2  argumentos invalidos
+#   3  dependencia ausente
+#   4  sem permissao
+
+readonly EX_OK=0 EX_ERRO=1 EX_USO=2 EX_DEP=3 EX_PERM=4
+
+command -v jq >/dev/null || { printf 'jq nao instalado\n' >&2; exit "$EX_DEP"; }
+(( $# >= 1 ))            || { printf 'uso: %s ARQUIVO\n' "$0" >&2; exit "$EX_USO"; }
+```
+
+Quem chama pode então distinguir "faltou dependência" de "argumento errado" — coisa impossível se tudo sair com 1.
+
+## Os operadores de encadeamento
+
+```bash
+cmd1 ; cmd2      # executa cmd2 SEMPRE (a quebra de linha e equivalente)
+cmd1 && cmd2     # executa cmd2 SO SE cmd1 teve sucesso
+cmd1 || cmd2     # executa cmd2 SO SE cmd1 falhou
+cmd1 &           # executa cmd1 em segundo plano e segue adiante
+```
+
+O `&&` e o `||` avaliam em **curto-circuito**: o segundo comando só é executado se o resultado do primeiro ainda não determinou a resposta. É exatamente por isso que eles servem de controle de fluxo.
+
+```bash
+cd /var/www/releases/atual && rm -rf ./*      # a correcao do cenario de abertura
+mkdir -p "$DESTINO" || { erro "nao consegui criar $DESTINO"; exit 1; }
+command -v nmap >/dev/null || exit 3
+[[ -f "$CONF" ]] && source "$CONF"
+```
+
+::: {#fig-curto-circuito}
+```{.tikz}
+%%| filename: curto-circuito-e-a-armadilha-do-ternario
+%%| alt: Fluxo do curto-circuito de && e || e a armadilha de usar A e B ou C como se fosse if-then-else
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=2.2cm,minimum height=0.9cm},
+    nd/.style={bx,draw=manualgray,fill=manualgray!11},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    er/.style={bx,draw=manualred,fill=manualred!11},
+    ti/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    el/.style={font=\scriptsize,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={thick,-{Stealth[length=4pt]}}
+  ]
+  \node[ti,manualgreen] at (-0.6,6.2) {o caso feliz: \texttt{A \&\& B || C}, com \texttt{A} falhando};
+  \node[nd] (a1) at (0.5,5.1) {\texttt{A}};
+  \node[er] (b1) at (5.1,5.1) {\texttt{B} \textbf{pulado}};
+  \node[ok] (c1) at (9.7,5.1) {\texttt{C} executa};
+  \draw[fl,manualred]   (a1) -- node[above,el,manualred]{falhou} (b1);
+  \draw[fl,manualgreen] (b1) -- node[above,el,manualgray]{o \texttt{||} vê a falha} (c1);
+
+  \node[ti,manualred] at (-0.6,3.5) {a armadilha: \texttt{A \&\& B || C}, com \texttt{A} passando e \texttt{B} falhando};
+  \node[nd] (a2) at (0.5,2.4) {\texttt{A}};
+  \node[ok] (b2) at (5.1,2.4) {\texttt{B} executa\\e \textbf{falha}};
+  \node[er] (c2) at (9.7,2.4) {\texttt{C} executa\\\textbf{também}};
+  \draw[fl,manualgreen] (a2) -- node[above,el,manualgreen]{\texttt{A} teve sucesso} (b2);
+  \draw[fl,manualred]   (b2) -- node[above,el,manualred]{o \texttt{||} olha o \texttt{B}} (c2);
+
+  \node[ti,manualblue] at (11.9,3.5) {a forma correta};
+  \node[nt,text width=3.4cm,align=left] at (13.4,2.25) {\texttt{if A; then}\\\hspace*{0.4cm}\texttt{B}\\\texttt{else}\\\hspace*{0.4cm}\texttt{C}\\\texttt{fi}};
+
+  \node[nt,text width=14.9cm] at (6.9,0.55) {O \texttt{||} não faz ideia de que o \texttt{\&\&} existiu: ele apenas observa o código de saída do que veio imediatamente antes. Enquanto \texttt{B} não puder falhar --- \texttt{echo}, atribuição, \texttt{true} --- a construção \texttt{A \&\& B || C} funciona como um ternário e é idiomática. No momento em que \texttt{B} passa a ser algo que pode dar errado, ela vira uma fonte de bugs silenciosos, e a resposta é escrever o \texttt{if} por extenso.};
+\end{tikzpicture}
+```
+O curto-circuito de `&&` e `||`, e por que a cadeia não é um operador ternário.
+:::
+
+Para agrupar mais de um comando num dos lados, há duas construções que não são intercambiáveis:
+
+```bash
+comando || { erro "falhou"; exit 1; }     # chaves: no shell ATUAL
+comando || ( erro "falhou"; exit 1 )      # parenteses: SUBSHELL - o exit nao sai do script!
+```
+
+As chaves exigem espaço depois de `{`, ponto e vírgula (ou quebra de linha) antes de `}`, e são o que você quer na imensa maioria dos casos. Os parênteses criam um subshell, o que faz o `exit` encerrar apenas o subshell — o script continua, e o erro que deveria abortá-lo não aborta nada.
+
+## O código de saída de um *pipeline*
+
+Por padrão, o código de saída de um *pipeline* é o do **último** comando. Todos os anteriores são ignorados:
+
+```bash
+false | true; echo "$?"                    # 0  - a falha do false sumiu
+tar czf - /naoexiste | gzip > saida.gz; echo "$?"   # 0, com o tar tendo falhado
+```
+
+Esse é o modo de falha do backup que reporta sucesso e produz um arquivo vazio. Existem duas soluções, e vale conhecer as duas:
+
+```bash
+# 1. pipefail: o pipeline devolve o codigo do PRIMEIRO comando que falhou
+set -o pipefail
+false | true; echo "$?"                    # 1
+
+# 2. PIPESTATUS: o array com o codigo de CADA etapa
+false | true | false
+echo "${PIPESTATUS[@]}"                    # 1 0 1
+(( PIPESTATUS[0] == 0 )) || echo "a primeira etapa falhou"
+```
+
+O `PIPESTATUS` é sobrescrito pelo comando seguinte, exatamente como `$?`, então copie-o antes de usar:
+
+```bash
+cmd1 | cmd2 | cmd3
+estados=("${PIPESTATUS[@]}")
+for i in "${!estados[@]}"; do
+    (( estados[i] == 0 )) || printf 'etapa %d falhou com %d\n' "$i" "${estados[i]}" >&2
+done
+```
+
+## `set -e` e o que ele não pega
+
+O `set -e` (ou `set -o errexit`) manda o shell abortar assim que um comando falha. É o interruptor mais valioso do script defensivo — e o mais mal-entendido, porque tem exceções que **não** são arbitrárias: ele ignora falhas em posições onde a falha é obviamente parte da lógica.
+
+```bash
+set -e
+
+if comando_que_falha; then :; fi     # ignorado: e a condicao de um if
+comando_que_falha || true            # ignorado: lado esquerdo de ||
+comando_que_falha && outro           # ignorado: lado esquerdo de &&
+! comando_que_falha                  # ignorado: negado
+while comando_que_falha; do :; done  # ignorado: condicao de laco
+
+comando_que_falha                    # AQUI o script aborta
+```
+
+Há duas consequências práticas que pegam quase todo mundo:
+
+**Uma função chamada dentro de `if` perde o `set -e` inteiro.** Se `validar` é uma função e você escreve `if validar; then`, nenhuma falha **dentro** de `validar` aborta nada — a função inteira roda sob a exceção, até o fim, e só o código de retorno final é avaliado.
+
+**O último comando de um `&&` encadeado no fim de uma função vira o retorno dela.** Uma função que termina em `(( contador++ ))` com o contador em zero retorna 1, e quem a chamou vê uma falha que nunca existiu.
+
+```bash
+# armadilha classica
+processar() {
+    local n=0
+    for f in "$@"; do n=$((n+1)); done
+    (( n ))          # ULTIMO comando: retorna 1 se n for 0
+}
+processar || echo "a funcao 'falhou' apenas por nao ter recebido arquivos"
+```
+
+A recomendação de conjunto — `set -euo pipefail` no topo, mais tratamento explícito onde a falha é esperada — continua sendo o melhor padrão disponível, desde que se saiba que ele não é uma rede completa. O Volume 12 retoma o assunto com `trap` e as técnicas de tratamento de erro.
+
+## `true`, `false` e o comando nulo
+
+Três comandos existem apenas pelo código de saída:
+
+```bash
+true      # nao faz nada, devolve 0
+false     # nao faz nada, devolve 1
+:         # o comando nulo: nao faz nada, devolve 0 (mais rapido que true)
+```
+
+Eles aparecem em construções idiomáticas:
+
+```bash
+while true; do ...; done              # laco infinito
+comando_opcional || true              # "esta falha e aceitavel"
+if condicao; then : ; else acao; fi   # corpo vazio onde a sintaxe exige um comando
+: "${VAR:?a variavel VAR e obrigatoria}"   # forcar a avaliacao da expansao
+```
+
+O `|| true` é o idioma para dizer explicitamente "sei que isto pode falhar e não me importo" — e escrevê-lo é melhor do que desligar o `set -e`, porque documenta a intenção na linha.
+
+## Sinais e o código 128 mais N
+
+Quando um processo é encerrado por um sinal (@sec-cap029), o código de saída visto pelo shell é `128 + número do sinal`:
+
+```bash
+kill -l | head -3                     # a lista dos sinais e seus numeros
+bash -c 'sleep 30' & pid=$!; sleep 0.3; kill -INT "$pid"; wait "$pid"; echo "$?"   # 130
+bash -c 'sleep 30' & pid=$!; sleep 0.3; kill -KILL "$pid"; wait "$pid"; echo "$?"  # 137
+```
+
+Os três que aparecem sempre: **130** (`Ctrl+C`, SIGINT), **143** (SIGTERM, a parada limpa que o systemd envia) e **137** (SIGKILL). O 137 é o mais informativo dos três: quase sempre significa que o *OOM killer* do kernel matou o processo por falta de memória, e a confirmação está no `dmesg` ou no `journalctl -k`.
+
+## 🐉 No Kali
+
+- **Muita ferramenta usa código diferente de zero para "não encontrei nada", e isso não é erro.** O `grep` devolve 1 quando não casa nada e 2 quando houve erro de verdade — distinguir os dois é o que separa um script correto de um que trata ausência de resultado como falha. O mesmo vale para `diff` (1 = arquivos diferentes), `cmp` e `find` (que devolve 0 mesmo sem achar nada). Sob `set -e`, um `grep` que não casa **aborta o script**, e a correção é `grep ... || true` ou testar explicitamente com `if`.
+- **`nmap` sai com 0 mesmo quando o alvo não responde.** Para o `nmap`, "varri e não encontrei porta aberta" é sucesso. Um script que decide o passo seguinte pelo código de saída do `nmap` vai decidir errado; o caminho correto é a saída estruturada (`-oX` ou `-oG`) analisada depois. Vale a mesma disciplina para `nikto`, `gobuster` e `hydra`, cujos códigos variam entre versões num rolling.
+- **`systemctl is-active` e `is-enabled` são feitos para serem usados por código de saída**, não por texto. `systemctl is-active --quiet ssh && ...` é mais robusto do que comparar a saída com `"active"`, porque o texto pode mudar de idioma e a mensagem `activating` existe. É o padrão certo para script que verifica serviço.
+- **Código 255 vindo de `ssh` é ambíguo, e isso importa em automação.** O `ssh` devolve o código do comando remoto — mas usa **255** para os próprios erros (falha de autenticação, host inalcançável). Como o comando remoto também poderia sair com 255, distinguir exige olhar a saída de erro. Em laço sobre uma lista de hosts, tratar 255 como "problema de conexão" e seguir para o próximo, registrando o host, é o comportamento razoável.
+- **Em automação de teste autorizado, o código de saída é parte da trilha de auditoria.** Registrar, para cada alvo, o comando executado, o horário e o código devolvido produz um registro que responde depois à pergunta "o que exatamente foi feito e em quê". Além de boa engenharia, é o que sustenta a demonstração de que o trabalho ficou dentro do escopo contratado — a mesma preocupação da Lei 12.737/2012 vista pelo lado de quem tem autorização e precisa comprová-la.
+
+> **Nota sobre a família RHEL.** As convenções de código de saída vêm do POSIX e do kernel, e são idênticas. A diferença prática está nas ferramentas: em RHEL, Rocky e AlmaLinux, o `dnf` distingue mais códigos que o `apt` do Debian — notavelmente **100**, que significa "há atualizações disponíveis" no `dnf check-update` e é sucesso, não falha. Um script de verificação de patches escrito para o `apt` e migrado sem revisão trata esse 100 como erro e reporta falha em toda máquina com atualização pendente. Vale conferir a seção `Exit codes` da página de manual de cada gerenciador antes de encadear com `&&`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-exit`.
+
+1. **Colete códigos de saída conhecidos.**
+
+   ```bash
+   mkdir -p ~/lab-exit && cd ~/lab-exit
+   ls /etc >/dev/null;             printf 'ls valido        : %d\n' "$?"
+   ls /naoexiste 2>/dev/null;      printf 'ls invalido      : %d\n' "$?"
+   grep -q raiz /etc/hostname;     printf 'grep sem achar   : %d\n' "$?"
+   touch semx.sh; ./semx.sh 2>/dev/null; printf 'sem bit x        : %d\n' "$?"
+   comando-inventado 2>/dev/null;  printf 'nao encontrado   : %d\n' "$?"
+   ```
+
+   Esperado: `0`, `2`, `1`, `126` e `127` — as faixas da @fig-faixas-codigo-saida, obtidas em cinco linhas.
+
+2. **Veja o código dar a volta em 256.**
+
+   ```bash
+   for n in 0 1 42 255 256 257 300; do
+       bash -c "exit $n"; printf 'exit %-4d -> $? = %d\n' "$n" "$?"
+   done
+   ```
+
+   Esperado: `256` vira `0` e `257` vira `1`. Um contador de erros usado como código de saída é uma má ideia por este motivo.
+
+3. **Reproduza o desastre de abertura, com segurança.**
+
+   ```bash
+   mkdir -p importante && touch importante/naoapague.txt
+   cd importante
+   (cd /diretorio/que/nao/existe; echo "COM ; -> executaria rm aqui: $PWD")
+   (cd /diretorio/que/nao/existe && echo "COM && -> nunca chega aqui")
+   echo "arquivo intacto: $(ls)"
+   cd ..
+   ```
+
+   Esperado: a linha com `;` executa o segundo comando no diretório errado; a linha com `&&` não executa nada. Uma quebra de linha entre os dois comandos teria o mesmo efeito do `;`.
+
+4. **Observe o curto-circuito.**
+
+   ```bash
+   true  && echo "A: && depois de sucesso"
+   false && echo "B: nunca aparece"
+   false || echo "C: || depois de falha"
+   true  || echo "D: nunca aparece"
+   ```
+
+   Esperado: aparecem apenas as linhas A e C.
+
+5. **Caia na armadilha do falso ternário.**
+
+   ```bash
+   echo "--- B nao pode falhar: funciona como ternario ---"
+   true  && echo "sucesso" || echo "falha"
+   false && echo "sucesso" || echo "falha"
+
+   echo "--- B pode falhar: os dois ramos executam ---"
+   true && { echo "ramo do sucesso"; false; } || echo "ramo da falha TAMBEM executou"
+   ```
+
+   Esperado: no segundo bloco, as duas mensagens aparecem. É a @fig-curto-circuito, linha inferior — e é por isso que `if` por extenso é a forma correta quando o comando do meio pode falhar.
+
+6. **Compare chaves e parênteses.**
+
+   ```bash
+   cat > grupos.sh <<'FIM'
+   #!/usr/bin/env bash
+   false || ( echo "no subshell"; exit 1 )
+   echo "PARENTESES: o script continuou (o exit nao saiu daqui)"
+   false || { echo "no shell atual"; exit 1; }
+   echo "CHAVES: esta linha nunca aparece"
+   FIM
+   chmod +x grupos.sh; ./grupos.sh; echo "codigo final: $?"
+   ```
+
+   Esperado: a mensagem sobre parênteses aparece, a sobre chaves não. O `exit` dentro de `( )` encerra só o subshell.
+
+7. **Perca e recupere a falha num *pipeline*.**
+
+   ```bash
+   false | true;                       printf 'sem pipefail : %d\n' "$?"
+   ( set -o pipefail; false | true );  printf 'com pipefail : %d\n' "$?"
+   false | true | false
+   printf 'PIPESTATUS   : %s\n' "${PIPESTATUS[*]}"
+   ```
+
+   Esperado: `0`, depois `1`, depois `1 0 1`. O `PIPESTATUS` diz exatamente qual etapa falhou.
+
+8. **Faça um backup falhar em silêncio, e depois não falhar.**
+
+   ```bash
+   tar czf - /diretorio/inexistente 2>/dev/null | gzip > b1.gz; printf 'sem pipefail : %d\n' "$?"
+   ls -l b1.gz
+   ( set -o pipefail; tar czf - /diretorio/inexistente 2>/dev/null | gzip > b2.gz ); printf 'com pipefail : %d\n' "$?"
+   ```
+
+   Esperado: sem `pipefail`, código 0 e um arquivo praticamente vazio — o backup que "deu certo". Com `pipefail`, o erro aparece.
+
+9. **Mapeie as exceções do `set -e`.**
+
+   ```bash
+   cat > exceptions.sh <<'FIM'
+   #!/usr/bin/env bash
+   set -e
+   if false; then :; fi ;      echo "1: if      - sobreviveu"
+   false || true ;             echo "2: || true - sobreviveu"
+   false && echo nada ;        echo "3: &&      - sobreviveu"
+   ! false ;                   echo "4: !       - sobreviveu"
+   while false; do :; done ;   echo "5: while   - sobreviveu"
+   false
+   echo "6: esta linha NUNCA aparece"
+   FIM
+   chmod +x exceptions.sh; ./exceptions.sh; echo "codigo final: $?"
+   ```
+
+   Esperado: as cinco primeiras mensagens aparecem, a sexta não, e o código final é 1. As exceções não são caprichos: em todas elas a falha faz parte da lógica escrita.
+
+10. **Veja a função que retorna falha sem ter falhado.**
+
+    ```bash
+    processar() { local n=0; for _ in "$@"; do n=$((n+1)); done; (( n )); }
+    processar a b c ; echo "com 3 argumentos: $?"
+    processar        ; echo "com 0 argumentos: $?"
+    processar2() { local n=0; for _ in "$@"; do n=$((n+1)); done; (( n )); return 0; }
+    processar2       ; echo "com return 0 explicito: $?"
+    ```
+
+    Esperado: `0`, depois `1`, depois `0`. O `(( n ))` no fim virou o valor de retorno. Um `return` explícito no fim de toda função elimina essa classe de surpresa.
+
+11. **Observe os códigos de sinal.**
+
+    ```bash
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -INT  "$p"; wait "$p"; echo "SIGINT  -> $?"
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -TERM "$p"; wait "$p"; echo "SIGTERM -> $?"
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -KILL "$p"; wait "$p"; echo "SIGKILL -> $?"
+    ```
+
+    Esperado: `130`, `143` e `137`. Encontrar um 137 no log de um serviço é motivo para olhar o `dmesg` em busca do OOM killer, não para revisar a lógica do programa.
+
+12. **Escreva um script com códigos próprios e limpe.**
+
+    ```bash
+    cat > verifica.sh <<'FIM'
+    #!/usr/bin/env bash
+    # 0 ok | 2 uso | 3 dependencia | 4 arquivo ilegivel
+    set -euo pipefail
+    readonly EX_USO=2 EX_DEP=3 EX_LEITURA=4
+    command -v jq >/dev/null || { printf 'falta jq\n' >&2; exit "$EX_DEP"; }
+    (( $# == 1 ))            || { printf 'uso: %s ARQUIVO\n' "$0" >&2; exit "$EX_USO"; }
+    [[ -r "$1" ]]            || { printf 'nao consigo ler %s\n' "$1" >&2; exit "$EX_LEITURA"; }
+    printf 'ok: %s tem %d linhas\n' "$1" "$(wc -l < "$1")"
+    FIM
+    chmod +x verifica.sh
+    ./verifica.sh                 ; echo "-> $?"
+    ./verifica.sh /naoexiste      ; echo "-> $?"
+    ./verifica.sh /etc/hostname   ; echo "-> $?"
+    cd ~ && rm -rf ~/lab-exit
+    ```
+
+    Esperado: `2`, `4` e `0` — três situações distintas, distinguíveis por quem chamar o script. Se o `jq` não estiver instalado, o primeiro código será `3`.
+
+## Resumo
+
+- **Zero é sucesso; qualquer outro valor é falha.** `$?` guarda o código do último comando concluído e é sobrescrito pelo comando seguinte — copie-o numa variável se for usá-lo mais de uma vez.
+- **As faixas têm significado:** 1 é erro genérico, 2 é uso incorreto, 126 é "achei mas não executa", 127 é "não achei", e `128+N` é morte por sinal (130 para `Ctrl+C`, 143 para SIGTERM, 137 para SIGKILL — quase sempre o OOM killer).
+- **O código é um byte.** `exit 256` vira 0 e `exit -1` vira 255; contador de erros não serve como código de saída.
+- **`;` e a quebra de linha executam o próximo comando aconteça o que acontecer.** `&&` e `||` avaliam em curto-circuito e são a forma correta de ligar comandos dependentes — `cd DIR && rm -rf ./*` em vez de duas linhas soltas.
+- **`A && B || C` não é um operador ternário.** Se `A` passa e `B` falha, `C` executa também. Só é seguro quando `B` não puder falhar; fora disso, escreva o `if` por extenso.
+- **`{ ...; }` agrupa no shell atual; `( ... )` cria subshell** — e um `exit` dentro dos parênteses encerra só o subshell, deixando o script seguir.
+- **Um *pipeline* devolve o código do último comando.** `set -o pipefail` faz valer o do primeiro que falhou; `PIPESTATUS` traz o de cada etapa. Sem um dos dois, um `tar | gzip` com o `tar` falhando reporta sucesso.
+- **`set -e` tem exceções deliberadas**: condição de `if` e de `while`, lado esquerdo de `&&` e `||`, e comando negado com `!`. Uma função chamada dentro de `if` roda inteira sem `errexit`, e um `(( n ))` no fim de função vira o valor de retorno dela.
+- **`|| true` documenta a falha aceitável** melhor do que desligar o `set -e`, e ferramentas como `grep` e `diff` usam código diferente de zero para resultados que não são erro.

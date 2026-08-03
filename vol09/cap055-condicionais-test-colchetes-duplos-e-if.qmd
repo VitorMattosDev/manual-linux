@@ -1,3 +1,472 @@
 # Condicionais: test, colchetes duplos e if {#sec-cap055}
 
-*(em elaboracao)*
+O script de rotação de logs tinha uma verificação antes de agir, e a verificação parecia impecável:
+
+```bash
+if [ -f $ARQUIVO ]; then
+    gzip "$ARQUIVO"
+    rm -f "$ARQUIVO"
+fi
+```
+
+Na noite em que uma mudança de configuração deixou `ARQUIVO` vazio, o teste **passou**. O `gzip` reclamou, o `rm -f` não reclamou de nada — `-f` engole o erro —, e o script seguiu em frente com a impressão de sucesso. A condição que existia justamente para impedir isso disse "sim, o arquivo existe" a respeito de um nome vazio.
+
+A explicação não está no `if` nem no `-f`. Está no fato de que `[` **não é sintaxe do shell: é um comando**, que recebe argumentos como qualquer outro — e uma variável vazia sem aspas não vira um argumento vazio, ela simplesmente desaparece antes de o comando ser chamado.
+
+## `[` é um programa, e isso explica tudo
+
+```bash
+type [                 # [ is a shell builtin
+ls -l /usr/bin/[       # e tambem existe como binario de verdade
+type test              # test is a shell builtin
+help test | head -5
+```
+
+O nome do comando é literalmente o colchete de abertura. O colchete de fechamento é o **último argumento obrigatório** dele, existindo só para que a linha fique visualmente equilibrada. Isso torna imediatas duas regras que de outro modo pareceriam arbitrárias:
+
+- **Os espaços em volta dos colchetes não são opcionais.** `[-f arq]` é o shell procurando um comando chamado `[-f`. É a mesma separação por espaço do @sec-cap006.
+- **Tudo dentro passa pelas seis etapas de expansão do @sec-cap053** antes de o comando ser executado. Divisão em palavras inclusive.
+
+::: {#fig-colchete-e-comando}
+```{.tikz}
+%%| filename: por-que-o-teste-vazio-passa
+%%| alt: Tres formas de testar um arquivo com variavel vazia, mostrando os argumentos que o comando test recebe em cada caso e o resultado
+\begin{tikzpicture}[
+    ag/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm},
+    nu/.style={ag,draw=manualgray,fill=manualgray!10},
+    ru/.style={ag,draw=manualred,fill=manualred!12},
+    ok/.style={ag,draw=manualgreen,fill=manualgreen!13},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=6.0cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (-0.4,5.9) {ARQUIVO=""\quad \# vazia};
+
+  \node[cd,manualred] at (-0.4,5.1) {[ -f \$ARQUIVO ]};
+  \node[ru,minimum width=1.0cm] at (4.3,5.1) {[};
+  \node[ru,minimum width=1.0cm] at (5.4,5.1) {-f};
+  \node[ru,minimum width=1.0cm] at (6.5,5.1) {]};
+  \node[ex,manualred] at (7.6,5.1) {\textbf{1 argumento útil.} A regra do POSIX para um argumento é ``verdadeiro se a cadeia não for vazia'' --- e \texttt{-f} não é vazia. \textbf{Passa.}};
+
+  \node[cd,manualgreen] at (-0.4,3.35) {[ -f "\$ARQUIVO" ]};
+  \node[ok,minimum width=1.0cm] at (4.3,3.35) {[};
+  \node[ok,minimum width=1.0cm] at (5.4,3.35) {-f};
+  \node[ok,minimum width=1.0cm] at (6.5,3.35) {};
+  \node[ok,minimum width=1.0cm] at (7.6,3.35) {]};
+  \node[ex,manualgreen] at (8.7,3.35) {\textbf{2 argumentos.} Agora é mesmo um teste de arquivo, sobre um nome vazio. \textbf{Falha}, como deveria.};
+
+  \node[cd,manualgreen] at (-0.4,1.6) {[[ -f \$ARQUIVO ]]};
+  \node[ok,minimum width=3.3cm] at (5.95,1.6) {palavra-chave do shell};
+  \node[ex,manualgreen] at (8.7,1.6) {\textbf{Não é um comando.} O shell analisa o conteúdo sem dividir em palavras --- as aspas ficam dispensáveis. \textbf{Falha}, como deveria.};
+
+  \node[nt,text width=14.9cm] at (7.0,0.25) {A linha vermelha é um comportamento correto do \texttt{test} sendo aplicado a uma linha que já havia perdido a informação. Quando o \texttt{[} é finalmente executado, não existe mais nenhum vestígio de que houve ali uma variável: o shell entregou dois argumentos, e o \texttt{test} fez o que o POSIX manda fazer com dois argumentos. Daí a regra dupla deste capítulo --- aspas em toda expansão dentro de \texttt{[ ]}, e \texttt{[[ ]]} sempre que o script for Bash.};
+\end{tikzpicture}
+```
+Por que um teste de existência de arquivo aprova um nome vazio.
+:::
+
+## `if`, e o que ele realmente avalia
+
+O `if` não avalia uma expressão booleana: ele **executa um comando** e olha o código de saída. Zero significa sucesso, portanto verdadeiro; qualquer outro valor é falso. O @sec-cap056 trata dessa convenção em detalhe, mas a consequência já importa aqui — qualquer comando serve de condição:
+
+```bash
+if grep -q "^root:" /etc/passwd; then      # sem [ ], sem test
+    echo "usuario root presente"
+fi
+
+if systemctl is-active --quiet ssh; then
+    echo "ssh no ar"
+fi
+
+if ping -c1 -W2 10.0.0.1 >/dev/null 2>&1; then
+    echo "responde"
+fi
+```
+
+Essas formas são melhores do que capturar a saída e testá-la com `[`: são mais curtas, não criam subshell e não dependem do formato do texto que a ferramenta imprime.
+
+A estrutura completa:
+
+```bash
+if condicao1; then
+    ...
+elif condicao2; then
+    ...
+else
+    ...
+fi
+```
+
+O ponto e vírgula antes do `then` existe porque `then` precisa começar um comando novo — em várias linhas ele é dispensável:
+
+```bash
+if condicao
+then
+    ...
+fi
+```
+
+## Quatro formas de testar, e quando usar cada uma
+
+| Forma | Natureza | Use para |
+|---|---|---|
+| `[ ... ]` / `test ...` | comando externo/embutido, POSIX | scripts com `#!/bin/sh` que precisam ser portáveis |
+| `[[ ... ]]` | palavra-chave do shell (Bash, Zsh, ksh) | **o padrão em script Bash**: cadeias, arquivos, padrões, regex |
+| `(( ... ))` | contexto aritmético | comparação e teste de números |
+| comando direto | qualquer programa | quando o próprio comando já responde à pergunta |
+
+: As formas de escrever uma condição {#tbl-formas-teste}
+
+O que `[[ ]]` faz melhor que `[ ]`, item por item:
+
+```bash
+# 1. nao divide em palavras nem faz globbing: aspas ficam opcionais
+arq="meu arquivo.txt"
+[ -f $arq ]      && echo ok      # ERRO: too many arguments
+[[ -f $arq ]]    && echo ok      # funciona
+
+# 2. && e || de verdade, sem escapes
+[ "$a" = x -a "$b" = y ]         # -a e obsoleto e ambiguo
+[[ $a == x && $b == y ]]         # claro e seguro
+
+# 3. comparacao com PADRAO do lado direito
+[[ $arquivo == *.log ]]          # casa com qualquer .log
+[[ $host == 192.168.* ]]
+
+# 4. expressao regular
+[[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && echo "parece um IPv4"
+
+# 5. comparacao de cadeias com < e > sem escapar
+[[ $a < $b ]]                    # em [ ], seria [ "$a" \< "$b" ]
+```
+
+O item 3 esconde uma regra que confunde muito: **o lado direito de `==` dentro de `[[ ]]` é um padrão, não um texto**. Se você quer comparação literal, cite o lado direito:
+
+```bash
+padrao="*.log"
+[[ "arquivo.log" == $padrao   ]] && echo "casou como padrao"   # verdadeiro
+[[ "arquivo.log" == "$padrao" ]] && echo "igual ao texto"      # falso
+```
+
+O mesmo vale para o `=~`: **a expressão regular não deve ir entre aspas**, ou passa a ser comparada literalmente. Quando ela é complexa, o modo limpo é guardá-la numa variável:
+
+```bash
+re='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+[[ $ip =~ $re ]] && echo "casou"
+echo "${BASH_REMATCH[0]}"     # o trecho inteiro que casou
+echo "${BASH_REMATCH[1]}"     # o primeiro grupo entre parenteses
+```
+
+O array `BASH_REMATCH` é preenchido a cada `=~` bem-sucedido e é a forma mais direta de extrair partes de uma cadeia sem chamar `sed` ou `awk`.
+
+## O mapa dos operadores
+
+::: {#fig-mapa-operadores}
+```{.tikz}
+%%| filename: mapa-dos-operadores-de-teste
+%%| alt: Tres colunas com os operadores de teste de arquivo, de cadeia de caracteres e numericos, com o significado de cada um
+\begin{tikzpicture}[
+    hd/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize\bfseries,inner sep=4pt,text width=4.55cm,minimum height=0.75cm},
+    it/.style={align=left,font=\scriptsize,anchor=west,text width=4.55cm},
+    op/.style={font=\scriptsize\ttfamily},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,draw=manualblue,fill=manualblue!13] at (2.4,6.75) {ARQUIVO};
+  \node[it] at (0.1,6.2) {\texttt{-e} existe (de qualquer tipo)};
+  \node[it] at (0.1,5.78) {\texttt{-f} é arquivo comum};
+  \node[it] at (0.1,5.36) {\texttt{-d} é diretório};
+  \node[it] at (0.1,4.94) {\texttt{-L} é link simbólico};
+  \node[it] at (0.1,4.52) {\texttt{-s} existe e não está vazio};
+  \node[it] at (0.1,4.10) {\texttt{-r -w -x} legível, gravável, executável};
+  \node[it] at (0.1,3.60) {\texttt{-u -g -k} SUID, SGID, \emph{sticky}};
+  \node[it] at (0.1,3.18) {\texttt{-b -c -p -S} bloco, caractere, \emph{fifo}, \emph{socket}};
+  \node[it] at (0.1,2.68) {\texttt{a -nt b} \enspace \texttt{a} é mais novo que \texttt{b}};
+  \node[it] at (0.1,2.26) {\texttt{a -ef b} \enspace mesmo inode (\emph{hard link})};
+
+  \node[hd,draw=manualgreen,fill=manualgreen!13] at (7.6,6.75) {CADEIA DE CARACTERES};
+  \node[it] at (5.3,6.2) {\texttt{-z s} \enspace vazia (\emph{zero})};
+  \node[it] at (5.3,5.78) {\texttt{-n s} \enspace não vazia};
+  \node[it] at (5.3,5.36) {\texttt{a == b} \enspace igual (padrão no lado direito)};
+  \node[it] at (5.3,4.86) {\texttt{a != b} \enspace diferente};
+  \node[it] at (5.3,4.44) {\texttt{a =\textasciitilde{} re} \enspace casa com a regex};
+  \node[it] at (5.3,4.02) {\texttt{a < b} \enspace ordem alfabética};
+  \node[it,manualgray] at (5.3,3.52) {em \texttt{[ ]}: use \texttt{=} e escape \texttt{\textbackslash<}};
+  \node[it,manualgray] at (5.3,3.02) {em \texttt{[[ ]]}: cite o lado direito para};
+  \node[it,manualgray] at (5.3,2.68) {comparar literalmente};
+
+  \node[hd,draw=manualyellow,fill=manualyellow!17] at (12.8,6.75) {NÚMERO};
+  \node[it] at (10.5,6.2) {\texttt{-eq} igual \qquad \texttt{-ne} diferente};
+  \node[it] at (10.5,5.78) {\texttt{-lt} menor \qquad \texttt{-le} menor ou igual};
+  \node[it] at (10.5,5.36) {\texttt{-gt} maior \qquad \texttt{-ge} maior ou igual};
+  \node[it,manualgray] at (10.5,4.86) {dentro de \texttt{(( ))}, use os símbolos:};
+  \node[it] at (10.5,4.44) {\texttt{(( a > b ))} \quad \texttt{(( a == b ))}};
+  \node[it] at (10.5,4.02) {\texttt{(( a >= 1 \&\& a <= 10 ))}};
+  \node[it,manualred] at (10.5,3.52) {\texttt{[[ 10 > 9 ]]} é \textbf{falso}:};
+  \node[it,manualred] at (10.5,3.18) {compara texto, e ``1'' vem antes de ``9''};
+
+  \node[nt,text width=14.9cm] at (7.5,1.35) {Os operadores de número com hífen (\texttt{-eq}, \texttt{-lt}) funcionam em \texttt{[ ]} e em \texttt{[[ ]]}; os símbolos (\texttt{>}, \texttt{<}, \texttt{==}) só têm significado numérico dentro de \texttt{(( ))}. Trocar os dois contextos é o erro silencioso mais caro deste capítulo: \texttt{[[ \$versao > 9 ]]} compara alfabeticamente e aprova a versão 10 como sendo menor que a 9. A regra que não falha: \textbf{número dentro de \texttt{(( ))}, o resto dentro de \texttt{[[ ]]}}.};
+\end{tikzpicture}
+```
+Os operadores de teste, agrupados pelo tipo do que testam.
+:::
+
+O contexto aritmético `(( ))` merece destaque próprio, porque é o único lugar em que comparar números é natural:
+
+```bash
+if (( uid >= 1000 && uid < 65534 )); then echo "usuario humano"; fi
+if (( $(id -u) != 0 )); then echo "precisa de root" >&2; exit 1; fi
+
+(( contador++ ))            # incrementa
+(( total += valor ))        # acumula
+```
+
+Uma sutileza do `(( ))` que surpreende: ele segue a convenção **da aritmética**, não a do shell. A expressão que resulta em zero é falsa; a que resulta em qualquer outro número é verdadeira. Portanto:
+
+```bash
+n=0
+(( n )) && echo "verdadeiro" || echo "falso"     # falso
+(( n = 0 ))                                      # o comando FALHA (retorna 1)
+set -e; (( contador++ ))                         # se contador era 0, ABORTA o script
+```
+
+A última linha é uma armadilha real: sob `set -e`, um `(( contador++ ))` que devolve o valor antigo `0` derruba o script. As formas seguras são `(( ++contador ))` (pré-incremento, que devolve o valor novo) ou `(( contador++ )) || true`.
+
+## `case`: quando há mais de duas alternativas
+
+Uma cadeia longa de `elif` comparando a mesma variável contra padrões pede `case`:
+
+```bash
+case "$1" in
+    -h|--help)     mostrar_ajuda; exit 0 ;;
+    -v|--verbose)  VERBOSO=1 ;;
+    *.tar.gz|*.tgz) tar xzf "$1" ;;
+    *.zip)         unzip "$1" ;;
+    [0-9]*)        echo "comeca com digito" ;;
+    "")            erro "argumento vazio"; exit 1 ;;
+    *)             erro "opcao desconhecida: $1"; exit 1 ;;
+esac
+```
+
+Os padrões são os mesmos do *globbing* do @sec-cap013 — não são expressões regulares. O `;;` encerra um ramo; o `*)` final funciona como o `else` e deve estar sempre presente, porque um `case` que não casa com nada simplesmente não faz nada e não avisa.
+
+Duas variações úteis do Bash: `;&` cai no ramo seguinte sem testar, e `;;&` continua testando os ramos seguintes.
+
+## Armadilhas que valem memorizar
+
+```bash
+# 1. numero comparado como texto
+[[ 10 > 9 ]]   && echo "verdadeiro"    # NAO imprime: "1" < "9"
+(( 10 > 9 ))   && echo "verdadeiro"    # imprime
+
+# 2. -a e -o dentro de [ ] sao ambiguos e obsoletos
+[ "$a" = x -a "$b" = y ]               # evite
+[ "$a" = x ] && [ "$b" = y ]           # forma POSIX correta
+[[ $a == x && $b == y ]]               # forma Bash
+
+# 3. = contra == em [ ]
+[ "$a" == "$b" ]                       # funciona no bash, falha no dash
+[ "$a" = "$b" ]                        # POSIX
+
+# 4. variavel que comeca com hifen
+[ "$v" = "-n" ]                        # seguro por causa das aspas
+[ -n "$v" ]                            # o teste explicito de "nao vazia"
+
+# 5. negacao
+if ! [[ -f "$arq" ]]; then ... fi      # legivel
+if [[ ! -f "$arq" ]]; then ... fi      # equivalente
+```
+
+::: {.callout-warning}
+## Testar um arquivo não garante que ele continue lá
+
+A sequência abaixo parece defensiva e não é:
+
+```bash
+if [[ -w "$ALVO" ]]; then
+    rm -rf -- "$ALVO"          # e se $ALVO virou outra coisa entre as duas linhas?
+fi
+```
+
+Entre o teste e a ação existe um intervalo em que outro processo pode trocar o arquivo por um link simbólico apontando para outro lugar. É a condição de corrida conhecida como **TOCTOU** (*time of check to time of use*), e ela é explorável quando o script roda com privilégio elevado sobre um caminho gravável por terceiros — `/tmp` sendo o caso clássico.
+
+As defesas práticas:
+
+- **Aja e trate o erro**, em vez de testar antes: `rm -rf -- "$ALVO" 2>/dev/null || true` não tem intervalo entre a decisão e a ação.
+- **Use `mktemp`** para temporários, nunca um nome previsível: `tmp="$(mktemp -d)"` cria com permissão restrita e nome imprevisível de uma vez só.
+- **`trap` para limpar** o temporário na saída, assunto do Volume 12.
+- **Nunca opere como root sobre caminho gravável por outro usuário** sem `--no-dereference`, `-not -type l` ou a verificação equivalente.
+
+O teste de arquivo continua útil — para dar mensagem de erro decente antes de tentar. Ele não é um mecanismo de segurança.
+:::
+
+## 🐉 No Kali
+
+- **`(( $(id -u) != 0 ))` no topo é mais útil no Kali do que em outra distribuição.** Desde 2020 o usuário padrão é o `kali`, não o root, e muita ferramenta da distribuição precisa de privilégio para capturar pacote ou abrir porta baixa. Um script que falha no meio do caminho por falta de privilégio desperdiça o trabalho já feito; um que verifica na primeira linha e diz `execute com sudo` economiza a repetição. O teste do `EUID` (`(( EUID != 0 ))`) evita até a chamada externa.
+- **Verificar se a ferramenta existe antes de usá-la é obrigatório num rolling.** Metapacotes mudam entre versões e uma ferramenta presente na sua instalação pode não estar na do colega. `command -v nmap >/dev/null || { erro "instale: sudo apt install nmap"; exit 1; }` é a forma correta — `which` não é embutido, varia entre distribuições e devolve códigos de saída inconsistentes.
+- **Validar alvo com `=~` antes de disparar qualquer ferramenta é a diferença entre laboratório e incidente.** Um teste de formato — `[[ $alvo =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]]` para IPv4 com máscara opcional — pega o alvo digitado errado antes de a varredura sair. Melhor ainda é comparar o alvo contra a lista do escopo autorizado, e recusar o que não estiver nela. Varrer fora do escopo contratado é crime pela Lei 12.737/2012, e um `if` de três linhas é a barreira mais barata que existe contra o erro de digitação.
+- **`-w` e `-r` respondem sobre permissão efetiva, o que inclui as ACLs do @sec-cap024 e as capabilities.** Um `[[ -r /etc/shadow ]]` verdadeiro para um usuário não privilegiado é achado relevante numa auditoria de configuração — e um teste de arquivo em laço sobre `/etc` é um levantamento de superfície inteiramente legítimo na sua própria máquina.
+- **Cuidado com teste de arquivo em ponto de montagem que pode sumir.** Em análise de mídia montada por `udisks` ou em live USB, um `[[ -d /media/kali/EVIDENCIA ]]` pode passar e o diretório desaparecer no comando seguinte, com o script gravando no diretório vazio do ponto de montagem em vez de na mídia. `mountpoint -q /media/kali/EVIDENCIA` responde à pergunta certa.
+
+> **Nota sobre a família RHEL.** Os operadores são idênticos — vêm do Bash e do POSIX. A divergência que importa é a do `#!/bin/sh` já mencionada no @sec-cap051: como em RHEL, Rocky e AlmaLinux o `/bin/sh` é o Bash em modo POSIX, um script com `[[ ]]` e `#!/bin/sh` funciona lá e falha no Debian e no Kali. É a direção mais comum do problema, porque scripts de administração escritos em ambiente RHEL circulam com `#!/bin/sh` no topo sem nunca terem sido testados sob `dash`. Vale ainda registrar que `[[ -r arquivo ]]` num sistema com SELinux responde apenas sobre as permissões clássicas — a política pode negar a leitura mesmo com o teste verdadeiro, e a falha aparece só na hora de abrir o arquivo.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-if`.
+
+1. **Comprove que `[` é um comando.**
+
+   ```bash
+   mkdir -p ~/lab-if && cd ~/lab-if
+   type [ ; type test ; type [[
+   ls -l /usr/bin/[ /usr/bin/test
+   [ 1 = 1 ] ; echo "codigo de saida: $?"
+   [-f /etc/passwd]
+   ```
+
+   Esperado: `[` e `test` são embutidos **e** existem como binários; `[[` é uma palavra-chave. A última linha produz `command not found` para `[-f` — a prova de que os espaços fazem parte da separação de palavras.
+
+2. **Reproduza o bug de abertura.**
+
+   ```bash
+   ARQUIVO=""
+   if [ -f $ARQUIVO ];    then echo "1: passou (ERRADO)"; else echo "1: falhou"; fi
+   if [ -f "$ARQUIVO" ];  then echo "2: passou";          else echo "2: falhou (certo)"; fi
+   if [[ -f $ARQUIVO ]];  then echo "3: passou";          else echo "3: falhou (certo)"; fi
+   ```
+
+   Esperado: exatamente o que a @fig-colchete-e-comando descreve — o primeiro teste passa indevidamente, os outros dois falham corretamente.
+
+3. **Veja o `[ ]` engasgar com espaços.**
+
+   ```bash
+   arq="meu arquivo.txt"; touch "$arq"
+   [ -f $arq ]   && echo "ok" || echo "falhou"
+   [ -f "$arq" ] && echo "ok" || echo "falhou"
+   [[ -f $arq ]] && echo "ok" || echo "falhou"
+   ```
+
+   Esperado: a primeira linha produz `too many arguments` — o `test` recebeu `-f`, `meu`, `arquivo.txt` e `]`. As duas seguintes funcionam.
+
+4. **Use comandos diretamente como condição.**
+
+   ```bash
+   if grep -q '^root:' /etc/passwd;      then echo "root existe"; fi
+   if command -v nmap >/dev/null;        then echo "nmap instalado"; else echo "nmap ausente"; fi
+   if systemctl is-active --quiet ssh;   then echo "ssh ativo"; else echo "ssh parado"; fi
+   ```
+
+   Esperado: respostas conforme a sua máquina. Nenhum `[ ]` foi necessário — o próprio comando já responde à pergunta.
+
+5. **Percorra os testes de arquivo.**
+
+   ```bash
+   mkdir -p dir; touch vazio.txt; echo conteudo > cheio.txt
+   ln -sf cheio.txt link.txt; chmod 000 semperm.txt 2>/dev/null || { touch semperm.txt; chmod 000 semperm.txt; }
+   for f in dir vazio.txt cheio.txt link.txt semperm.txt inexistente; do
+       printf '%-14s' "$f"
+       [[ -e $f ]] && printf ' -e'; [[ -f $f ]] && printf ' -f'
+       [[ -d $f ]] && printf ' -d'; [[ -L $f ]] && printf ' -L'
+       [[ -s $f ]] && printf ' -s'; [[ -r $f ]] && printf ' -r'
+       [[ -w $f ]] && printf ' -w'; [[ -x $f ]] && printf ' -x'
+       echo
+   done
+   ```
+
+   Esperado: `link.txt` marca `-e -f -L -s` ao mesmo tempo — `-f` segue o link e responde sobre o destino, enquanto `-L` responde sobre o próprio link. `semperm.txt` não marca `-r` nem `-w` (a menos que você seja root, para quem quase tudo é legível).
+
+6. **Compare número como número e como texto.**
+
+   ```bash
+   v1=10; v2=9
+   [[ $v1 > $v2 ]] && echo "texto: 10 > 9"   || echo "texto: 10 NAO e maior que 9"
+   (( v1 > v2 ))   && echo "numero: 10 > 9"  || echo "numero: 10 NAO e maior que 9"
+   [ "$v1" -gt "$v2" ] && echo "com -gt: 10 > 9"
+   ```
+
+   Esperado: a comparação textual diz que 10 **não** é maior que 9. É o erro que faz um script tratar a versão 10 como anterior à 9, e ele nunca produz mensagem de erro.
+
+7. **Trabalhe com padrões e expressões regulares.**
+
+   ```bash
+   arq="relatorio-2026.log"
+   [[ $arq == *.log ]]        && echo "casa com *.log"
+   [[ $arq == relatorio-* ]]  && echo "comeca com relatorio-"
+   padrao='*.log'
+   [[ $arq == $padrao ]]      && echo "padrao sem aspas: casou"
+   [[ $arq == "$padrao" ]]    && echo "padrao com aspas: casou" || echo "padrao com aspas: nao casou"
+
+   re='^relatorio-([0-9]{4})\.log$'
+   if [[ $arq =~ $re ]]; then
+       echo "ano capturado: ${BASH_REMATCH[1]}"
+   fi
+   ```
+
+   Esperado: as aspas em volta do padrão desligam o casamento e forçam a comparação literal. O `BASH_REMATCH[1]` traz `2026`, extraído sem `sed` nem `awk`.
+
+8. **Valide um endereço IPv4.**
+
+   ```bash
+   re4='^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$'
+   for alvo in 192.168.1.10 10.0.0.0/24 "192.168.1" "servidor.local" "1.2.3.4; rm -rf /"; do
+       if [[ $alvo =~ $re4 ]]; then printf '%-22s ACEITO\n' "$alvo"
+       else                        printf '%-22s RECUSADO\n' "$alvo"; fi
+   done
+   ```
+
+   Esperado: os dois primeiros são aceitos e os três últimos recusados — incluindo o que tenta injetar um comando. É a barreira descrita na seção do Kali.
+
+9. **Escreva um `case`.**
+
+   ```bash
+   classifica() {
+       case "$1" in
+           -h|--help)      echo "ajuda" ;;
+           *.tar.gz|*.tgz) echo "tarball comprimido" ;;
+           *.zip)          echo "zip" ;;
+           [0-9]*)         echo "comeca com digito" ;;
+           "")             echo "vazio" ;;
+           *)              echo "desconhecido: $1" ;;
+       esac
+   }
+   for x in --help backup.tar.gz dados.zip 2026-relatorio "" outracoisa; do
+       printf '%-20s -> %s\n' "[$x]" "$(classifica "$x")"
+   done
+   ```
+
+   Esperado: cada entrada cai no ramo certo. O ramo `*)` é o que impede que uma entrada inesperada passe em silêncio.
+
+10. **Veja o `(( ))` derrubar um script sob `set -e`.**
+
+    ```bash
+    ( set -e; n=0; (( n++ )); echo "chegou aqui com n=$n" ) || echo "abortou: (( n++ )) devolveu 0"
+    ( set -e; n=0; (( ++n )); echo "com pre-incremento: n=$n" )
+    ( set -e; n=0; (( n++ )) || true; echo "com || true: n=$n" )
+    ```
+
+    Esperado: o primeiro subshell aborta, os outros dois completam. É um dos poucos casos em que a combinação de dois recursos corretos produz um resultado surpreendente.
+
+11. **Demonstre o intervalo do TOCTOU e limpe.**
+
+    ```bash
+    tmp="$(mktemp -d)"; echo "temporario seguro: $tmp"; ls -ld "$tmp"
+    touch alvo.txt
+    if [[ -w alvo.txt ]]; then
+        ln -sf /etc/hostname alvo.txt      # o "atacante" agiu entre o teste e o uso
+        echo "o teste aprovou alvo.txt, mas agora ele aponta para: $(readlink alvo.txt)"
+    fi
+    rmdir "$tmp"
+    chmod 644 semperm.txt; cd ~ && rm -rf ~/lab-if
+    ```
+
+    Esperado: o `mktemp -d` cria um diretório com permissão `700` e nome imprevisível. A demonstração seguinte mostra o intervalo: o teste foi verdadeiro a respeito de um arquivo que deixou de ser o mesmo antes do uso.
+
+## Resumo
+
+- **`[` é um comando, não sintaxe.** Os espaços em volta são obrigatórios, o `]` é apenas o último argumento, e tudo que está dentro passa pelas seis etapas de expansão antes de o teste ser executado. Por isso `[ -f $VAZIA ]` é verdadeiro: o `test` recebe um único argumento não vazio.
+- **`if` executa um comando e olha o código de saída.** Zero é verdadeiro. Qualquer programa serve de condição — `grep -q`, `systemctl is-active --quiet`, `command -v` — e isso costuma ser melhor do que capturar a saída e testá-la.
+- **Em script Bash, `[[ ]]` é o padrão.** Não divide em palavras, aceita `&&` e `||` diretamente, casa padrões com `==` e expressões regulares com `=~`, preenchendo `BASH_REMATCH`. Reserve `[ ]` para scripts que precisem rodar sob `/bin/sh`.
+- **Número dentro de `(( ))`, o resto dentro de `[[ ]]`.** `[[ 10 > 9 ]]` é falso porque compara texto. Os operadores `-eq`, `-lt` e companhia funcionam nos dois colchetes; os símbolos só têm sentido numérico em `(( ))`.
+- **No `==` de `[[ ]]`, o lado direito é padrão.** Citá-lo força comparação literal; não citá-lo permite `*.log`. Com `=~`, a regra se inverte: a expressão regular **não** vai entre aspas.
+- **`case` é a estrutura certa para várias alternativas de padrão**, com `*)` obrigatório no fim para que nenhuma entrada passe em silêncio.
+- **Sob `set -e`, `(( n++ ))` com `n` valendo zero aborta o script.** Use `(( ++n ))` ou acrescente `|| true`.
+- **Testar um arquivo não é garantia de segurança.** Entre o teste e o uso existe um intervalo explorável (TOCTOU). Prefira agir e tratar o erro, use `mktemp` para temporários, e trate o teste de arquivo como cortesia de diagnóstico, não como controle de acesso.
