@@ -1,3 +1,345 @@
 # grep e a busca de padrões {#sec-cap065}
 
-*(em elaboracao)*
+Uma chave de API vazou num repositório e a pergunta era simples: em quantos lugares ela aparece? A primeira tentativa:
+
+```bash
+grep AKIA3XPLR7QF2 *
+```
+
+Resposta: `grep: config: É um diretório`. O `*` do shell listou os arquivos do diretório atual e mais nada — subdiretório nenhum foi visitado, e o `grep` reclamou de cada pasta que recebeu.
+
+A segunda tentativa acertou o alvo e errou o alcance:
+
+```bash
+grep -r AKIA3XPLR7QF2 .
+```
+
+Depois de dois minutos varrendo o `.git`, os `node_modules` e um `venv` inteiro, saiu uma parede de texto que incluía `Arquivo binário .git/objects/pack/pack-9f3.idx coincide` e uma linha de mil e duzentos caracteres de um bundle minificado. A informação estava lá, afogada.
+
+O `grep` faz uma coisa só — decidir, linha por linha, se ela casa com um padrão — mas as opções que cercam essa decisão são o que separa uma busca útil de uma parede de ruído. Este capítulo é sobre elas. A notação dos padrões é a do @sec-cap064.
+
+## O modelo: uma decisão por linha, e um status de saída
+
+O `grep` lê a entrada linha a linha, testa cada linha contra o padrão e imprime as que casam. Três consequências decorrem direto disso.
+
+**A linha é a unidade.** Um padrão nunca casa através de uma quebra de linha, porque a quebra sequer chega ao motor. Buscar algo que atravessa linhas exige `-z` (adiante), `sed` ou `awk`.
+
+**A ordem de saída é a de entrada.** O `grep` não ordena nem deduplica; isso é trabalho do `sort` e do `uniq` (@sec-cap068).
+
+**O status de saída é informação, não formalidade.** Zero se achou pelo menos uma linha, **1 se não achou nada**, e 2 em caso de erro real — arquivo inexistente, padrão inválido. Essa distinção entre 1 e 2 é o que permite usar `grep` como teste em script (@sec-cap056):
+
+```bash
+if grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config; then
+    echo "login de root por SSH esta habilitado"
+fi
+```
+
+O `-q` (*quiet*) suprime a saída e, melhor ainda, **encerra na primeira linha que casa** — num arquivo de gigabytes isso muda o tempo de execução de minutos para milissegundos. Em teste, `grep -q` é sempre preferível a `grep ... > /dev/null`.
+
+Cuidado com a combinação `grep -q` e `set -e` (@sec-cap057): "não encontrou" é status 1, e sob `set -e` isso **encerra o script**. Use dentro de `if`, ou acrescente `|| true`.
+
+## Escolher o padrão
+
+```bash
+grep -E 'ERRO|WARN' log            # ERE -- o padrao do dia a dia
+grep -F "$ENTRADA_DO_USUARIO" log  # literal: nenhum caractere e especial
+grep -P '\d{3}-\d{2}' log          # PCRE
+grep -i 'password' config          # ignora maiusculas e minusculas
+grep -w 'root' /etc/passwd         # palavra inteira: nao casa "chroot"
+grep -x 'root' lista.txt           # a linha INTEIRA e exatamente isso
+```
+
+O `-w` e o `-x` resolvem, sem escrever padrão nenhum, os dois casos mais comuns de falso positivo. `grep -w root` equivale a `grep -E '\broot\b'` e é mais legível.
+
+Vários padrões se acumulam com `-e`, e uma lista longa vem de arquivo com `-f`:
+
+```bash
+grep -e 'ERRO' -e 'FATAL' -e 'panic' log
+grep -F -f indicadores.txt trafego.log     # cada linha do arquivo e um padrao literal
+```
+
+A combinação `-F -f arquivo` é a forma canônica de casar milhares de padrões literais de uma vez: o `grep` monta um autômato único com todos e varre o alvo **uma** vez. Um laço de shell chamando `grep` mil vezes faz mil varreduras e é ordens de grandeza mais lento.
+
+O `-e` tem um segundo uso, menos óbvio e que evita um erro chato: padrão que começa com traço. `grep -- '-v'` também resolve, encerrando a lista de opções.
+
+## Escolher e formatar as linhas de saída
+
+::: {#fig-anatomia-do-grep}
+```{.tikz}
+%%| filename: anatomia-das-opcoes-do-grep
+%%| alt: Diagrama em tres estagios mostrando como as opcoes do grep se dividem entre definir o padrao, decidir quais linhas passam e escolher o que e impresso
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,inner sep=5pt,font=\scriptsize},
+    st/.style={bx,minimum width=3.75cm,minimum height=2.9cm,align=left,text width=3.45cm},
+    fl/.style={-{Latex[length=2mm]},very thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bx,draw=manualgray,fill=manualgray!8,minimum width=1.7cm,minimum height=1.0cm] (ent) at (0.0,4.2) {entrada\\\texttt{stdin} ou\\arquivos};
+
+  \node[st,draw=manualblue,fill=manualblue!8] (s1) at (3.6,4.2) {\textbf{\textcolor{manualblue}{1. como interpretar}}\\[2pt]\texttt{-E} \ ERE\\\texttt{-F} \ literal\\\texttt{-P} \ PCRE\\\texttt{-i} \ ignora caixa\\\texttt{-e} \ mais um padrão\\\texttt{-f} \ padrões de arquivo};
+
+  \node[st,draw=manualgreen,fill=manualgreen!10] (s2) at (7.8,4.2) {\textbf{\textcolor{manualgreen}{2. quais linhas passam}}\\[2pt]\texttt{-v} \ inverte\\\texttt{-w} \ palavra inteira\\\texttt{-x} \ linha inteira\\\texttt{-m N} \ para em N\\\texttt{-A -B -C} \ vizinhas};
+
+  \node[st,draw=manualyellow,fill=manualyellow!18] (s3) at (12.0,4.2) {\textbf{\textcolor{manualyellow!60!black}{3. o que imprimir}}\\[2pt]\texttt{-o} \ só o trecho\\\texttt{-c} \ só a contagem\\\texttt{-l} \ só o nome\\\texttt{-n} \ número da linha\\\texttt{-h -H} \ nome do arquivo};
+
+  \draw[fl] (ent) -- (s1);
+  \draw[fl] (s1) -- (s2);
+  \draw[fl] (s2) -- (s3);
+  \draw[fl] (s3) -- ++(1.85,0) node[right,font=\scriptsize,manualgray] {saída};
+
+  \node[bx,draw=manualred,fill=manualred!8,text width=12.9cm,align=left] at (6.5,1.55) {\textbf{\textcolor{manualred}{Fora dos três estágios: onde procurar}}\\[2pt]\texttt{-r} percorre diretórios (segue link só na linha de comando) \quad \texttt{-R} segue todo link simbólico\\\texttt{-{}-include='*.conf'} e \texttt{-{}-exclude-dir=.git} filtram \emph{arquivos}, não linhas \quad \texttt{-I} pula binários};
+
+  \node[nt,text width=13.1cm] at (6.5,0.1) {Quase todo mau resultado de \texttt{grep} vem de mexer no estágio errado. ``Veio ruído demais'' costuma ser estágio 2 (falta \texttt{-w}) ou o bloco vermelho (falta \texttt{-{}-exclude-dir}); ``veio linha longa demais'' é estágio 3 (falta \texttt{-o}); ``não veio nada'' é estágio 1 (padrão em BRE quando devia ser ERE).};
+\end{tikzpicture}
+```
+As opções do `grep` se organizam em três estágios, mais a escolha de onde procurar.
+:::
+
+```bash
+grep -v '^#'  arquivo.conf        # inverte: linhas que NAO casam
+grep -c ERRO  log                 # so a contagem de LINHAS (nao de ocorrencias)
+grep -l ERRO  *.log               # so os NOMES dos arquivos que tem
+grep -L ERRO  *.log               # so os que NAO tem
+grep -n ERRO  log                 # prefixa numero da linha
+grep -m 1 ERRO log                # para na primeira ocorrencia
+grep -o 'ip=[0-9.]*' log          # imprime so o trecho casado
+```
+
+Duas armadilhas de contagem. O `-c` conta **linhas**, não ocorrências: uma linha com três endereços conta como um. Para contar ocorrências, é `grep -o padrao | wc -l`. E `grep -c` com vários arquivos imprime `arquivo:contagem` por arquivo, não um total — o total sai de `grep -o ... | wc -l`.
+
+A limpeza clássica de arquivo de configuração combina duas inversões:
+
+```bash
+grep -vE '^\s*(#|$)' /etc/ssh/sshd_config     # sem comentarios e sem linhas vazias
+```
+
+O `-o` é o que transforma o `grep` de filtro em **extrator**, e é a peça que o liga ao resto do pipeline: cada trecho casado sai em sua própria linha, pronto para `sort`, `uniq -c` ou `awk`.
+
+## Contexto: as linhas ao redor
+
+```bash
+grep -A 3 'Traceback' app.log      # 3 linhas DEPOIS (after)
+grep -B 2 'ERRO'     app.log       # 2 linhas ANTES (before)
+grep -C 2 'ERRO'     app.log       # 2 antes e 2 depois (context)
+```
+
+Blocos separados na saída vêm divididos por uma linha `--`. Isso é útil para ler e péssimo para processar: se a saída vai para outro comando, filtre o separador com `grep -v '^--$'` ou repense a abordagem.
+
+Para um erro de aplicação com pilha de chamadas, `-A` é quase obrigatório; para um erro cuja causa está na requisição anterior, `-B`.
+
+## Onde procurar: recursão e filtros de arquivo
+
+Aqui mora a solução do problema da abertura.
+
+```bash
+grep -rnI 'AKIA3XPLR7QF2' . \
+     --exclude-dir={.git,node_modules,venv,__pycache__} \
+     --include='*.py' --include='*.env' --include='*.yml'
+```
+
+- `-r` percorre diretórios; `-R` faz o mesmo mas **segue links simbólicos**, com risco de laço infinito. Prefira `-r`.
+- `--exclude-dir` aceita a expansão de chaves do shell (@sec-cap013) e é o que corta o `.git` — que costuma ser o maior volume de dados e o menos útil.
+- `--include` e `--exclude` filtram por **glob de nome de arquivo**, não por expressão regular. `--include='*.py'` é glob; `--include='.*\.py'` não funciona.
+- `-I` pula arquivos binários por completo. Sem ele, o `grep` imprime `Arquivo binário X coincide` e nada mais — e com `-a` ele trata o binário como texto, o que pode despejar bytes de controle no terminal (se isso acontecer, `reset` conserta).
+
+Quando o filtro por nome não basta, `find` alimenta o `grep` (@sec-cap017):
+
+```bash
+find /var/log -name '*.log' -mtime -1 -print0 | xargs -0 grep -l 'ERRO'
+```
+
+O par `-print0`/`-0` usa o byte nulo como separador e é a única forma correta com nomes que contêm espaço.
+
+## Desempenho
+
+Num tronco de logs de dezenas de gigabytes, quatro decisões dominam o tempo:
+
+```bash
+LC_ALL=C grep -F 'ERRO' enorme.log            # rapido
+grep -E 'ERR[O0]|FATAL' enorme.log            # mais lento, ainda ok
+grep -P '(?i)(erro|fatal).*\d+' enorme.log    # bem mais lento
+```
+
+1. **`LC_ALL=C` desliga a decodificação multibyte.** Em texto ASCII, é ganho puro — frequentemente de duas a cinco vezes. Só não use quando o padrão ou o texto tiverem acentos.
+2. **`-F` é mais rápido que `-E`, que é mais rápido que `-P`.** Use o dialeto mais fraco que resolva o problema.
+3. **Filtre barato antes de filtrar caro.** Num pipeline, um `grep -F` que descarta noventa por cento das linhas antes de um `grep -P` complexo é muito mais rápido que o inverso.
+4. **`-m 1` e `-q` param cedo.** Se a pergunta é "existe?", não varra o arquivo inteiro.
+
+O Kali traz o `ripgrep` (`rg`), que é multiencadeado, respeita o `.gitignore` e pula binários por padrão — para varrer árvore de código, costuma ser bem mais rápido sem opção nenhuma. Vale conhecer, mas o `grep` é o que existe em qualquer máquina em que você vai cair, inclusive num contêiner mínimo.
+
+## Pegadinhas que custam tempo
+
+**O `grep` que casa consigo mesmo.** O clássico:
+
+```bash
+ps aux | grep nginx        # inclui a propria linha do grep
+ps aux | grep '[n]ginx'    # a classe casa 'n' mas o texto do comando e '[n]ginx'
+pgrep -a nginx             # melhor ainda: ferramenta certa (@sec-cap029)
+```
+
+**Cor que vaza para o pipeline.** Se o `grep` estiver com `--color=always` (via alias ou variável herdada), a saída leva códigos de escape ANSI que quebram o `sort`, o `awk` e a comparação de texto seguinte. O padrão sensato é `--color=auto`, que só colore quando a saída é um terminal.
+
+**`grep` sem arquivo e sem entrada trava.** `grep padrao` sozinho fica esperando `stdin` e parece congelado. É `Ctrl+D` para encerrar, ou `Ctrl+C`.
+
+**Nome de arquivo aparecendo ou sumindo.** Com um arquivo só, o `grep` não prefixa o nome; com dois ou mais, prefixa. Isso quebra script cujo `--include` às vezes casa um arquivo, às vezes vários. Force com `-H` (sempre) ou `-h` (nunca).
+
+**Registros separados por nulo.** Para casar um padrão que atravessa linhas, `-z` faz o `grep` tratar o byte nulo como separador de registro — o arquivo inteiro vira um "registro" e o `.` passa a casar quebras de linha:
+
+```bash
+grep -zoP 'BEGIN CERTIFICATE.*?END CERTIFICATE' arquivo.pem | tr -d '\0'
+```
+
+## 🐉 No Kali
+
+- **Varrer um alvo baixado é o uso mais frequente.** Depois de espelhar um site com `wget -r`, `grep -rniI --include='*.js' -E 'api[_-]?key|secret|token|password' ./espelho/` levanta credenciais expostas em segundos. O `-I` evita afogar a saída em imagens, o `-i` cobre variações de caixa e o `--include` restringe ao que interessa. Isso vale para material de teste autorizado ou de escopo público; vasculhar sistema de terceiro sem contrato é acesso não autorizado (Lei 12.737/2012).
+- **`grep -F -f` com lista de indicadores é o casamento em massa.** Com uma lista de IPs ou domínios maliciosos num arquivo, `grep -F -f iocs.txt acesso.log` compara os dois conjuntos numa varredura só. Mil chamadas de `grep` num laço fazem mil varreduras do log; uma chamada com `-f` faz uma. Em log de gigabytes, a diferença é entre segundos e uma tarde.
+- **Refinar wordlist antes da ferramenta economiza horas.** `grep -E '^.{8,16}$' rockyou.txt | grep -vE '^[0-9]+$' > filtrada.txt` reduz milhões de candidatos ao que a política de senha do alvo permite. Menos candidatos significa menos requisições, menos ruído no log do alvo e menos risco de derrubar um serviço que o contrato manda preservar.
+- **Auditar configuração de serviço é `grep -vE` mais `grep -nE`.** `grep -vE '^\s*(#|$)' /etc/ssh/sshd_config` mostra o que está de fato em vigor, sem os comentários; `grep -niE '^\s*(PermitRootLogin|PasswordAuthentication|X11Forwarding)' /etc/ssh/sshd_config` vai direto às diretivas que importam. O `-n` é o que transforma o achado em referência citável no relatório.
+- **No shell de um alvo comprometido em teste, `grep` costuma ser o que existe.** Não conte com `rg`, `jq` ou Python num contêiner mínimo. `grep -rl`, `grep -o` e `grep -c` cobrem levantamento inicial com o que vem no `busybox`. Vale notar que o `grep` do BusyBox **não** tem `-P` nem `--exclude-dir`, então padrões PCRE e filtros de diretório precisam de plano B — normalmente `find` alimentando o `grep`.
+
+> **Nota sobre a família RHEL.** O `grep` da GNU é idêntico em Debian, Kali e RHEL, incluindo `-P`, `--include` e `--exclude-dir`. O que muda é o entorno: no RHEL, `grep` em `/var/log` acha pouco, porque o `journald` guarda os logs em formato binário — a busca ali é `journalctl | grep` ou, melhor, `journalctl -g 'padrao'` (@sec-cap042), que aceita PCRE nativamente. E o SELinux registra negações em `/var/log/audit/audit.log`, um arquivo de linhas longuíssimas onde `grep -o` vale mais que `grep` puro.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-grep`.
+
+1. **Monte a árvore de teste.**
+
+   ```bash
+   mkdir -p ~/lab-grep/{app,config,.git} && cd ~/lab-grep
+   cat > app/main.py <<'EOF'
+   API_KEY = "AKIA3XPLR7QF2"
+   def conectar(host):
+       return f"ligando em {host}"
+   EOF
+   cat > config/prod.env <<'EOF'
+   # producao
+   DB_HOST=10.0.0.5
+   API_KEY=AKIA3XPLR7QF2
+
+   DEBUG=false
+   EOF
+   printf 'AKIA3XPLR7QF2\x00binario\x00lixo\n' > .git/objeto.pack
+   cat > acesso.log <<'EOF'
+   09:22:01 INFO  login ok user=kali ip=10.0.0.1
+   09:22:07 ERRO  login falhou user=root ip=10.0.0.14
+   09:22:08 ERRO  stack: NullPointer
+   09:22:09 ERRO  stack: em conectar()
+   09:23:11 WARN  chroot aplicado para user=root
+   09:24:00 INFO  backup ok ip=10.0.0.1 ip=10.0.0.2
+   EOF
+   ```
+
+2. **Reproduza a parede de ruído.**
+
+   ```bash
+   grep -r 'AKIA3XPLR7QF2' .
+   ```
+
+   Esperado: além dos dois acertos reais, uma linha sobre arquivo binário em `.git`. É o resultado que o passo seguinte corrige.
+
+3. **Busque como se deve.**
+
+   ```bash
+   grep -rnI 'AKIA3XPLR7QF2' . --exclude-dir=.git
+   ```
+
+   Esperado: duas linhas, com caminho e número de linha, prontas para colar num relatório.
+
+4. **Veja `-c` contar linhas, não ocorrências.**
+
+   ```bash
+   grep -c 'ip=' acesso.log
+   grep -o 'ip=[0-9.]*' acesso.log | wc -l
+   ```
+
+   Esperado: `3` e `4`. A última linha do log tem dois endereços e conta uma vez só no `-c`.
+
+5. **Use `-w` para eliminar falso positivo.**
+
+   ```bash
+   grep    'root' acesso.log
+   grep -w 'root' acesso.log
+   ```
+
+   Esperado: a primeira busca traz também a linha do `chroot`; a segunda, não.
+
+6. **Peça contexto.**
+
+   ```bash
+   grep -A 2 'login falhou' acesso.log
+   echo '--- com marcador de bloco ---'
+   grep -B 1 -A 1 'stack' acesso.log
+   ```
+
+   Esperado: no primeiro, a linha do erro mais as duas de pilha. No segundo, blocos separados por uma linha `--`.
+
+7. **Confirme o status de saída.**
+
+   ```bash
+   grep -q 'ERRO' acesso.log;    echo "achou ERRO:   $?"
+   grep -q 'FATAL' acesso.log;   echo "achou FATAL:  $?"
+   grep -q 'ERRO' inexistente;   echo "arquivo ruim: $?"
+   ```
+
+   Esperado: `0`, `1` e `2`. É a distinção que permite tratar "não achou" e "deu erro" de formas diferentes num script.
+
+8. **Limpe um arquivo de configuração.**
+
+   ```bash
+   grep -vE '^\s*(#|$)' config/prod.env
+   ```
+
+   Esperado: três linhas — sem o comentário e sem a linha em branco.
+
+9. **Extraia e agregue.**
+
+   ```bash
+   grep -oE 'ip=[0-9.]+' acesso.log | cut -d= -f2 | sort | uniq -c | sort -rn
+   ```
+
+   Esperado: `10.0.0.1` com duas ocorrências, os demais com uma. Este é o pipeline canônico de contagem, detalhado no @sec-cap068.
+
+10. **Casamento em massa com lista de indicadores.**
+
+    ```bash
+    printf '10.0.0.14\n10.0.0.99\n' > iocs.txt
+    grep -F -f iocs.txt acesso.log
+    ```
+
+    Esperado: só a linha do `10.0.0.14`. O segundo indicador não aparece no log e simplesmente não produz saída.
+
+11. **Veja o `grep` casar consigo mesmo e corrija.**
+
+    ```bash
+    sleep 300 &
+    ps aux | grep 'sleep 300'
+    echo '--- com a classe ---'
+    ps aux | grep '[s]leep 300'
+    kill %1
+    ```
+
+    Esperado: a primeira busca traz duas linhas — o `sleep` e o próprio `grep`. A segunda traz uma só.
+
+12. **Compare os dialetos e meça.**
+
+    ```bash
+    yes 'linha comum de log sem nada demais' | head -300000 > grande.log
+    echo '09:99:99 ERRO alvo' >> grande.log
+    time LC_ALL=C grep -cF 'ERRO' grande.log
+    time            grep -cP '(?i)err[o0]' grande.log
+    cd ~ && rm -rf ~/lab-grep
+    ```
+
+    Esperado: as duas contagens iguais, com o `-F` sob `LC_ALL=C` bem mais rápido. Em máquina modesta a diferença passa de cinco vezes.
+
+## Resumo
+
+- **O `grep` decide por linha e nada mais.** Padrão não atravessa quebra de linha (salvo com `-z`), a saída sai na ordem de entrada e não vem deduplicada.
+- **O status de saída distingue três casos:** 0 achou, 1 não achou, 2 erro. Use `grep -q` em teste — ele é silencioso e para na primeira ocorrência —, mas lembre que status 1 encerra script sob `set -e`.
+- **As opções se dividem em estágios**: como interpretar (`-E -F -P -i`), quais linhas passam (`-v -w -x -m -A -B -C`), o que imprimir (`-o -c -l -n -h`) e onde procurar (`-r --include --exclude-dir -I`). Diagnostique o resultado ruim pelo estágio.
+- **`-c` conta linhas, não ocorrências.** Para ocorrências, `grep -o | wc -l`.
+- **`-o` transforma o `grep` em extrator** e é a peça que o encaixa em pipeline com `sort`, `uniq -c` e `awk`.
+- **Em árvore de código, `--exclude-dir={.git,node_modules}` e `-I` fazem mais pela qualidade do resultado que qualquer refinamento de padrão.**
+- **Desempenho: `LC_ALL=C`, dialeto mais fraco possível, filtro barato antes do caro, e `-q`/`-m 1` quando a pergunta for "existe?".**
+- **`-F -f arquivo` casa milhares de padrões literais numa única varredura** — a diferença para um laço de `grep` é de ordens de grandeza.

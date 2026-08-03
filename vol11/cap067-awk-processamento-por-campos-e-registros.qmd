@@ -1,3 +1,446 @@
 # awk: processamento por campos e registros {#sec-cap067}
 
-*(em elaboracao)*
+A pergunta era quanto tráfego cada endereço tinha consumido no dia. O log do servidor web tem o endereço na primeira coluna e o tamanho da resposta na décima:
+
+```
+10.0.0.14 - - [14/Jul/2026:09:22:01 -0300] "GET /index.html HTTP/1.1" 200 5120
+```
+
+A primeira tentativa foi com o que já se conhecia:
+
+```bash
+cut -d' ' -f1,10 acesso.log
+```
+
+Saiu quase certo — e "quase" é o problema. O `cut` corta em **cada** espaço, então uma linha com dois espaços seguidos desloca todos os campos seguintes, e a requisição `"GET /index.html HTTP/1.1"`, que é um campo só entre aspas, foi contada como três. Pior: o `cut` extrai, mas não **soma**. Para agregar por endereço faltava ordenar, agrupar e acumular — três comandos mais, um deles com aritmética.
+
+O `awk` resolve isso em uma linha:
+
+```bash
+awk '{ soma[$1] += $10 } END { for (ip in soma) print soma[ip], ip }' acesso.log | sort -rn
+```
+
+Ele divide a linha em campos por si só, tem aritmética, tem tabelas associativas e tem um lugar para rodar depois que a última linha passou. É a ferramenta que fica entre "o `grep` não dá conta" e "vou escrever em Python".
+
+## O modelo: registro, campo e o laço implícito
+
+O `awk` lê a entrada **registro por registro** — por padrão, um registro é uma linha — e divide cada registro em **campos**, separados por sequências de espaço em branco. Para cada registro, ele percorre o programa e executa as ações cujos padrões casam.
+
+Um programa `awk` é uma lista de regras:
+
+```
+padrão { ação }
+padrão { ação }
+```
+
+Ambas as partes são opcionais, e a omissão de cada uma tem um padrão sensato:
+
+```bash
+awk '/ERRO/'                 # padrao sem acao   -> acao e "print $0"
+awk '{ print $1 }'           # acao sem padrao   -> roda em TODA linha
+awk '/ERRO/ { print $1 }'    # os dois
+```
+
+Isso já explica por que `awk '/ERRO/'` funciona como `grep ERRO` e por que `awk '{print}'` funciona como `cat`.
+
+::: {#fig-registro-e-campo}
+```{.tikz}
+%%| filename: registro-e-campo-no-awk
+%%| alt: Uma linha de log dividida em campos numerados, com as variaveis internas do awk anotadas em cada posicao
+\begin{tikzpicture}[
+    cp/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm,draw=manualblue,fill=manualblue!10},
+    vr/.style={font=\tiny\ttfamily,manualblue,align=center},
+    lb/.style={font=\tiny,align=center,text width=2.4cm},
+    fl/.style={-{Latex[length=1.2mm]},thin,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize,manualgray,anchor=west] at (0.0,6.6) {registro lido da entrada, delimitado por \texttt{RS} (padrão: quebra de linha):};
+
+  \node[cp,minimum width=1.7cm] (c1) at (1.10,5.9) {10.0.0.14};
+  \node[cp,minimum width=0.5cm] (c2) at (2.23,5.9) {-};
+  \node[cp,minimum width=0.5cm] (c3) at (2.76,5.9) {-};
+  \node[cp,minimum width=3.3cm] (c4) at (4.70,5.9) {[14/Jul/2026:09:22:01};
+  \node[cp,minimum width=1.2cm] (c5) at (6.98,5.9) {-0300]};
+  \node[cp,minimum width=0.95cm] (c6) at (8.09,5.9) {"GET};
+  \node[cp,minimum width=1.9cm] (c7) at (9.54,5.9) {/index.html};
+  \node[cp,minimum width=1.6cm] (c8) at (11.32,5.9) {HTTP/1.1"};
+  \node[cp,minimum width=0.8cm] (c9) at (12.55,5.9) {200};
+  \node[cp,minimum width=0.95cm,draw=manualgreen,fill=manualgreen!14] (c10) at (13.46,5.9) {5120};
+
+  \node[vr] at (1.10,5.35) {\$1};
+  \node[vr] at (2.23,5.35) {\$2};
+  \node[vr] at (2.76,5.35) {\$3};
+  \node[vr,manualred] at (4.70,5.35) {\$4};
+  \node[vr,manualred] at (6.98,5.35) {\$5};
+  \node[vr] at (8.09,5.35) {\$6};
+  \node[vr] at (9.54,5.35) {\$7};
+  \node[vr] at (11.32,5.35) {\$8};
+  \node[vr] at (12.55,5.35) {\$9};
+  \node[vr,manualgreen] at (13.46,5.35) {\$10 = \$NF};
+
+  \draw[decorate,decoration={brace,amplitude=4pt,mirror},manualgray,thick] (0.25,4.95) -- (13.95,4.95);
+  \node[font=\tiny\ttfamily,manualgray] at (7.1,4.55) {\$0 --- o registro inteiro};
+
+  \node[nt,text width=13.4cm,anchor=north west] at (0.25,4.0) {\textbf{As variáveis que o \texttt{awk} mantém sozinho.} \texttt{NF} é o número de campos deste registro --- aqui, 10 --- e \texttt{\$NF} é sempre o \emph{último} campo, o que evita contar colunas na mão. \texttt{NR} é o número do registro desde o início da execução; \texttt{FNR} reinicia a cada arquivo novo, e \texttt{FILENAME} diz qual é. \texttt{FS} define como dividir na entrada, \texttt{OFS} como juntar na saída, \texttt{RS} e \texttt{ORS} fazem o mesmo para registros.};
+
+  \node[nt,text width=13.4cm,anchor=north west] at (0.25,2.2) {\textbf{Note os campos em vermelho.} A data entre colchetes tem um espaço antes do fuso, então ela ocupa \textbf{dois} campos --- e a requisição entre aspas ocupa três. Nem o \texttt{awk} entende aspas ou colchetes por padrão: ele divide por espaço em branco e mais nada. A diferença para o \texttt{cut} é que o \texttt{awk} trata \emph{qualquer sequência} de espaços como um separador só, enquanto o \texttt{cut} conta cada espaço --- daí uma coluna a mais deslocar tudo no \texttt{cut} e não no \texttt{awk}. Para campos delimitados por aspas, mude o \texttt{FS} para a aspa; para o último campo, prefira \texttt{\$NF} a contar colunas.};
+\end{tikzpicture}
+```
+Uma linha de log dividida em campos, com as variáveis que o `awk` preenche sozinho.
+:::
+
+## Padrões: quais registros interessam
+
+```bash
+awk '/ERRO/'                     # expressao regular sobre a linha inteira
+awk '$3 ~ /^ERRO/'               # expressao regular sobre UM campo
+awk '$3 !~ /INFO/'               # o campo NAO casa
+awk '$9 >= 400'                  # comparacao numerica
+awk '$1 == "10.0.0.14"'          # comparacao de texto
+awk 'NF == 0'                    # linhas vazias
+awk 'NR > 1'                     # pula o cabecalho
+awk '$9 >= 400 && $1 !~ /^10\./' # combinacao booleana
+awk '/inicio/,/fim/'             # faixa, como no sed
+```
+
+E os dois padrões especiais, que não dependem de registro nenhum:
+
+```bash
+awk 'BEGIN { FS=":"; print "usuario,shell" }
+     { print $1 "," $7 }
+     END { print NR " linhas processadas" }' /etc/passwd
+```
+
+`BEGIN` roda **antes** da primeira linha — é onde se configuram separadores e se imprime cabeçalho. `END` roda **depois** da última — é onde se imprime o total. Um programa que só tem `BEGIN` nem lê a entrada, o que torna `awk 'BEGIN{ print 3*7 }'` uma calculadora aceitável.
+
+## Separadores: o `-F` que resolve metade dos casos
+
+```bash
+awk -F: '{ print $1 }' /etc/passwd          # divide por dois-pontos
+awk -F'\t' '{ print $2 }' dados.tsv         # por tabulacao
+awk -F'[,;]' '{ print $3 }' misto.csv       # por virgula OU ponto e virgula (ERE)
+awk -F'" "' '{ print $2 }' acesso.log       # por aspa-espaco-aspa
+awk 'BEGIN{ FS=":"; OFS="|" } { $1=$1; print }' /etc/passwd
+```
+
+O `FS` aceita expressão regular quando tem mais de um caractere — daí `-F'[,;]'` funcionar. Um caso especial merece atenção: `FS=" "` (o padrão) significa "sequências de espaço em branco, ignorando as das bordas", enquanto `FS="[ ]"` significa "exatamente um espaço". São comportamentos diferentes, e o primeiro é quase sempre o que se quer.
+
+A última linha do bloco acima esconde o idioma mais obscuro do `awk`. O `OFS` só é aplicado quando o registro é **reconstruído**, e o `awk` só reconstrói `$0` se algum campo for atribuído. `$1=$1` é uma atribuição que não muda nada e força a reconstrução — é assim que se troca o separador de um arquivo inteiro.
+
+## Ações: variáveis, aritmética e controle
+
+Variáveis não se declaram e não têm tipo fixo. Uma variável nunca usada vale `0` em contexto numérico e cadeia vazia em contexto de texto — o que dispensa inicializar contador.
+
+```bash
+awk '{ total += $9 } END { print total }' acesso.log
+awk '{ n++ } END { print "media:", total/n }'          # cuidado: n pode ser 0
+awk '$9 > max { max = $9; linha = $0 } END { print linha }'
+```
+
+A concatenação é a **justaposição**: `print $1 $2` gruda os dois; `print $1, $2` insere o `OFS`. É uma fonte constante de saída malformada.
+
+Estruturas de controle são as do C:
+
+```bash
+awk '{
+    if ($9 >= 500)      classe = "erro de servidor"
+    else if ($9 >= 400) classe = "erro de cliente"
+    else                classe = "ok"
+    contagem[classe]++
+}
+END { for (c in contagem) print contagem[c], c }' acesso.log
+```
+
+E o `printf` do `awk` é o mesmo do @sec-cap054, com a diferença de não acrescentar quebra de linha:
+
+```bash
+awk '{ printf "%-15s %8.2f KB\n", $1, $9/1024 }' acesso.log
+```
+
+Dois comandos de fluxo valem citar: `next` pula para o próximo registro sem executar o resto das regras — o equivalente do `continue` — e `exit` encerra a leitura, mas ainda executa o bloco `END`.
+
+## Arrays associativos: a razão de o `awk` existir
+
+Toda tabela em `awk` é associativa, indexada por texto. Isso é o que torna agregação trivial.
+
+::: {#fig-agregacao-no-awk}
+```{.tikz}
+%%| filename: agregacao-com-array-associativo-no-awk
+%%| alt: Fluxo mostrando linhas de log entrando uma a uma, um array associativo acumulando somas por chave, e o bloco END imprimindo o resultado agregado
+\begin{tikzpicture}[
+    ln/.style={rounded corners=1.5pt,draw,thin,align=left,font=\tiny\ttfamily,inner sep=2.5pt,minimum height=0.42cm,minimum width=3.5cm,draw=manualgray,fill=manualgray!7},
+    cel/.style={rounded corners=1.5pt,draw,thick,align=center,font=\tiny\ttfamily,inner sep=2.5pt,minimum height=0.45cm},
+    ky/.style={cel,draw=manualblue,fill=manualblue!12,minimum width=1.7cm},
+    vl/.style={cel,draw=manualgreen,fill=manualgreen!14,minimum width=1.1cm},
+    fl/.style={-{Latex[length=1.4mm]},semithick,manualgray},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,manualgray] at (2.2,6.7) {entrada, uma linha por vez};
+  \node[ln] at (2.2,6.15) {10.0.0.14 ... 200 5120};
+  \node[ln] at (2.2,5.65) {10.0.0.14 ... 404 512};
+  \node[ln] at (2.2,5.15) {192.168.1.9 ... 200 8192};
+  \node[ln] at (2.2,4.65) {10.0.0.14 ... 200 1024};
+  \node[ln] at (2.2,4.15) {192.168.1.9 ... 500 64};
+
+  \node[font=\scriptsize\ttfamily,manualgreen,align=center] at (6.3,6.3) {\{ soma[\$1] += \$NF \}};
+  \node[font=\tiny,manualgray,align=center,text width=2.9cm] at (6.3,5.7) {executado uma vez por linha; a chave nova nasce com zero};
+  \draw[fl] (4.1,5.15) -- (5.0,5.15);
+  \draw[fl] (7.6,5.15) -- (8.5,5.15);
+
+  \node[hd,manualblue] at (10.4,6.7) {array \texttt{soma}, na memória};
+  \node[ky] at (9.7,6.1) {10.0.0.14};
+  \node[vl] at (11.4,6.1) {5120};
+  \node[ky] at (9.7,5.6) {10.0.0.14};
+  \node[vl] at (11.4,5.6) {5632};
+  \node[ky] at (9.7,5.1) {192.168.1.9};
+  \node[vl] at (11.4,5.1) {8192};
+  \node[ky] at (9.7,4.6) {10.0.0.14};
+  \node[vl] at (11.4,4.6) {6656};
+  \node[ky] at (9.7,4.1) {192.168.1.9};
+  \node[vl] at (11.4,4.1) {8256};
+  \node[font=\tiny,manualgray,align=left,text width=2.3cm] at (13.2,5.1) {o mesmo par chave/valor sendo atualizado, não linhas novas};
+
+  \draw[fl,manualyellow!65!black,thick] (10.4,3.75) -- (10.4,3.1);
+  \node[font=\scriptsize\ttfamily,manualyellow!60!black,align=center] at (10.4,2.75) {END \{ for (ip in soma) ... \}};
+  \node[cel,draw=manualyellow,fill=manualyellow!20,minimum width=3.4cm] at (10.4,2.2) {10.0.0.14 6656 \quad 192.168.1.9 8256};
+
+  \node[nt,text width=13.0cm] at (6.6,1.2) {A agregação inteira cabe em duas regras porque três coisas são automáticas: o array é criado sozinho, a chave inexistente vale zero na primeira soma, e o \texttt{END} tem acesso a tudo o que sobreviveu ao laço. O custo é a memória --- o array guarda \textbf{uma entrada por chave distinta}, então agregar por endereço num log de milhões de linhas é barato (poucos milhares de chaves), mas agregar por URL completa com parâmetros pode consumir gigabytes. A ordem de \texttt{for (k in a)} é arbitrária: ordene depois, com \texttt{sort}.};
+\end{tikzpicture}
+```
+Agregação com array associativo: o `awk` acumula por chave e o `END` imprime.
+:::
+
+Os operadores de array:
+
+```bash
+awk '{ visto[$1]++ } END { print length(visto), "enderecos distintos" }'
+awk '!visto[$0]++'                        # DEDUPLICA sem ordenar (idioma classico)
+awk 'BEGIN{ if ("a" in tab) ... }'        # testa presenca SEM criar a chave
+awk '{ delete tab[$1] }'                  # remove uma chave
+awk 'END { for (k in tab) print k, tab[k] }'
+```
+
+O `awk '!visto[$0]++'` merece parada. Ele é um padrão sem ação, então a ação é `print $0`. A expressão `visto[$0]++` devolve o valor **antes** de incrementar: zero na primeira vez que a linha aparece (falso, negado vira verdadeiro, imprime) e um ou mais nas seguintes (verdadeiro, negado vira falso, não imprime). Resultado: deduplica preservando a ordem original, o que `sort -u` não faz.
+
+Um detalhe que morde: `if (tab[k] == "")` **cria** a chave `k` como efeito colateral do acesso. Para testar sem criar, use `if (k in tab)`.
+
+## Funções embutidas
+
+```bash
+length($0)              length(arr)         # tamanho de texto ou de array
+substr($0, 5, 10)       # a partir do caractere 5 (base 1!), 10 caracteres
+index($0, "erro")       # posicao da primeira ocorrencia, 0 se ausente
+split($4, p, "/")       # divide $4 em p[1], p[2]... devolve a quantidade
+sub(/a/, "b")           # substitui a PRIMEIRA ocorrencia em $0
+gsub(/a/, "b", $3)      # substitui TODAS, no campo indicado
+match($0, /[0-9]+/)     # posicao; preenche RSTART e RLENGTH
+sprintf("%05d", $1)     # formata e devolve, sem imprimir
+toupper($1)  tolower($1)
+int(3.9)     sqrt(2)    # e as demais funcoes matematicas
+```
+
+Índices começam em **1** no `substr` e no `split`, ao contrário dos arrays do Bash. É a pegadinha mais comum de quem alterna entre os dois.
+
+Funções próprias se declaram com `function`, e a convenção para variáveis locais é declará-las como parâmetros extras — uma esquisitice da linguagem que vale conhecer:
+
+```bash
+awk '
+function humano(bytes,   unidade, i) {          # os espacos marcam parametros locais
+    split("B KB MB GB TB", unidade, " ")
+    for (i = 1; bytes >= 1024 && i < 5; i++) bytes /= 1024
+    return sprintf("%.1f %s", bytes, unidade[i])
+}
+{ soma[$1] += $NF }
+END { for (ip in soma) printf "%-16s %s\n", ip, humano(soma[ip]) }
+' acesso.log
+```
+
+## Vários arquivos e o idioma `FNR==NR`
+
+Quando o `awk` recebe dois arquivos, `NR` continua contando e `FNR` reinicia. A comparação `FNR==NR` é verdadeira **apenas durante o primeiro arquivo**, o que dá um jeito de carregar uma tabela e depois consultá-la:
+
+```bash
+# marca no log as linhas cujo IP esta na lista de indicadores
+awk 'FNR==NR { ioc[$1]=1; next } $1 in ioc { print "SUSPEITO:", $0 }' iocs.txt acesso.log
+```
+
+É a junção de dois arquivos sem banco de dados, e resolve uma classe inteira de problemas que de outro modo viraria laço aninhado com `grep`.
+
+Valores de fora entram com `-v`, que é a forma segura — sem interpolação do shell dentro do programa:
+
+```bash
+awk -v limite=400 -v alvo="$IP" '$1 == alvo && $9 >= limite' acesso.log
+```
+
+Nunca monte o programa `awk` por interpolação de variável do shell: um valor com aspas ou barra quebra a sintaxe, e um valor hostil executa o que quiser. `-v` existe exatamente para isso.
+
+## Qual `awk` está instalado
+
+Três implementações circulam. No Kali e no Debian, `awk` costuma ser um link para o `mawk` (rápido, enxuto) ou para o `gawk` (o da GNU, com extensões), dependendo do que estiver instalado — confira com `awk --version` ou `readlink -f "$(command -v awk)"`.
+
+Recursos só do `gawk`: `gensub()` (substitui devolvendo em vez de alterar), `RS` como expressão regular (permite registros de várias linhas), `asort()`, `IGNORECASE`, `PROCINFO`, e a leitura de `switch`. Se o script usa esses, declare `#!/usr/bin/gawk -f` e instale o pacote — não confie em `awk` genérico.
+
+O `busybox awk` é ainda mais limitado, e é o que existe em contêiner mínimo e em firmware de dispositivo embarcado.
+
+## Quando parar
+
+O `awk` cobre confortavelmente até uns cinquenta comandos de programa. Passando disso — ou quando o problema pede estruturas aninhadas, requisições de rede, tratamento de erro real ou testes automatizados — a resposta é Python. O sinal claro é a necessidade de um array de arrays: o `awk` só tem uma dimensão, e a emulação `arr[i "," j]` (via `SUBSEP`) funciona, mas é o começo do fim da legibilidade.
+
+## 🐉 No Kali
+
+- **Somar e agrupar saída de varredura é o uso diário.** Depois de `nmap -oG - alvo/24 > varredura.gnmap`, um `awk '/Ports:/ { split($0, p, "Ports: "); print $2, p[2] }'` põe host e portas lado a lado; um `awk '{ portas[$NF]++ } END { for (p in portas) print portas[p], p }' | sort -rn` diz qual porta é a mais comum na rede. Contar antes de olhar economiza horas de leitura de relatório.
+- **`FNR==NR` cruza escopo com resultado.** Com um arquivo de hosts autorizados pelo contrato e outro com o que a varredura encontrou, `awk 'FNR==NR{ok[$1]=1;next} !($1 in ok) { print "FORA DO ESCOPO:", $1 }' escopo.txt achados.txt` sinaliza cada host que não deveria ter sido tocado. Rodar isso **antes** da varredura, sobre a lista de alvos, é melhor ainda — varrer fora do escopo contratado é acesso não autorizado, com as consequências da Lei 12.737/2012.
+- **Detecção de anomalia em log é agregação simples.** `awk '$6 ~ /Failed/ { falhas[$NF]++ } END { for (ip in falhas) if (falhas[ip] > 20) print falhas[ip], ip }' /var/log/auth.log` lista os endereços com mais de vinte falhas de autenticação. É a mesma lógica de um `fail2ban` rudimentar, e serve tanto para defender o próprio host quanto para documentar o que o teste gerou de ruído no alvo.
+- **`awk` é o desempacotador de formatos esquisitos.** Saída de `enum4linux`, de `smbclient` e de ferramentas antigas raramente é CSV ou JSON. Um `-F` bem escolhido, `split()` e `substr()` transformam essas saídas em colunas que o `sort` e o `uniq` entendem. Boa parte do trabalho de encadear ferramentas do Kali é exatamente isso.
+- **Cuidado com `system()` e com o pipe de saída.** `awk` pode executar comandos com `system("...")` e com `print | "comando"`. Numa linha construída a partir de dado que veio do alvo — nome de host, banner de serviço, cabeçalho HTTP —, isso é injeção de comando com o privilégio de quem rodou o `awk`. Se precisar disparar comando por linha, imprima a lista e passe para `xargs`, que não interpreta o conteúdo como shell.
+
+> **Nota sobre a família RHEL.** O RHEL instala o `gawk` como `awk` por padrão; o Debian e o Kali frequentemente apontam para o `mawk`, que é mais rápido e **não** tem `gensub()`, `IGNORECASE` nem `RS` como expressão regular. Um script escrito no RHEL que use essas extensões falha silenciosamente ou com erro de sintaxe no Kali, e vice-versa: um script otimizado para o `mawk` pode ficar visivelmente mais lento no `gawk`. Se o script depende de extensão, o shebang é `#!/usr/bin/gawk -f` e o pacote entra na lista de dependências. Se precisa ser portável, atenha-se ao POSIX: `sub`, `gsub`, `split`, `substr`, `printf` e nada de `RS` multicaractere.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-awk`.
+
+1. **Monte o log.**
+
+   ```bash
+   mkdir -p ~/lab-awk && cd ~/lab-awk
+   cat > acesso.log <<'EOF'
+   10.0.0.14 - - [14/Jul/2026:09:22:01 -0300] "GET /index.html HTTP/1.1" 200 5120
+   10.0.0.14 - - [14/Jul/2026:09:22:09 -0300] "GET /admin HTTP/1.1" 404 512
+   192.168.1.9 - - [14/Jul/2026:09:23:11 -0300] "POST /login HTTP/1.1" 200 8192
+   10.0.0.14 - - [14/Jul/2026:09:24:40 -0300] "GET /logo.png HTTP/1.1" 200 1024
+   192.168.1.9 - - [14/Jul/2026:09:25:02 -0300] "GET /painel HTTP/1.1" 500 64
+   172.16.5.9 - - [14/Jul/2026:10:01:59 -0300] "GET /index.html HTTP/1.1" 200 5120
+   EOF
+   awk --version | head -1 || true
+   ```
+
+2. **Veja campos e variáveis internas.**
+
+   ```bash
+   awk '{ print NR, NF, $1, $9, $NF }' acesso.log
+   ```
+
+   Esperado: seis linhas, todas com `NF` igual a `10`. O status é o campo 9 e o tamanho é o 10 — mas `$NF` acerta o último sem você contar nada, e é a forma que sobrevive a um log com uma coluna a mais.
+
+3. **Filtre por campo, não pela linha inteira.**
+
+   ```bash
+   awk '$9 >= 400' acesso.log
+   echo '--- comparado com o grep ingenuo ---'
+   grep '404\|500' acesso.log
+   ```
+
+   Esperado: o `awk` traz as duas linhas de erro por comparação **numérica** no campo certo. O `grep` traria também qualquer linha em que `404` aparecesse dentro de uma URL ou de um tamanho.
+
+4. **Some.**
+
+   ```bash
+   awk '{ total += $NF } END { print "bytes:", total }' acesso.log
+   awk '$9 == 200 { ok += $NF } END { printf "so as respostas 200: %.1f KB\n", ok/1024 }' acesso.log
+   ```
+
+   Esperado: `20032` e `19.0 KB`. Repare que `total` nunca foi inicializado.
+
+5. **Agregue por chave — a resposta da abertura.**
+
+   ```bash
+   awk '{ soma[$1] += $NF } END { for (ip in soma) print soma[ip], ip }' acesso.log | sort -rn
+   ```
+
+   Esperado: `192.168.1.9` no topo, com `8256`; depois `10.0.0.14`, com `6656`; e `172.16.5.9` com `5120`. Note que o endereço com **mais requisições** não é o que consumiu mais tráfego — é exatamente para não supor esse tipo de coisa que se agrega.
+
+6. **Conte por classe de status.**
+
+   ```bash
+   awk '{
+       if      ($9 >= 500) c = "5xx servidor"
+       else if ($9 >= 400) c = "4xx cliente"
+       else                c = "2xx ok"
+       n[c]++
+   }
+   END { for (k in n) printf "%-14s %d\n", k, n[k] }' acesso.log
+   ```
+
+   Esperado: quatro respostas `2xx`, uma `4xx` e uma `5xx`.
+
+7. **Use `BEGIN` e `END` para produzir CSV.**
+
+   ```bash
+   awk 'BEGIN { OFS=","; print "ip","status","bytes" }
+        { print $1, $9, $NF }
+        END { print "# " NR " registros" > "/dev/stderr" }' acesso.log
+   ```
+
+   Esperado: um CSV limpo na saída padrão e a contagem na saída de erro — que não polui o arquivo se você redirecionar com `>` (@sec-cap012).
+
+8. **Troque o separador e force a reconstrução.**
+
+   ```bash
+   awk -F: '{ print $1, $7 }'                    /etc/passwd | head -4
+   awk 'BEGIN{FS=":"; OFS=" -> "} { $1=$1; print $1, $7 }' /etc/passwd | head -4
+   echo '--- sem o $1=$1 ---'
+   awk 'BEGIN{FS=":"; OFS=" -> "} { print $1, $7 }' /etc/passwd | head -4
+   ```
+
+   Esperado: os dois primeiros funcionam. O terceiro **também** usa o `OFS` (porque a vírgula no `print` sempre insere o `OFS`) — mas experimente `{ print $0 }` com e sem `$1=$1` e veja a diferença aparecer.
+
+9. **Deduplique preservando a ordem.**
+
+   ```bash
+   awk '{ print $1 }' acesso.log | awk '!visto[$0]++'
+   echo '--- comparado com sort -u ---'
+   awk '{ print $1 }' acesso.log | sort -u
+   ```
+
+   Esperado: o primeiro mantém a ordem de primeira aparição; o segundo ordena alfabeticamente. Escolha conforme o relatório precise de cronologia ou de ordem.
+
+10. **Cruze dois arquivos com `FNR==NR`.**
+
+    ```bash
+    printf '10.0.0.14\n203.0.113.7\n' > iocs.txt
+    awk 'FNR==NR { ioc[$1]=1; next } $1 in ioc { print "SUSPEITO:", $1, $9 }' iocs.txt acesso.log
+    ```
+
+    Esperado: três linhas marcadas, todas do `10.0.0.14`. O segundo indicador não aparece no log e não produz nada.
+
+11. **Passe valor de fora com `-v`, do jeito certo.**
+
+    ```bash
+    IP='192.168.1.9'
+    awk -v alvo="$IP" '$1 == alvo { n++; b += $NF } END { print alvo, n, b }' acesso.log
+    ```
+
+    Esperado: `192.168.1.9 2 8256`. Compare com a tentação de escrever `awk "\$1 == \"$IP\""` — que funciona até o dia em que a variável tiver uma aspa.
+
+12. **Escreva uma função e formate a saída.**
+
+    ```bash
+    awk '
+    function humano(b,   u, i) {
+        split("B KB MB GB", u, " ")
+        for (i = 1; b >= 1024 && i < 4; i++) b /= 1024
+        return sprintf("%.1f %s", b, u[i])
+    }
+    { soma[$1] += $NF; hits[$1]++ }
+    END {
+        printf "%-16s %6s %12s\n", "ENDERECO", "HITS", "TRAFEGO"
+        for (ip in soma) printf "%-16s %6d %12s\n", ip, hits[ip], humano(soma[ip])
+    }' acesso.log | sort -k2 -rn
+    cd ~ && rm -rf ~/lab-awk
+    ```
+
+    Esperado: uma tabela alinhada com cabeçalho, contagem e tráfego legível. É o relatório do problema da abertura, resolvido por inteiro.
+
+## Resumo
+
+- **O `awk` lê registro a registro e divide cada um em campos automaticamente**, tratando sequências de espaço como um separador só — o que o `cut` não faz.
+- **A estrutura é `padrão { ação }`.** Padrão sem ação imprime a linha; ação sem padrão roda em todas. `BEGIN` roda antes da primeira linha, `END` depois da última.
+- **`$0` é o registro inteiro, `$1..$NF` são os campos, `NF` é a quantidade, `NR` o número do registro** e `FNR` o número dentro do arquivo atual.
+- **`-F` define o separador de entrada e aceita expressão regular.** O `OFS` só entra em vigor quando `$0` é reconstruído — daí o idioma `$1=$1`.
+- **Variáveis não se declaram e valem zero quando novas**, o que torna `soma[$1] += $NF` uma agregação completa em quinze caracteres.
+- **Todo array é associativo.** `!visto[$0]++` deduplica preservando a ordem; `k in tab` testa sem criar a chave; a ordem de `for (k in a)` é arbitrária, então ordene depois.
+- **`FNR==NR` é o idioma de junção de dois arquivos** — carregue uma tabela do primeiro, consulte-a enquanto lê o segundo.
+- **Valor de fora entra com `-v`, nunca por interpolação do shell** no corpo do programa.
+- **Confira qual `awk` está instalado.** `mawk` é rápido e sem extensões; `gawk` tem `gensub`, `IGNORECASE` e `RS` como expressão regular. Script que dependa delas declara `#!/usr/bin/gawk -f`.

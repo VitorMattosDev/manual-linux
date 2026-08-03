@@ -1,3 +1,394 @@
 # Dados estruturados na linha de comando: jq, JSON e CSV {#sec-cap069}
 
-*(em elaboracao)*
+A API de inventário devolvia a lista de servidores e o script precisava dos endereços. A primeira versão funcionou:
+
+```bash
+curl -s https://inventario.interno/api/hosts | grep '"ip"' | cut -d'"' -f4
+```
+
+Duas semanas depois, parou de devolver qualquer coisa. Ninguém tinha mexido no script. O que mudou foi o servidor: passou a enviar a resposta **minificada**, tudo numa linha só. O `grep`, que decide por linha (@sec-cap065), passou a ver um documento inteiro como uma linha; o `cut -f4` pegou a quarta aspa desse amontoado, que era o nome do primeiro host.
+
+Consertado o `cut`, o script quebrou de novo quando um host ganhou o campo `"description": "servidor de \"testes\""`. A aspa escapada moveu tudo de lugar.
+
+E, na terceira vez, o problema foi que a API trocou a ordem das chaves — coisa que o JSON permite explicitamente, porque um objeto é um mapa, não uma sequência.
+
+Nenhum desses três é um bug do script. São três consequências da mesma decisão errada: **JSON não é texto orientado a linhas**, e tratá-lo com ferramentas de linha funciona até o dia em que não funciona. Este capítulo é sobre a ferramenta certa.
+
+## Por que expressão regular não resolve JSON
+
+Três propriedades do formato quebram qualquer abordagem baseada em padrão:
+
+1. **Espaço em branco é irrelevante.** O mesmo documento pode vir em uma linha ou em cem, e ambos são válidos. Nenhum padrão sobrevive a essa liberdade.
+2. **A estrutura é aninhada e recursiva.** Objetos dentro de listas dentro de objetos, sem limite. Expressões regulares reconhecem linguagens regulares, e aninhamento arbitrário não é uma delas (@sec-cap064).
+3. **Valores têm escapes.** `\"`, `\\`, `\n` e `é` dentro de uma cadeia significam outra coisa que os bytes que os representam.
+
+A ferramenta que entende tudo isso é o `jq`. Ele vem instalado no Kali; onde não estiver, `apt install jq` resolve.
+
+## O modelo: um filtro que transforma valores em valores
+
+O `jq` não é uma linguagem de consulta como SQL. Ele é uma linguagem de **filtro**: recebe um fluxo de valores JSON, aplica uma expressão a cada um e emite um fluxo de valores JSON.
+
+O filtro mais simples é `.`, a identidade — que na prática serve de formatador:
+
+```bash
+curl -s https://api.exemplo/hosts | jq .
+```
+
+::: {#fig-modelo-do-jq}
+```{.tikz}
+%%| filename: modelo-de-filtro-do-jq
+%%| alt: Diagrama mostrando um documento JSON entrando no jq, o operador ponto-colchetes transformando o array num fluxo de valores e cada valor sendo filtrado adiante
+\begin{tikzpicture}[
+    doc/.style={rounded corners=2pt,draw,thick,align=left,font=\tiny\ttfamily,inner sep=4pt,draw=manualgray,fill=manualgray!8},
+    vl/.style={rounded corners=2pt,draw,thick,align=left,font=\tiny\ttfamily,inner sep=3pt,minimum height=0.5cm,draw=manualblue,fill=manualblue!10},
+    fi/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=4pt,minimum height=0.6cm,draw=manualgreen,fill=manualgreen!13},
+    sa/.style={rounded corners=2pt,draw,thick,align=left,font=\tiny\ttfamily,inner sep=3pt,draw=manualyellow,fill=manualyellow!22},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,manualgray] at (1.9,6.9) {1 documento};
+  \node[doc,text width=3.0cm] (d) at (1.9,5.75) {[\\
+  \ \{"ip":"10.0.0.1",\\
+  \ \ "porta":22\},\\
+  \ \{"ip":"10.0.0.2",\\
+  \ \ "porta":80\},\\
+  \ \{"ip":"10.0.0.3",\\
+  \ \ "porta":22\}\\
+  ]};
+
+  \node[fi] (f1) at (4.9,5.75) {.[]};
+  \node[hd,manualgreen] at (4.9,6.9) {explode};
+
+  \node[hd,manualblue] at (7.6,6.9) {3 valores};
+  \node[vl,minimum width=2.3cm] (v1) at (7.6,6.35) {\{"ip":"10.0.0.1",...\}};
+  \node[vl,minimum width=2.3cm] (v2) at (7.6,5.75) {\{"ip":"10.0.0.2",...\}};
+  \node[vl,minimum width=2.3cm] (v3) at (7.6,5.15) {\{"ip":"10.0.0.3",...\}};
+
+  \node[fi,text width=2.2cm] (f2) at (10.6,5.75) {select(\\.porta==22)};
+  \node[hd,manualgreen] at (10.6,6.9) {filtra};
+
+  \node[hd,manualyellow!60!black] at (13.1,6.9) {2 valores};
+  \node[sa,minimum width=1.9cm] at (13.1,6.35) {\{"ip":"10.0.0.1",...\}};
+  \node[sa,minimum width=1.9cm] at (13.1,5.15) {\{"ip":"10.0.0.3",...\}};
+
+  \draw[fl] (d) -- (f1);
+  \draw[fl] (f1) -- (6.35,5.75);
+  \draw[fl] (8.85,5.75) -- (f2);
+  \draw[fl] (f2) -- (12.0,5.75);
+
+  \node[nt,text width=13.2cm] at (6.7,3.4) {\textbf{Tudo no \texttt{jq} é esse encadeamento.} O \texttt{|} interno funciona como o do shell, só que carregando \emph{valores JSON} em vez de bytes: \texttt{.[] | select(.porta==22) | .ip} lê-se ``para cada item da lista, se a porta for 22, devolva o campo \texttt{ip}''. A diferença crucial para o shell é que um filtro pode emitir \textbf{zero, um ou vários} valores para cada entrada --- o \texttt{.[]} emite vários, o \texttt{select} emite zero ou um, e é dessa aritmética que sai todo o poder da ferramenta.};
+
+  \node[nt,text width=13.2cm] at (6.7,1.4) {O que sai do \texttt{jq} ainda é \textbf{JSON}: cadeias vêm entre aspas e escapadas. Para alimentar o próximo comando do pipeline, é quase sempre \texttt{jq -r} (\emph{raw}), que emite o conteúdo da cadeia sem as aspas --- a opção mais esquecida e a causa número um de nome de arquivo com aspas no meio.};
+\end{tikzpicture}
+```
+O modelo do `jq`: um documento vira um fluxo de valores, e cada filtro transforma esse fluxo.
+:::
+
+## Navegar: os seletores
+
+```bash
+jq '.nome'                    # campo de um objeto
+jq '.host.rede.ip'            # aninhado
+jq '.[]'                      # cada elemento de um array (ou valor de um objeto)
+jq '.[0]'                     # o primeiro elemento
+jq '.[-1]'                    # o ultimo
+jq '.[2:5]'                   # fatia
+jq '.["chave com espaco"]'    # chave que nao e identificador
+jq '.hosts[].ip'              # atalho: para cada host, o campo ip
+jq '.talvez?'                 # nao falha se o tipo nao permitir
+jq '..'                       # descida recursiva: TODOS os valores, em qualquer nivel
+```
+
+Duas distinções que economizam depuração:
+
+**Campo ausente devolve `null`, não erro.** `.inexistente` sobre um objeto devolve `null` silenciosamente. Isso é conveniente e traiçoeiro: um erro de digitação no nome da chave produz uma coluna de `null` em vez de uma mensagem. Para exigir a presença, `has("chave")` ou `.chave // error("faltou chave")`.
+
+**Tipo errado devolve erro.** `.campo` sobre um array levanta `Cannot index array with "campo"`. O `?` transforma esse erro em nada emitido, o que é útil ao percorrer estruturas heterogêneas.
+
+O operador `//` fornece valor padrão quando o lado esquerdo é `null` ou `false`:
+
+```bash
+jq -r '.hosts[] | .apelido // .ip'      # usa o apelido; se nao tiver, o ip
+```
+
+## Filtrar, transformar e agregar
+
+```bash
+jq '.[] | select(.porta == 22)'                  # so os que satisfazem a condicao
+jq '.[] | select(.ip | startswith("10."))'       # condicao sobre um campo
+jq '.[] | select(.tags | index("producao"))'     # o array contem o valor?
+jq 'map(.porta)'                                 # transforma ARRAY em ARRAY
+jq '[ .[] | .porta ]'                            # o mesmo, com colchetes de coleta
+jq 'length'                                      # tamanho de array, objeto ou cadeia
+jq 'keys'                                        # chaves de um objeto, ordenadas
+jq 'to_entries[] | "\(.key)=\(.value)"'          # objeto -> pares chave/valor
+jq 'group_by(.porta) | map({porta: .[0].porta, n: length})'
+jq 'add'                                         # soma um array de numeros
+jq 'sort_by(.porta) | reverse'
+jq 'unique_by(.ip)'
+jq 'any(.[]; .porta == 22)'                      # existe algum?
+```
+
+A diferença entre `map(f)` e `.[] | f` é a mesma entre `"${arr[@]}"` e um laço (@sec-cap060): `map` devolve **um array**, `.[] |` devolve **vários valores soltos**. Escolher errado é a origem de `jq: error: Cannot iterate over null` e de saídas que vêm com colchetes a mais.
+
+Objetos novos se constroem com a sintaxe literal, e cadeias interpolam com `\(...)`:
+
+```bash
+jq '{endereco: .ip, servico: .porta, alvo: "\(.ip):\(.porta)"}'
+jq -r '.[] | "\(.ip)\t\(.porta)\t\(.servico // "desconhecido")"'
+```
+
+## Sair do JSON: `-r`, `@csv` e amigos
+
+```bash
+jq -r '.[].ip'                     # sem aspas -- para alimentar o pipeline
+jq -c '.[]'                        # compacto: um documento por linha (NDJSON)
+jq -r '.[] | [.ip, .porta] | @csv' # CSV com aspas e escapes CORRETOS
+jq -r '.[] | [.ip, .porta] | @tsv' # TSV
+jq -r '.url | @uri'                # codifica para URL
+jq -r '.dados | @base64'
+jq -n '{gerado: now, host: "kali"}'  # -n: nao le entrada, so produz
+```
+
+O `@csv` merece destaque porque resolve o problema inverso do capítulo: gerar CSV **correto**, com aspas duplicadas quando o valor contém aspas e campo entre aspas quando contém vírgula. Montar CSV com `printf` e vírgulas na mão funciona até o primeiro valor com vírgula dentro.
+
+Valores do shell entram por opção, nunca por interpolação:
+
+```bash
+jq --arg alvo "$IP" '.[] | select(.ip == $alvo)'        # texto
+jq --argjson lim 1024 '.[] | select(.bytes > $lim)'     # numero, booleano, objeto
+```
+
+A regra é idêntica à do `-v` do `awk` (@sec-cap067): construir o programa por interpolação de shell quebra na primeira aspa e é injeção de código na segunda.
+
+## Vários documentos e arquivos grandes
+
+O `jq` lê um **fluxo** de documentos, não um só. Isso o torna nativo para NDJSON (um JSON por linha), formato comum em logs modernos:
+
+```bash
+jq -r 'select(.level=="error") | .msg' app.ndjson       # cada linha e um documento
+jq -s 'length' app.ndjson                               # --slurp: junta tudo num array
+jq -s 'group_by(.level) | map({(.[0].level): length}) | add' app.ndjson
+```
+
+O `--slurp` é o que permite agregar sobre o conjunto — sem ele, cada linha é processada isoladamente e `length` responde por documento.
+
+Duas opções complementares: `--raw-input` (`-R`) lê texto comum em vez de JSON, o que permite converter log em JSON; e `--exit-status` (`-e`) faz o `jq` sair com status 1 quando o resultado é `null` ou `false`, permitindo usá-lo em `if` como se fosse `grep -q`.
+
+```bash
+if jq -e '.hosts | length > 0' inventario.json > /dev/null; then
+    echo "ha hosts no inventario"
+fi
+```
+
+Para arquivos maiores que a memória, `--stream` processa por eventos em vez de carregar a árvore inteira. É desconfortável de escrever e raramente necessário; a alternativa usual é converter para NDJSON uma vez (`jq -c '.[]' grande.json > linhas.ndjson`) e processar linha a linha dali em diante.
+
+## CSV é uma armadilha, e YAML e XML têm suas ferramentas
+
+::: {#fig-csv-armadilha}
+```{.tikz}
+%%| filename: csv-e-a-armadilha-das-aspas
+%%| alt: Comparacao entre uma linha CSV simples processada corretamente por cut e uma linha com virgula dentro de campo entre aspas que quebra o cut
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.55cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    ru/.style={bx,draw=manualred,fill=manualred!11},
+    cd/.style={font=\scriptsize\ttfamily,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cd,manualgray] at (0.3,6.5) {linha bem-comportada: \texttt{10.0.0.1,web,producao}};
+  \node[cd,manualgreen] at (0.3,5.9) {cut -d, -f2 \ $\rightarrow$};
+  \node[ok,minimum width=1.3cm] at (4.3,5.9) {web};
+  \node[font=\scriptsize,manualgreen,anchor=west] at (5.3,5.9) {correto};
+
+  \node[cd,manualgray] at (0.3,4.9) {linha real: \texttt{10.0.0.1,"servidor web, filial SP",producao}};
+  \node[cd,manualred] at (0.3,4.3) {cut -d, -f2 \ $\rightarrow$};
+  \node[ru,minimum width=2.6cm] at (5.0,4.3) {"servidor web};
+  \node[font=\scriptsize,manualred,anchor=west] at (6.6,4.3) {o campo foi cortado ao meio};
+  \node[cd,manualred] at (0.3,3.7) {awk -F, '\{print \$2\}' \ $\rightarrow$};
+  \node[ru,minimum width=2.6cm] at (5.6,3.7) {"servidor web};
+  \node[font=\scriptsize,manualred,anchor=west] at (7.2,3.7) {mesmo erro --- o \texttt{awk} também não conhece aspas};
+
+  \node[cd,manualgreen] at (0.3,3.1) {mlr --icsv --ojson cat \ $\rightarrow$};
+  \node[ok,minimum width=3.6cm] at (6.0,3.1) {"servidor web, filial SP"};
+  \node[font=\scriptsize,manualgreen,anchor=west] at (8.0,3.1) {correto};
+
+  \node[nt,text width=13.0cm] at (6.6,1.7) {A especificação do CSV permite \textbf{vírgula dentro de campo entre aspas}, \textbf{aspas duplicadas} para representar uma aspa literal (\texttt{""}) e até \textbf{quebra de linha dentro de um campo} --- o que arruína a premissa ``um registro por linha'' de que dependem \texttt{grep}, \texttt{cut}, \texttt{sed} e \texttt{awk} ao mesmo tempo. Dados de exportação de planilha, de banco de dados e de ferramenta comercial contêm essas três coisas rotineiramente.};
+
+  \node[nt,text width=13.0cm] at (6.6,0.35) {As saídas: use \texttt{mlr} (Miller), \texttt{csvkit} ou uma linguagem com biblioteca de CSV; ou converta uma vez para JSON/TSV e trabalhe dali. Para \emph{gerar} CSV, \texttt{jq -r '... | @csv'} produz a citação correta de graça. Só trate CSV com \texttt{cut} quando você controlar quem o gerou \textbf{e} souber que não há vírgula, aspa nem quebra de linha nos valores.};
+\end{tikzpicture}
+```
+Por que CSV não se processa com ferramentas de linha: a vírgula dentro do campo citado.
+:::
+
+Para os outros formatos estruturados:
+
+```bash
+yq -o=json '.' config.yaml         # YAML -> JSON, e dai o jq resolve
+yq '.services.web.ports[0]' docker-compose.yml
+xmlstarlet sel -t -v '//host/address/@addr' -n varredura.xml
+mlr --icsv --ojson cat dados.csv | jq '.[] | select(.status=="ativo")'
+mlr --icsv --opprint stats1 -a sum,mean -f bytes -g ip dados.csv
+```
+
+O `yq` moderno é, em essência, um `jq` que fala YAML — a sintaxe dos filtros é a mesma. O `xmlstarlet` usa XPath e é a ferramenta certa para a saída `-oX` do `nmap`. O `mlr` é o que falta na caixa de ferramentas de quem lida com CSV a sério.
+
+## 🐉 No Kali
+
+- **A saída JSON das ferramentas modernas é feita para o `jq`.** `nmap` produz XML (`-oX`), mas `nuclei`, `httpx`, `subfinder`, `naabu` e boa parte do ferramental atual emite NDJSON, um achado por linha. `nuclei -jsonl -o achados.jsonl` seguido de `jq -r 'select(.info.severity=="critical") | "\(.host) \(.info.name)"' achados.jsonl` transforma centenas de linhas num resumo do que precisa de atenção imediata. Isso é triagem de resultado de teste autorizado — a mesma ferramenta contra alvo sem contrato não muda o enquadramento da Lei 12.737/2012.
+- **Converter XML do `nmap` uma vez economiza o resto do trabalho.** `xmlstarlet sel -t -m '//host' -v 'address/@addr' -o " " -v 'ports/port[state/@state="open"]/@portid' -n varredura.xml` produz host e portas em texto simples, pronto para `sort`, `uniq` e `awk`. Alternativamente, ferramentas como o `nmap-parse-output` geram JSON e devolvem o problema ao `jq`.
+- **`--arg` é a diferença entre um filtro e uma injeção.** Ao montar consulta com um valor vindo do alvo — nome de host, cabeçalho, campo de resposta —, `jq --arg h "$HOST" 'select(.host == $h)'` é seguro; `jq "select(.host == \"$HOST\")"` executa o que vier dentro da variável. Dado que veio do alvo é dado hostil por definição.
+- **Redigir campo sensível antes de entregar o relatório.** `jq '(.. | .password? , .token? , .cookie?) |= "REDIGIDO"' bruto.json > entrega.json` percorre a estrutura inteira, em qualquer profundidade, e substitui os campos indicados. Fazer isso com `sed` sobre o JSON é possível e é exatamente o tipo de solução que falha em silêncio no primeiro campo aninhado — e redação que falha é vazamento.
+- **`jq -e` transforma a checagem em condição de script.** `if jq -e '[.[] | select(.severity=="critical")] | length > 0' achados.json >/dev/null; then notificar; fi` só dispara o alerta quando há achado crítico. É a forma correta de encadear a triagem com o resto da automação, sem `grep` sobre JSON.
+
+> **Nota sobre a família RHEL.** O `jq` é o mesmo binário nas duas famílias e vem dos repositórios oficiais em ambas (`apt install jq` / `dnf install jq`). O que muda é a **versão**: o `jq` 1.6 e o 1.7 diferem em detalhes que mordem — o 1.7 corrigiu o arredondamento de números grandes, mudou a ordenação de `keys` para chaves não ASCII e acrescentou `pick`, `abs` e `toarray`. Um filtro escrito para o 1.7 pode falhar num RHEL mais antigo. Confira com `jq --version` antes de assumir. O `yq` tem um problema pior: existem dois projetos distintos com esse nome — o de Mike Farah (em Go, sintaxe de `jq`) e o `yq` em Python (invólucro do `jq`), com linhas de comando incompatíveis. Saiba qual está instalado antes de escrever o script.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-jq`. Confira antes que o `jq` está presente: `jq --version`.
+
+1. **Monte os dados.**
+
+   ```bash
+   mkdir -p ~/lab-jq && cd ~/lab-jq
+   cat > inventario.json <<'EOF'
+   {
+     "gerado": "2026-07-14",
+     "hosts": [
+       {"ip": "10.0.0.1", "nome": "web01",  "portas": [22, 80, 443], "tags": ["producao"]},
+       {"ip": "10.0.0.2", "nome": "db01",   "portas": [22, 5432],    "tags": ["producao","critico"]},
+       {"ip": "10.0.0.3", "nome": "teste",  "portas": [22],          "tags": ["lab"],
+        "descricao": "servidor de \"testes\", filial SP"}
+     ]
+   }
+   EOF
+   ```
+
+2. **Reproduza a quebra da abertura.**
+
+   ```bash
+   jq -c . inventario.json > minificado.json
+   cat minificado.json
+   grep '"ip"' minificado.json | cut -d'"' -f4
+   ```
+
+   Esperado: o documento inteiro numa linha, e o `cut` devolvendo `hosts` — a quarta aspa do documento, que não é endereço nenhum.
+
+3. **Navegue.**
+
+   ```bash
+   jq '.gerado'          inventario.json
+   jq '.hosts | length'  inventario.json
+   jq '.hosts[0].nome'   inventario.json
+   jq -r '.hosts[].ip'   inventario.json
+   ```
+
+   Esperado: a data entre aspas, `3`, `"web01"` entre aspas, e os três endereços **sem** aspas por causa do `-r`.
+
+4. **Veja o `-r` fazer diferença no pipeline.**
+
+   ```bash
+   jq    '.hosts[].nome' inventario.json | while read -r n; do echo "[$n]"; done
+   echo '--- com -r ---'
+   jq -r '.hosts[].nome' inventario.json | while read -r n; do echo "[$n]"; done
+   ```
+
+   Esperado: sem `-r`, os nomes chegam com aspas dentro dos colchetes. É a razão de o `-r` ser quase obrigatório quando a saída alimenta outro comando.
+
+5. **Filtre com `select`.**
+
+   ```bash
+   jq -r '.hosts[] | select(.portas | index(443)) | .nome' inventario.json
+   jq -r '.hosts[] | select(.tags | index("critico")) | .ip' inventario.json
+   jq -r '.hosts[] | select(.ip | startswith("10.0.0.")) | .nome' inventario.json
+   ```
+
+   Esperado: `web01`; depois `10.0.0.2`; depois os três nomes.
+
+6. **Compare `map` com `.[] |`.**
+
+   ```bash
+   jq '.hosts | map(.ip)'   inventario.json
+   echo '--- versus ---'
+   jq '.hosts[] | .ip'      inventario.json
+   ```
+
+   Esperado: o primeiro devolve **um array**, o segundo devolve **três valores soltos**. É a distinção que decide se a saída tem colchetes.
+
+7. **Construa objetos e interpole.**
+
+   ```bash
+   jq -c '.hosts[] | {host: .nome, n_portas: (.portas | length)}' inventario.json
+   jq -r '.hosts[] | "\(.ip):\(.portas[0]) -> \(.nome)"' inventario.json
+   ```
+
+   Esperado: três objetos compactos, depois três linhas no formato `endereço:porta -> nome`.
+
+8. **Gere CSV correto — inclusive com o campo problemático.**
+
+   ```bash
+   jq -r '.hosts[] | [.ip, .nome, (.descricao // "")] | @csv' inventario.json
+   ```
+
+   Esperado: três linhas, e a terceira com a descrição inteira entre aspas, com as aspas internas **duplicadas** (`""testes""`). Monte isso à mão com `printf` e veja o resultado quebrar.
+
+9. **Prove que o `cut` não dá conta desse CSV.**
+
+   ```bash
+   jq -r '.hosts[] | [.ip, .nome, (.descricao // "")] | @csv' inventario.json > hosts.csv
+   cut -d, -f3 hosts.csv
+   ```
+
+   Esperado: a terceira linha sai cortada no meio da descrição, exatamente como na @fig-csv-armadilha.
+
+10. **Agregue.**
+
+    ```bash
+    jq '[.hosts[].portas[]] | length'                    inventario.json
+    jq '[.hosts[].portas[]] | group_by(.) | map({porta: .[0], n: length})' inventario.json
+    jq -r '.hosts[] | .tags[]' inventario.json | sort | uniq -c | sort -rn
+    ```
+
+    Esperado: seis portas no total; o agrupamento mostrando a porta 22 com três ocorrências; e a contagem de etiquetas com `producao` no topo.
+
+11. **Passe valor de fora e use o status de saída.**
+
+    ```bash
+    ALVO=10.0.0.2
+    jq -r --arg a "$ALVO" '.hosts[] | select(.ip == $a) | .nome' inventario.json
+    if jq -e --arg a "$ALVO" 'any(.hosts[]; .ip == $a)' inventario.json > /dev/null; then
+        echo "alvo esta no inventario"
+    else
+        echo "alvo NAO esta no inventario"
+    fi
+    ```
+
+    Esperado: `db01`, seguido de `alvo esta no inventario`. Troque para `10.9.9.9` e veja a outra ramificação.
+
+12. **Trabalhe com NDJSON e redija campos sensíveis.**
+
+    ```bash
+    jq -c '.hosts[]' inventario.json > hosts.ndjson
+    wc -l hosts.ndjson
+    jq -r 'select(.tags | index("producao")) | .ip' hosts.ndjson
+    jq -s 'length' hosts.ndjson
+    echo '--- redacao em qualquer profundidade ---'
+    printf '{"user":"kali","cred":{"password":"S3nh4","token":"abc123"}}\n' > segredo.json
+    jq '(.. | .password? , .token?) |= "REDIGIDO"' segredo.json
+    cd ~ && rm -rf ~/lab-jq
+    ```
+
+    Esperado: três linhas no NDJSON; dois endereços de produção; `3` com o `--slurp`; e o último comando devolvendo o objeto com senha e token substituídos, sem tocar no nome do usuário.
+
+## Resumo
+
+- **JSON não é texto orientado a linhas.** Espaço em branco é livre, a estrutura é aninhada e os valores têm escapes — três razões pelas quais `grep`, `cut` e `sed` funcionam até deixarem de funcionar, sem aviso.
+- **O `jq` é uma linguagem de filtro**: recebe um fluxo de valores, aplica a expressão e emite outro fluxo. O `|` interno compõe filtros como o do shell compõe comandos.
+- **`.[]` explode uma coleção em vários valores; `map(f)` devolve um array.** Escolher o errado é a origem da maioria das saídas com colchetes a mais ou a menos.
+- **`-r` é quase obrigatório quando a saída alimenta outro comando** — sem ele, as cadeias saem com aspas de JSON.
+- **Campo ausente devolve `null` em silêncio.** Use `has()`, `//` para valor padrão, ou `// error(...)` para exigir presença.
+- **Valores do shell entram com `--arg` e `--argjson`**, nunca por interpolação — pela mesma razão que o `awk` tem `-v`.
+- **`@csv` e `@tsv` geram saída citada corretamente**, e `-e` faz o `jq` servir de condição em `if`.
+- **CSV com vírgula ou aspas dentro de campo quebra `cut`, `awk` e `sed` ao mesmo tempo.** Use `mlr` ou `csvkit`, ou converta para JSON e volte para o `jq`.
+- **NDJSON — um documento por linha — é o formato do ferramental moderno**, e o `jq` o processa nativamente; `--slurp` junta tudo num array quando a agregação exigir.

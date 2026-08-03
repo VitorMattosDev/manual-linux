@@ -109,13 +109,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 11 — Processamento de Texto
 
-- [ ] **cap 064** - Expressões regulares: fundamentos e os diferentes sabores - `vol11/cap064-expressoes-regulares-fundamentos-e-os.qmd`
-- [ ] **cap 065** - grep e a busca de padrões - `vol11/cap065-grep-e-a-busca-de-padroes.qmd`
-- [ ] **cap 066** - sed: o editor de fluxo - `vol11/cap066-sed-o-editor-de-fluxo.qmd`
-- [ ] **cap 067** - awk: processamento por campos e registros - `vol11/cap067-awk-processamento-por-campos-e-registros.qmd`
-- [ ] **cap 068** - cut, sort, uniq, tr e a caixa de ferramentas de texto - `vol11/cap068-cut-sort-uniq-tr-e-a-caixa-de-ferramentas-de.qmd`
-- [ ] **cap 069** - Dados estruturados na linha de comando: jq, JSON e CSV - `vol11/cap069-dados-estruturados-na-linha-de-comando-jq.qmd`
-- [ ] **cap 070** - Juntando tudo: pipelines de processamento de dados - `vol11/cap070-juntando-tudo-pipelines-de-processamento-de.qmd`
+- [x] **cap 064** - Expressões regulares: fundamentos e os diferentes sabores - `vol11/cap064-expressoes-regulares-fundamentos-e-os.qmd`
+- [x] **cap 065** - grep e a busca de padrões - `vol11/cap065-grep-e-a-busca-de-padroes.qmd`
+- [x] **cap 066** - sed: o editor de fluxo - `vol11/cap066-sed-o-editor-de-fluxo.qmd`
+- [x] **cap 067** - awk: processamento por campos e registros - `vol11/cap067-awk-processamento-por-campos-e-registros.qmd`
+- [x] **cap 068** - cut, sort, uniq, tr e a caixa de ferramentas de texto - `vol11/cap068-cut-sort-uniq-tr-e-a-caixa-de-ferramentas-de.qmd`
+- [x] **cap 069** - Dados estruturados na linha de comando: jq, JSON e CSV - `vol11/cap069-dados-estruturados-na-linha-de-comando-jq.qmd`
+- [x] **cap 070** - Juntando tudo: pipelines de processamento de dados - `vol11/cap070-juntando-tudo-pipelines-de-processamento-de.qmd`
 
 ### Volume 12 — Scripting Avançado e Robusto
 

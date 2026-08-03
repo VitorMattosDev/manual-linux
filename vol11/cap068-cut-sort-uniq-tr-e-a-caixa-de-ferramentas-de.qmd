@@ -1,3 +1,402 @@
 # cut, sort, uniq, tr e a caixa de ferramentas de texto {#sec-cap068}
 
-*(em elaboracao)*
+O relatório dizia que o diretório mais pesado do servidor era o `/var/cache`, com 900 MB. O comando que produziu isso parecia irretocável:
+
+```bash
+du -sh /var/* | sort -rn | head -5
+```
+
+Só que `/var/lib` tinha 1,5 GB, e não apareceu no topo. O `sort -rn` leu `1,5G` e `900M` e comparou os números `1` e `900` — as unidades foram ignoradas, porque `-n` só entende dígitos. A ordenação estava certa para o que foi pedido, e completamente errada para o que se queria.
+
+No mesmo relatório, a contagem de endereços únicos no log de acesso estava baixa demais:
+
+```bash
+awk '{print $1}' acesso.log | uniq -c | sort -rn | head
+```
+
+O `uniq` compara **apenas linhas adjacentes**. Num log em ordem cronológica, o mesmo endereço aparece em blocos separados por outros, e cada bloco vira uma contagem própria. Nada de errado foi reportado: só saiu um número menor que o real, várias vezes.
+
+Os dois erros são silenciosos, e os dois vêm de assumir que a ferramenta faz o que o nome sugere. Este capítulo é sobre as ferramentas pequenas que, encadeadas, resolvem a maior parte do processamento de texto no dia a dia — e sobre as suposições erradas que cada uma castiga.
+
+## `cut`: recortar colunas, com limites claros
+
+```bash
+cut -d: -f1,7 /etc/passwd        # campos 1 e 7, delimitados por dois-pontos
+cut -d: -f3-   /etc/passwd       # do 3 ao fim
+cut -d: -f1-3  /etc/passwd       # faixa
+cut -c1-8      arquivo           # por CARACTERE, nao por campo
+cut -d: -f2 --complement /etc/passwd   # tudo MENOS o campo 2
+cut -d: -f1,7 --output-delimiter=' -> ' /etc/passwd
+```
+
+O `cut` é rápido e previsível, e tem três limitações que decidem quando ele **não** serve:
+
+1. **O delimitador é um caractere só.** Não existe `cut -d'  '` para dois espaços, nem delimitador por expressão regular.
+2. **Espaços repetidos não se colapsam.** `cut -d' ' -f3` numa saída alinhada por espaços erra sempre que o alinhamento variar. Para isso, ou se normaliza antes (`tr -s ' '`), ou se usa `awk`.
+3. **A ordem dos campos não muda.** `cut -f3,1` devolve os campos na ordem 1,3 — o `cut` ignora a ordem pedida. Reordenar é trabalho de `awk '{print $3, $1}'`.
+
+Linhas sem o delimitador saem inteiras por padrão; `-s` as suprime. Isso importa ao processar arquivo de configuração com comentários.
+
+## `sort`: a ordenação e suas armadilhas
+
+```bash
+sort arquivo                # ordem de texto, segundo a localidade
+sort -n     arquivo         # numerica
+sort -h     arquivo         # numerica com sufixo humano: K, M, G  <- resolve a abertura
+sort -V     arquivo         # versao: 1.9 antes de 1.10
+sort -r     arquivo         # invertida
+sort -u     arquivo         # ordena e remove duplicatas
+sort -f     arquivo         # ignora maiusculas e minusculas
+sort -s     arquivo         # estavel: empates mantem a ordem de entrada
+sort -c     arquivo         # so VERIFICA se ja esta ordenado
+```
+
+A abertura se conserta trocando uma letra:
+
+```bash
+du -sh /var/* | sort -rh | head -5
+```
+
+::: {#fig-chave-do-sort}
+```{.tikz}
+%%| filename: anatomia-da-chave-do-sort
+%%| alt: Decomposicao da opcao -k do sort mostrando campo inicial, campo final e modificadores, com a armadilha de omitir o campo final
+\begin{tikzpicture}[
+    tk/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=4pt,minimum height=0.62cm},
+    op/.style={tk,draw=manualgray,fill=manualgray!12},
+    ci/.style={tk,draw=manualblue,fill=manualblue!12},
+    cf/.style={tk,draw=manualgreen,fill=manualgreen!14},
+    md/.style={tk,draw=manualyellow,fill=manualyellow!22},
+    lb/.style={font=\tiny,align=center,text width=2.6cm},
+    fl/.style={-{Latex[length=1.2mm]},thin,manualgray},
+    nt/.style={font=\scriptsize,align=left},
+    bxr/.style={rounded corners=3pt,draw=manualred,thick,fill=manualred!7,inner sep=6pt,font=\scriptsize,align=left},
+    bxg/.style={rounded corners=3pt,draw=manualgreen,thick,fill=manualgreen!8,inner sep=6pt,font=\scriptsize,align=left}
+  ]
+  \node[op,minimum width=0.9cm] (o) at (3.0,6.6) {-k};
+  \node[ci,minimum width=0.6cm] (a) at (3.65,6.6) {2};
+  \node[op,minimum width=0.4cm] (v) at (4.05,6.6) {,};
+  \node[cf,minimum width=0.6cm] (b) at (4.45,6.6) {2};
+  \node[md,minimum width=0.9cm] (m) at (5.15,6.6) {nr};
+
+  \node[lb,manualblue,anchor=east] (la) at (2.3,5.9) {campo inicial};
+  \draw[fl] (a.south) -- ++(0,-0.35) -| (la.east);
+  \node[lb,manualgreen,anchor=west] (lb2) at (6.2,5.9) {campo \textbf{final} --- omiti-lo é o erro clássico};
+  \draw[fl] (b.south) -- ++(0,-0.35) -| (lb2.west);
+  \node[lb,manualyellow!60!black,anchor=west] (lm) at (6.2,6.9) {modificadores: \texttt{n} numérico, \texttt{r} invertido, \texttt{h} humano};
+  \draw[fl] (m.east) -- (lm.west);
+
+  \node[bxr,text width=5.6cm,anchor=north west] at (0.3,4.9) {\textbf{\textcolor{manualred}{\texttt{-k2n}}} \quad ``do campo 2 \textbf{até o fim da linha}''\\[3pt]
+  \texttt{alfa 10 zzz}\\\texttt{beta \ 9 aaa}\\[3pt]
+  Compara a cadeia \texttt{10 zzz} contra \texttt{9 aaa} como se fosse um número só. O resto da linha entra na conta e o resultado depende do que vem depois --- às vezes acerta, o que é pior que errar sempre.};
+
+  \node[bxg,text width=5.6cm,anchor=north west] at (6.9,4.9) {\textbf{\textcolor{manualgreen}{\texttt{-k2,2n}}} \quad ``do campo 2 \textbf{ao campo 2}''\\[3pt]
+  \texttt{alfa 10 zzz}\\\texttt{beta \ 9 aaa}\\[3pt]
+  Compara \texttt{10} contra \texttt{9}, e só. É o que se queria dizer em praticamente todo uso de \texttt{-k}. A regra: \textbf{sempre escreva o campo final}.};
+
+  \node[nt,font=\scriptsize,manualgray,text width=12.6cm] at (6.4,1.35) {O delimitador vem de \texttt{-t}; sem ele, o \texttt{sort} corta na \emph{transição} de espaço para não-espaço, o que faz o campo incluir o espaço à esquerda --- daí o modificador \texttt{b} (\emph{blank}) existir. Várias chaves se acumulam e são aplicadas em ordem: \texttt{sort -t: -k3,3n -k1,1} ordena por UID e desempata por nome. E cada chave leva seus próprios modificadores: em \texttt{-k2,2nr -k1,1}, o \texttt{r} vale só para a primeira.};
+\end{tikzpicture}
+```
+A opção `-k` do `sort`: campo inicial, campo final e modificadores. Omitir o campo final é o erro mais comum.
+:::
+
+```bash
+sort -t: -k3,3n /etc/passwd                # por UID, numerico
+sort -t: -k3,3n -k1,1 /etc/passwd          # e desempata por nome
+sort -k2,2 -k1,1r arquivo                  # segunda coluna, primeira invertida
+sort -t, -k3,3 -k1,1n dados.csv
+```
+
+Duas questões de ambiente que mudam o resultado:
+
+**A localidade define a ordem.** Em `pt_BR.UTF-8`, o `sort` ignora pontuação e maiúsculas ao comparar, agrupando `arquivo`, `Arquivo` e `_arquivo`. Sob `LC_ALL=C`, a ordem é a dos bytes: maiúsculas antes de minúsculas, e tudo previsível. Para saída consumida por outro programa — ou para comparar dois arquivos ordenados —, `LC_ALL=C sort` é a escolha certa, e é significativamente mais rápida.
+
+**`sort` guarda tudo na memória até estourar.** Para arquivos maiores que a RAM, ele usa arquivos temporários em `/tmp`; `-S 2G` ajusta o buffer e `-T /outro/lugar` muda onde os temporários vão parar — importante quando `/tmp` é pequeno ou é `tmpfs`.
+
+E uma armadilha que destrói dados: `sort arquivo > arquivo` **esvazia o arquivo**, porque o shell trunca o destino antes de o `sort` ler. O correto é `sort -o arquivo arquivo`, que o `sort` trata com segurança.
+
+## `uniq`: só enxerga o vizinho
+
+```bash
+sort lista | uniq          # remove duplicatas (equivale a sort -u)
+sort lista | uniq -c       # conta ocorrencias de cada valor
+sort lista | uniq -d       # so as que aparecem MAIS DE UMA VEZ
+sort lista | uniq -u       # so as que aparecem UMA UNICA VEZ
+sort lista | uniq -i       # ignora maiusculas e minusculas
+uniq -f2 arquivo           # ignora os 2 primeiros campos na comparacao
+uniq -w8 arquivo           # compara so os 8 primeiros caracteres
+```
+
+A regra é uma só e explica o segundo erro da abertura: **o `uniq` compara linhas adjacentes**. Sem `sort` antes, ele colapsa repetições consecutivas e nada mais.
+
+Quando `sort -u` e `sort | uniq` fazem a mesma coisa, prefira o primeiro — é mais rápido, porque elimina durante a ordenação. Mas eles **não** são equivalentes quando entram `-c`, `-d` ou `-u`: essas opções são do `uniq` e exigem o par completo.
+
+E há um caso em que a ordem não pode ser perdida: para deduplicar preservando a ordem de aparição, o `sort` está fora, e a resposta é `awk '!visto[$0]++'` (@sec-cap067).
+
+## `tr`: traduzir e apagar caracteres
+
+O `tr` opera **caractere a caractere**, lendo apenas da entrada padrão. Ele não conhece expressão regular e não substitui palavras.
+
+```bash
+tr 'a-z' 'A-Z'   < arquivo      # maiusculas
+tr '[:lower:]' '[:upper:]' < arquivo    # o mesmo, respeitando a localidade
+tr -d '\r'       < arquivo      # remove o CR de arquivo vindo do Windows
+tr -d '[:punct:]' < texto       # remove toda pontuacao
+tr -s ' '        < arquivo      # COLAPSA espacos repetidos em um so
+tr -c '[:alnum:]' '\n' < texto  # troca tudo que NAO for alfanumerico por quebra
+tr ',' '\n'      < lista.csv    # uma coluna por linha
+```
+
+Três usos aparecem o tempo todo:
+
+- **`tr -d '\r'`** conserta o `\r\n` de arquivos criados no Windows, causa recorrente de script que não roda (`bad interpreter: /bin/bash^M`) e de comparação que falha sem motivo aparente.
+- **`tr -s ' '`** normaliza saída alinhada por espaços, e é o que torna o `cut -d' '` viável.
+- **`tr -c '[:alnum:]' '\n' | sort | uniq -c`** é o contador de palavras de uma linha.
+
+Cuidado com o `-d` e o `-s` juntos: `tr -ds 'a' 'b'` apaga o primeiro conjunto e comprime o segundo, o que raramente é o que se espera.
+
+## O pipeline canônico
+
+::: {#fig-pipeline-top-n}
+```{.tikz}
+%%| filename: pipeline-canonico-de-contagem
+%%| alt: Pipeline de cinco estagios transformando linhas de log em um ranking, com uma amostra dos dados apos cada estagio
+\begin{tikzpicture}[
+    stg/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=4pt,minimum height=0.62cm,minimum width=2.35cm},
+    dt/.style={align=left,font=\tiny\ttfamily,manualgray,anchor=north},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[stg,draw=manualgray,fill=manualgray!10] (e0) at (1.3,6.5) {acesso.log};
+  \node[stg,draw=manualblue,fill=manualblue!12] (e1) at (4.0,6.5) {awk '\{print \$1\}'};
+  \node[stg,draw=manualgreen,fill=manualgreen!14] (e2) at (6.7,6.5) {sort};
+  \node[stg,draw=manualgreen,fill=manualgreen!14] (e3) at (9.4,6.5) {uniq -c};
+  \node[stg,draw=manualyellow,fill=manualyellow!22] (e4) at (12.1,6.5) {sort -rn};
+
+  \foreach \aa/\bb in {e0/e1, e1/e2, e2/e3, e3/e4} { \draw[fl] (\aa) -- (\bb); }
+
+  \node[dt] at (0.35,5.95) {10.0.0.1 ... 200\\10.0.0.2 ... 404\\10.0.0.3 ... 200\\10.0.0.2 ... 500\\10.0.0.3 ... 200\\10.0.0.2 ... 200};
+  \node[dt] at (3.3,5.95) {10.0.0.1\\10.0.0.2\\10.0.0.3\\10.0.0.2\\10.0.0.3\\10.0.0.2};
+  \node[dt] at (6.0,5.95) {10.0.0.1\\10.0.0.2\\10.0.0.2\\10.0.0.2\\10.0.0.3\\10.0.0.3};
+  \node[dt] at (8.8,5.95) {\ \ 1 10.0.0.1\\\ \ 3 10.0.0.2\\\ \ 2 10.0.0.3};
+  \node[dt] at (11.5,5.95) {\ \ 3 10.0.0.2\\\ \ 2 10.0.0.3\\\ \ 1 10.0.0.1};
+
+  \node[font=\tiny,manualblue,align=center,text width=2.4cm] at (4.0,3.9) {extrai a coluna que interessa};
+  \node[font=\tiny,manualgreen,align=center,text width=2.4cm] at (6.7,3.9) {\textbf{agrupa} as iguais lado a lado};
+  \node[font=\tiny,manualgreen,align=center,text width=2.4cm] at (9.4,3.9) {colapsa e conta os grupos};
+  \node[font=\tiny,manualyellow!60!black,align=center,text width=2.4cm] at (12.1,3.9) {ordena pelo número, do maior};
+
+  \node[rounded corners=3pt,draw=manualred,thick,fill=manualred!7,inner sep=6pt,text width=12.7cm,align=left,font=\scriptsize] at (6.6,2.4) {\textbf{\textcolor{manualred}{Tire o \texttt{sort} do meio e o resultado fica errado sem avisar.}} Sobre a entrada em ordem cronológica, o \texttt{uniq -c} veria \texttt{1 10.0.0.1}, \texttt{1 10.0.0.2}, \texttt{1 10.0.0.3}, \texttt{1 10.0.0.2}, \texttt{1 10.0.0.3}, \texttt{1 10.0.0.2} --- seis grupos de um, em vez de três endereços com 3, 2 e 1 ocorrências. Nenhum erro, nenhum aviso, só um relatório errado.};
+
+  \node[nt,text width=12.7cm] at (6.6,0.9) {O último \texttt{sort -rn} funciona porque o \texttt{uniq -c} põe a contagem \emph{na frente}, alinhada com espaços à esquerda --- e \texttt{-n} ignora esses espaços. Se a ordenação precisasse desempatar pelo endereço, seria \texttt{sort -k1,1rn -k2,2}. E o mesmo resultado sai de um \texttt{awk} só: \texttt{awk '\{n[\$1]++\} END\{for(k in n) print n[k], k\}' | sort -rn} --- uma passada em vez de três, o que importa em arquivo grande.};
+\end{tikzpicture}
+```
+O pipeline canônico de contagem, estágio por estágio. O `sort` antes do `uniq` não é opcional.
+:::
+
+## O resto da caixa de ferramentas
+
+**Juntar arquivos lado a lado.** O `paste` cola linhas de arquivos diferentes na mesma linha; o `join` faz junção relacional por campo — e **exige as duas entradas ordenadas pelo campo de junção**, sob pena de perder pares em silêncio.
+
+```bash
+paste nomes.txt idades.txt                 # lado a lado, separado por tabulacao
+paste -d, nomes.txt idades.txt             # com virgula
+paste -sd, lista.txt                       # TODAS as linhas numa so, separadas por virgula
+join -t: -1 1 -2 1 <(sort a.txt) <(sort b.txt)
+comm -12 <(sort a.txt) <(sort b.txt)       # linhas em comum
+comm -23 <(sort a.txt) <(sort b.txt)       # so no primeiro arquivo
+```
+
+O `comm` merece destaque em análise: com três colunas — só no primeiro, só no segundo, em ambos — ele responde "o que mudou entre a varredura de ontem e a de hoje" com um comando.
+
+**Formatar para ler.**
+
+```bash
+column -t arquivo              # alinha colunas
+column -t -s: /etc/passwd      # com delimitador escolhido
+nl arquivo                     # numera as linhas (so as nao vazias)
+fold -w 72 arquivo             # quebra linhas longas
+expand / unexpand              # tabulacao <-> espacos
+rev arquivo                    # inverte os caracteres de cada linha
+tac arquivo                    # inverte a ORDEM das linhas
+```
+
+O `rev` tem um truque útil: para pegar o penúltimo campo de uma linha de tamanho variável sem `awk`, `rev | cut -d/ -f2 | rev`.
+
+**Recortar e amostrar.**
+
+```bash
+head -20 / tail -20            # inicio e fim
+tail -n +2 arquivo             # tudo A PARTIR da linha 2 (pula cabecalho)
+shuf -n 100 grande.txt         # 100 linhas aleatorias
+split -l 10000 grande.txt pedaco_    # divide em arquivos de 10 mil linhas
+wc -l / -w / -c                # linhas, palavras, bytes
+tee copia.txt                  # bifurca: passa adiante E grava
+```
+
+O `tee` é a ferramenta de depuração de pipeline: inserido no meio, ele grava o estado intermediário sem interromper o fluxo (@sec-cap012). E `tee /dev/stderr` mostra o intermediário na tela enquanto o pipeline continua.
+
+**Uma nota sobre `head` e SIGPIPE.** `comando_longo | head -5` faz o `head` encerrar após cinco linhas, e o comando anterior recebe `SIGPIPE` e morre. Isso é o comportamento desejado — é o que faz `zcat enorme.gz | head` ser instantâneo —, mas sob `set -o pipefail` (@sec-cap057) ele aparece como falha do pipeline. É a causa mais comum de script que "falha" fazendo exatamente o certo.
+
+## 🐉 No Kali
+
+- **A contagem de portas abertas por host é o pipeline canônico.** `grep -oE '^[0-9]+' portas.txt | sort -n | uniq -c | sort -rn | head -20` diz quais serviços dominam a rede varrida, e portanto por onde começar. O erro de esquecer o `sort` do meio, aqui, produz um relatório que subestima a exposição — o tipo de engano que passa despercebido até alguém conferir na mão.
+- **`comm` compara duas varreduras e mostra o que mudou.** `comm -13 <(sort ontem.txt) <(sort hoje.txt)` lista o que apareceu desde a varredura anterior: host novo, porta nova, serviço que subiu. É monitoramento de superfície de ataque com duas linhas, e vale tanto para quem defende quanto para quem documenta a evolução do escopo num teste longo.
+- **`tr -d '\r'` conserta arquivo vindo do Windows.** Wordlist, lista de alvos ou script trazido de um host Windows chega com `\r\n`. O sintoma é uma ferramenta que não encontra o host `10.0.0.5` — porque o que ela recebeu foi `10.0.0.5\r`, que não resolve. `tr -d '\r' < alvos.txt > alvos-limpos.txt` antes de qualquer coisa.
+- **Refinar wordlist é `sort`, `uniq` e `awk` combinados.** Juntar várias listas e deduplicar (`sort -u lista1 lista2 lista3 > combinada.txt`), tirar as curtas demais e embaralhar para não bater sempre na mesma ordem (`shuf`) são passos padrão. Em lista de milhões de linhas, `LC_ALL=C sort -u` é várias vezes mais rápido que a versão com localidade UTF-8 — e vale conferir se há espaço em `/tmp`, ou o `sort` morre no meio.
+- **Amostrar antes de varrer é prudência, não preguiça.** `shuf -n 50 alvos.txt` dá uma amostra para validar o comando e estimar o tempo antes de disparar contra a lista inteira. Um erro de opção descoberto no alvo número 3 de 50 é um contratempo; descoberto no alvo 3 de 60 mil, já gerou tráfego indevido, alarme no monitoramento do cliente e uma conversa desagradável sobre escopo (Lei 12.737/2012).
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas do coreutils da GNU nas duas famílias, com `-h`, `-V` e `--parallel` presentes em qualquer versão atual. As diferenças aparecem fora do mundo GNU: no BSD e no macOS, `sort -h` e `sort -V` não existem, `column -t -s` se comporta de outro jeito, e `tr` não aceita `[:classe:]` da mesma forma. O que muda entre Kali e RHEL é a localidade padrão do sistema, que altera a ordem de `sort` — outra razão para fixar `LC_ALL=C` em qualquer script cuja saída seja comparada entre máquinas.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-texto`.
+
+1. **Monte os dados.**
+
+   ```bash
+   mkdir -p ~/lab-texto && cd ~/lab-texto
+   cat > acesso.log <<'EOF'
+   10.0.0.1 GET /index 200
+   10.0.0.2 GET /admin 404
+   10.0.0.1 GET /logo 200
+   10.0.0.3 POST /login 500
+   10.0.0.1 GET /index 200
+   10.0.0.2 GET /painel 200
+   EOF
+   printf '1,5G\t/var/lib\n900M\t/var/cache\n2,0G\t/var/log\n120M\t/var/tmp\n' > tamanhos.txt
+   ```
+
+2. **Reproduza o erro do `sort -n`.**
+
+   ```bash
+   sort -rn tamanhos.txt
+   echo '--- agora com -h ---'
+   sort -rh tamanhos.txt
+   ```
+
+   Esperado: o `-n` põe `900M` no topo; o `-h` põe `2,0G`, depois `1,5G`. É a correção do primeiro erro da abertura.
+
+3. **Reproduza o erro do `uniq` sem `sort`.**
+
+   ```bash
+   cut -d' ' -f1 acesso.log | uniq -c
+   echo '--- com sort antes ---'
+   cut -d' ' -f1 acesso.log | sort | uniq -c | sort -rn
+   ```
+
+   Esperado: o primeiro devolve seis grupos de um (ou quase), o segundo devolve `3 10.0.0.1`, `2 10.0.0.2`, `1 10.0.0.3`. É o pipeline da @fig-pipeline-top-n, sobre outros dados.
+
+4. **Veja o `cut` recusar reordenar.**
+
+   ```bash
+   cut -d' ' -f3,1 acesso.log | head -2
+   echo '--- com awk, na ordem pedida ---'
+   awk '{print $3, $1}' acesso.log | head -2
+   ```
+
+   Esperado: o `cut` devolve endereço e caminho, nessa ordem, ignorando o que você pediu. O `awk` obedece.
+
+5. **Normalize espaços antes de cortar.**
+
+   ```bash
+   ls -l /etc | head -5
+   echo '--- campo 5 direto (frágil) ---'
+   ls -l /etc | head -5 | cut -d' ' -f5
+   echo '--- com tr -s antes ---'
+   ls -l /etc | head -5 | tr -s ' ' | cut -d' ' -f5
+   ```
+
+   Esperado: o corte direto devolve campos vazios ou errados, porque o `ls -l` alinha com espaços repetidos. Com `tr -s ' '`, os campos batem.
+
+6. **Ordene por chave, com e sem o campo final.**
+
+   ```bash
+   printf 'alfa 10 zzz\nbeta 9 aaa\ngama 100 mmm\n' > chaves.txt
+   sort -k2n   chaves.txt
+   echo '--- com o campo final ---'
+   sort -k2,2n chaves.txt
+   ```
+
+   Esperado: as duas saídas podem coincidir neste caso pequeno — experimente trocar `zzz` por `1` na primeira linha e veja o `-k2n` desandar. A regra vale sempre: escreva o campo final.
+
+7. **Ordene por duas chaves.**
+
+   ```bash
+   sort -t: -k3,3n -k1,1 /etc/passwd | head -8 | cut -d: -f1,3
+   ```
+
+   Esperado: usuários em ordem de UID, empates resolvidos pelo nome.
+
+8. **Compare os efeitos da localidade.**
+
+   ```bash
+   printf 'banana\nAbacaxi\n_maca\nabacate\n' > frutas.txt
+   sort frutas.txt
+   echo '--- sob LC_ALL=C ---'
+   LC_ALL=C sort frutas.txt
+   ```
+
+   Esperado: ordens diferentes. Sob `C`, o `_` e as maiúsculas vêm antes; na localidade do sistema, a comparação ignora caixa e pontuação.
+
+9. **Use `comm` para comparar dois conjuntos.**
+
+   ```bash
+   printf '10.0.0.1\n10.0.0.2\n10.0.0.3\n' > ontem.txt
+   printf '10.0.0.2\n10.0.0.3\n10.0.0.9\n' > hoje.txt
+   echo "novos:";     comm -13 <(sort ontem.txt) <(sort hoje.txt)
+   echo "sumiram:";   comm -23 <(sort ontem.txt) <(sort hoje.txt)
+   echo "em ambos:";  comm -12 <(sort ontem.txt) <(sort hoje.txt)
+   ```
+
+   Esperado: `10.0.0.9` como novo, `10.0.0.1` como sumido, os outros dois em ambos.
+
+10. **Cole, junte e alinhe.**
+
+    ```bash
+    printf 'kali\nroot\ndaemon\n' > nomes.txt
+    printf '1000\n0\n1\n' > uids.txt
+    paste nomes.txt uids.txt
+    echo '--- tudo numa linha ---'
+    paste -sd, nomes.txt
+    echo '--- alinhado ---'
+    head -5 /etc/passwd | column -t -s:
+    ```
+
+    Esperado: duas colunas por tabulação, depois `kali,root,daemon` numa linha, depois uma tabela alinhada.
+
+11. **Espie o meio do pipeline com `tee`.**
+
+    ```bash
+    cut -d' ' -f1 acesso.log | tee /tmp/etapa1.txt | sort | tee /tmp/etapa2.txt | uniq -c
+    echo '--- o que passou em cada etapa ---'
+    wc -l /tmp/etapa1.txt /tmp/etapa2.txt
+    ```
+
+    Esperado: o pipeline funciona normalmente e os dois arquivos guardam os estágios intermediários. É a forma de descobrir onde um pipeline longo perde linhas.
+
+12. **Conte palavras e limpe um arquivo do Windows.**
+
+    ```bash
+    printf '10.0.0.5\r\n10.0.0.6\r\n' > alvos-windows.txt
+    cat -A alvos-windows.txt | head -2
+    tr -d '\r' < alvos-windows.txt > alvos.txt
+    cat -A alvos.txt | head -2
+    echo '--- palavras mais frequentes ---'
+    tr -c '[:alnum:]' '\n' < acesso.log | grep -v '^$' | sort | uniq -c | sort -rn | head -5
+    cd ~ && rm -rf ~/lab-texto /tmp/etapa[12].txt
+    ```
+
+    Esperado: `cat -A` mostra `^M$` no arquivo original e só `$` no limpo. A contagem de palavras traz `GET` e `200` no topo.
+
+## Resumo
+
+- **`sort -n` ignora sufixos de unidade.** Para `1,5G` contra `900M`, é `sort -h`; para números de versão, `sort -V`.
+- **`uniq` só compara linhas adjacentes.** Sem `sort` antes, ele conta errado e não avisa. O pipeline canônico é `extrair | sort | uniq -c | sort -rn`.
+- **Em `sort -k`, escreva sempre o campo final.** `-k2n` significa "do campo 2 ao fim da linha"; `-k2,2n` significa o campo 2, que é o que quase sempre se quer.
+- **`cut` é rápido e limitado**: delimitador de um caractere só, sem colapso de espaços repetidos e sem reordenar campos. Quando faltar qualquer uma dessas três coisas, é `awk`.
+- **`tr` opera caractere a caractere** e não conhece expressão regular. `tr -d '\r'`, `tr -s ' '` e `tr -c '[:alnum:]' '\n'` cobrem quase todo o uso real.
+- **A localidade muda a ordem do `sort`.** Fixe `LC_ALL=C` quando a saída for comparada entre máquinas ou consumida por outro programa — e ganhe desempenho de brinde.
+- **`sort arquivo > arquivo` apaga o arquivo.** Use `sort -o arquivo arquivo`.
+- **`join` e `comm` exigem entradas ordenadas** e falham em silêncio se não estiverem. O `comm` é a forma mais curta de responder "o que mudou entre as duas listas".
+- **`tee` no meio do pipeline** grava o estágio intermediário sem interromper o fluxo, e é a ferramenta de depuração de pipeline longo.

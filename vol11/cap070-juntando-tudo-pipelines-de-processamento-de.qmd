@@ -1,3 +1,425 @@
 # Juntando tudo: pipelines de processamento de dados {#sec-cap070}
 
-*(em elaboracao)*
+A pergunta chegou às onze da noite, durante uma resposta a incidente: **quais endereços bateram no `/admin` mais de vinte vezes na hora anterior ao comprometimento, e com quais agentes de usuário?** Os dados eram noventa arquivos de log comprimidos, quarenta gigabytes descompactados, espalhados em `/var/log/nginx/`.
+
+A primeira tentativa saiu num fôlego só:
+
+```bash
+for f in /var/log/nginx/*.gz; do
+    zcat "$f" | grep admin | grep "14/Jul/2026:0[23]" >> /tmp/tudo.txt
+done
+cat /tmp/tudo.txt | cut -d' ' -f1 | sort | uniq -c | sort -rn | head -20
+```
+
+Rodou por três horas e devolveu uma lista. A lista estava errada por quatro motivos, e nenhum deles apareceu como erro:
+
+- `grep admin` casou também `/administrativo`, `admin.css` e um agente de usuário que continha a palavra;
+- o `>>` num laço abriu e fechou o arquivo noventa vezes, e a última linha de um arquivo sem quebra final grudou na primeira do seguinte;
+- o filtro de hora veio **depois** do `grep admin`, e o `grep admin` percorreu os quarenta gigabytes;
+- e a pergunta pedia também os agentes de usuário, que ficaram de fora.
+
+O pipeline correto roda em quatro minutos e cabe em cinco linhas. A diferença não é conhecer mais comandos — os comandos são os dos capítulos anteriores. A diferença é **método**. Este capítulo é sobre o método.
+
+## Da pergunta ao pipeline: sete estágios
+
+Todo processamento de texto em escala tem a mesma forma. Nomear os estágios evita pular um e evita colocá-los na ordem errada — que foi o terceiro erro da abertura.
+
+::: {#fig-estagios-do-pipeline}
+```{.tikz}
+%%| filename: estagios-de-um-pipeline-de-dados
+%%| alt: Sete estagios de um pipeline de processamento de texto, com as ferramentas de cada um e a reducao progressiva do volume de dados
+\begin{tikzpicture}[
+    et/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.6cm,minimum height=0.95cm},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    tl/.style={font=\tiny\ttfamily,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[et,draw=manualred,fill=manualred!9]     (e1) at (1.6,6.6) {\textbf{1. localizar}\\quais arquivos};
+  \node[et,draw=manualred,fill=manualred!9]     (e2) at (4.9,6.6) {\textbf{2. reduzir}\\descartar o que não interessa};
+  \node[et,draw=manualblue,fill=manualblue!9]   (e3) at (8.2,6.6) {\textbf{3. extrair}\\isolar os campos};
+  \node[et,draw=manualblue,fill=manualblue!9]   (e4) at (11.5,6.6) {\textbf{4. normalizar}\\uniformizar a forma};
+  \node[et,draw=manualgreen,fill=manualgreen!11] (e5) at (3.2,4.4) {\textbf{5. agregar}\\contar, somar, agrupar};
+  \node[et,draw=manualgreen,fill=manualgreen!11] (e6) at (6.5,4.4) {\textbf{6. ordenar}\\pôr o relevante no topo};
+  \node[et,draw=manualyellow,fill=manualyellow!20] (e7) at (9.8,4.4) {\textbf{7. apresentar}\\formatar para ler};
+
+  \node[tl] at (1.6,5.85) {find, zcat, ls};
+  \node[tl] at (4.9,5.85) {grep -F, grep -E};
+  \node[tl] at (8.2,5.85) {awk, cut, grep -o};
+  \node[tl] at (11.5,5.85) {tr, sed, awk};
+  \node[tl] at (3.2,3.65) {awk, uniq -c};
+  \node[tl] at (6.5,3.65) {sort -rn, -k};
+  \node[tl] at (9.8,3.65) {head, column -t, jq};
+
+  \draw[fl] (e1) -- (e2);
+  \draw[fl] (e2) -- (e3);
+  \draw[fl] (e3) -- (e4);
+  \draw[fl] (e4.east) -- (13.4,6.6) -- (13.4,5.3) -- (1.3,5.3) -- (1.3,4.4) -- (e5.west);
+  \draw[fl] (e5) -- (e6);
+  \draw[fl] (e6) -- (e7);
+
+  \node[nt,text width=13.3cm] at (6.8,2.3) {\textbf{A ordem não é decorativa.} Os estágios 1 e 2 são os únicos que reduzem \emph{volume}; tudo depois deles paga o preço do que passou. Um \texttt{grep} caro antes de um \texttt{grep} barato faz o caro processar cem vezes mais linhas do que precisava --- foi o terceiro erro da abertura. A regra prática: \textbf{descarte cedo, estruture tarde}. Filtre por arquivo antes de filtrar por linha, filtre por linha antes de extrair campo, e só transforme em estrutura o que sobreviveu.};
+
+  \node[nt,text width=13.3cm] at (6.8,0.7) {Nem todo pipeline tem os sete. Um relatório rápido pode ser \texttt{grep | sort | uniq -c | sort -rn} --- estágios 2, 5 e 6. Mas quando o resultado sai errado, a pergunta ``em qual estágio isso se perdeu?'' encurta a depuração de uma hora para dois minutos, porque cada estágio é testável isoladamente.};
+\end{tikzpicture}
+```
+Os sete estágios de um pipeline de processamento, com as ferramentas típicas de cada um.
+:::
+
+Aplicando à pergunta da abertura:
+
+```bash
+# 1-2. localizar e reduzir: o filtro MAIS SELETIVO primeiro, e sem descomprimir duas vezes
+zcat /var/log/nginx/acesso-2026-07-14*.gz |
+  grep -F ':02:' |                                  # a hora, filtro barato e literal
+  grep -E '"(GET|POST) /admin(/|\?| )' |            # o recurso, ancorado na requisicao
+# 3-5. extrair e agregar numa passada so
+  awk -F'"' '{ split($1, c, " "); ip = c[1]; ua[ip "\t" $6]++; n[ip]++ }
+             END { for (k in ua) if (n[substr(k,1,index(k,"\t")-1)] > 20) print ua[k], k }' |
+# 6-7. ordenar e apresentar
+  sort -rn | head -20 | column -t -s $'\t'
+```
+
+Quatro minutos, e responde às duas metades da pergunta. As decisões que fizeram a diferença estão nos comentários — e todas vêm de um dos capítulos anteriores.
+
+## Construir incrementalmente, nunca de uma vez
+
+O erro de método mais caro é escrever o pipeline inteiro e só então executá-lo. Sobre quarenta gigabytes, cada tentativa custa horas.
+
+A disciplina é outra: **construir um estágio por vez, com uma amostra**.
+
+```bash
+# 1. veja como os dados realmente sao
+zcat acesso.log.gz | head -3
+
+# 2. acrescente UM estagio e confira o resultado
+zcat acesso.log.gz | head -1000 | grep -F ':02:' | head -3
+
+# 3. so quando o estagio estiver certo, acrescente o proximo
+zcat acesso.log.gz | head -1000 | grep -F ':02:' | awk '{print $1}' | head -3
+
+# 4. confira a CONTAGEM a cada estagio -- e onde as perdas aparecem
+zcat acesso.log.gz | wc -l
+zcat acesso.log.gz | grep -cF ':02:'
+```
+
+O `head` na frente é o que torna o ciclo de tentativa e erro instantâneo. E a contagem por estágio é o instrumento de diagnóstico: se um estágio derruba de dois milhões para zero, o problema é dele, e não do que veio depois.
+
+Para inspecionar o meio de um pipeline já pronto, `tee` (@sec-cap068):
+
+```bash
+zcat *.gz | grep -F ':02:' | tee /tmp/etapa2.txt | awk '...' | tee /tmp/etapa3.txt | sort -rn
+wc -l /tmp/etapa2.txt /tmp/etapa3.txt
+```
+
+E, para saber se um comando longo está andando ou travado, o `pv` mostra vazão e progresso sem alterar os dados:
+
+```bash
+pv enorme.log | grep -F 'ERRO' | wc -l
+```
+
+## Desempenho: o que realmente importa
+
+Quatro decisões respondem por quase todo o tempo de execução.
+
+**1. Filtre cedo, e o mais barato primeiro.** `grep -F` é mais rápido que `grep -E`, que é mais rápido que `grep -P`, que é mais rápido que `awk` com condição composta. Encadeados, o barato vem antes:
+
+```bash
+grep -F 'admin' enorme.log | grep -P '"(GET|POST) /admin(?!istrativo)'   # bom
+grep -P '"(GET|POST) /admin(?!istrativo)' enorme.log                     # 10x mais lento
+```
+
+**2. Uma passada em vez de quatro.** A cadeia `grep | cut | sort | uniq -c` cria quatro processos e move os dados quatro vezes. Um `awk` faz o mesmo numa passada:
+
+```bash
+grep 'ERRO' log | cut -d' ' -f1 | sort | uniq -c | sort -rn     # 4 processos
+awk '/ERRO/ { n[$1]++ } END { for (k in n) print n[k], k }' log | sort -rn   # 2
+```
+
+A regra não é absoluta: para volumes pequenos, a legibilidade da cadeia vence, e o `sort` externo é imbatível quando o número de chaves distintas não cabe na memória. Mas em arquivo grande com poucas chaves, a versão `awk` costuma ser duas a cinco vezes mais rápida.
+
+**3. `LC_ALL=C`.** Vale para `grep`, `sort` e `awk`, e o ganho é grande em arquivo ASCII (@sec-cap065, @sec-cap068).
+
+**4. Paralelismo, quando o trabalho é por arquivo.**
+
+::: {#fig-paralelismo-no-pipeline}
+```{.tikz}
+%%| filename: paralelismo-em-pipeline-de-arquivos
+%%| alt: Comparacao entre processar noventa arquivos em sequencia e processa-los em paralelo com xargs, com a etapa de reducao final em ambos
+\begin{tikzpicture}[
+    ar/.style={rounded corners=1.5pt,draw,thin,align=center,font=\tiny\ttfamily,inner sep=2pt,minimum height=0.4cm,minimum width=1.0cm,draw=manualgray,fill=manualgray!10},
+    wk/.style={rounded corners=2pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum height=0.5cm,minimum width=1.5cm},
+    rd/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum height=0.65cm,minimum width=5.3cm,draw=manualyellow,fill=manualyellow!20},
+    fl/.style={-{Latex[length=1.3mm]},semithick,manualgray},
+    hd/.style={font=\scriptsize\bfseries,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---- sequencial
+  \node[hd,manualred] at (2.4,7.1) {sequencial --- 1 núcleo};
+  \foreach \xx/\ii in {0.7/1, 1.85/2, 3.0/3, 4.15/{\ldots}, 5.3/90} {
+     \node[ar] at (\xx,6.5) {log\ii};
+  }
+  \node[wk,draw=manualred,fill=manualred!10,minimum width=5.6cm] at (3.0,5.8) {um \texttt{zcat | grep | awk} por vez};
+  \foreach \xx in {0.7,1.85,3.0,4.15,5.3} { \draw[fl] (\xx,6.28) -- (\xx,6.07); }
+  \node[font=\tiny,manualred] at (7.6,5.8) {tempo = soma dos 90};
+
+  % ---- paralelo
+  \node[hd,manualgreen] at (2.4,4.4) {paralelo --- \texttt{xargs -P 8}};
+  \foreach \xx/\ii in {0.7/1, 1.85/2, 3.0/3, 4.15/{\ldots}, 5.3/90} {
+     \node[ar] at (\xx,3.8) {log\ii};
+  }
+  \foreach \xx/\nn in {0.7/1, 1.85/2, 3.0/3, 4.15/{\ldots}, 5.3/8} {
+     \node[wk,draw=manualgreen,fill=manualgreen!12,minimum width=1.0cm] at (\xx,3.05) {p\nn};
+     \draw[fl] (\xx,3.58) -- (\xx,3.32);
+     \draw[fl] (\xx,2.78) -- (\xx,2.5);
+  }
+  \node[rd] at (3.0,2.2) {redução final: \texttt{sort}, \texttt{awk}};
+  \node[font=\tiny,manualgreen,align=left,text width=3.4cm] at (8.2,3.0) {tempo $\approx$ soma dos 90 dividida por 8, mais a redução};
+
+  \node[nt,text width=13.2cm] at (6.6,0.45) {O paralelismo só ajuda quando o trabalho \textbf{se divide por unidade independente} --- um arquivo, um host, uma faixa de tempo --- e quando o gargalo é CPU, não disco. Sobre um HD mecânico, oito processos disputando cabeçote são mais lentos que um. E há uma armadilha de correção: \texttt{xargs -P} \emph{intercala} a saída dos processos, o que estraga qualquer resultado que dependa de ordem ou de linha inteira. Duas saídas: gravar cada processo em seu próprio arquivo e juntar no fim, ou usar \texttt{parallel}, que serializa a saída por padrão. E a etapa final de redução (\texttt{sort}, agregação) é sempre sequencial --- ela é o gargalo que sobra.};
+\end{tikzpicture}
+```
+Processar por arquivo em paralelo, com a redução final sequencial.
+:::
+
+```bash
+# fan-out por arquivo, saida separada, reducao no fim
+ls /var/log/nginx/*.gz |
+  xargs -P 8 -I{} sh -c 'zcat "$1" | grep -F ":02:" | awk "{print \$1}" > "/tmp/p-$(basename "$1").txt"' _ {}
+cat /tmp/p-*.txt | sort | uniq -c | sort -rn | head
+
+# ou, com GNU parallel, que preserva a ordem da saida
+parallel -j 8 'zcat {} | grep -F ":02:"' ::: /var/log/nginx/*.gz | awk '{n[$1]++} END{for(k in n) print n[k],k}'
+```
+
+## Correção: os erros que não aparecem como erro
+
+**Separador errado em nome de arquivo.** Nome com espaço quebra `for f in $(ls)` e `xargs` sem `-0`. A forma correta é sempre a do byte nulo:
+
+```bash
+find /var/log -name '*.gz' -print0 | xargs -0 -P 4 zcat
+```
+
+**A quebra de linha final que não existe.** Um arquivo cuja última linha não termina em `\n` faz `>>` grudar registros — o segundo erro da abertura. `zcat *.gz` não sofre disso; concatenação manual, sim. Quando desconfiar, `tail -c 1 arquivo | xxd`.
+
+**`SIGPIPE` sob `pipefail`.** `comando | head -5` mata o produtor com `SIGPIPE`, o que é correto e desejável — mas sob `set -o pipefail` aparece como falha do pipeline. É a causa mais comum de script que "falha" fazendo exatamente o certo (@sec-cap057).
+
+**Localidade.** Já dita, mas vale repetir porque muda **resultado**, não só desempenho: dois arquivos ordenados em máquinas com localidades diferentes não podem ser comparados com `comm` nem juntados com `join`.
+
+**Variável que some depois do pipe.** `contador=0; cat x | while read l; do ((contador++)); done; echo $contador` imprime zero, porque o `while` roda em subshell. A solução é a substituição de processo do @sec-cap058: `while read l; do ...; done < <(cat x)`.
+
+**Entrada vazia.** Um pipeline que não recebe nada produz nada e sai com status 0 — indistinguível de "processou tudo e não achou". Se a diferença importar, conte antes.
+
+## Depurar um pipeline que já existe
+
+Cinco perguntas, nesta ordem, resolvem a maioria dos casos:
+
+1. **Os dados são o que eu acho que são?** `head -3` do arquivo bruto, sempre. Metade dos pipelines errados assume um formato que mudou.
+2. **Qual estágio zerou a contagem?** Rode com `wc -l` após cada estágio.
+3. **Há caracteres invisíveis?** `cat -A` mostra `^M` (CRLF), `^I` (tabulação) e `$` (fim de linha). O `\r` do Windows é campeão de falha silenciosa (@sec-cap068).
+4. **A ordem está garantida?** `uniq` sem `sort` antes, `join` sobre entrada não ordenada, `xargs -P` intercalando — todos falham em silêncio.
+5. **O que o shell fez com meus argumentos?** `set -x` mostra o comando já expandido; `printf '%q '` mostra as fronteiras exatas (@sec-cap053).
+
+## De uma linha para um script
+
+Um pipeline que você vai rodar de novo — ou que outra pessoa vai rodar — deixa de ser uma linha e vira um arquivo. O mínimo:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+DIR="${1:?uso: $0 <diretorio-de-logs> <hora>}"
+HORA="${2:?uso: $0 <diretorio-de-logs> <hora>}"
+LIMITE="${LIMITE:-20}"
+
+export LC_ALL=C
+
+zcat -- "$DIR"/acesso-*.gz |
+  grep -F ":${HORA}:" |
+  grep -E '"(GET|POST) /admin(/|\?| )' |
+  awk -v lim="$LIMITE" '{ n[$1]++ } END { for (ip in n) if (n[ip] > lim) print n[ip], ip }' |
+  sort -rn
+```
+
+Isso já traz nome dos parâmetros, mensagem de uso, limite configurável, localidade fixada e o `--` que protege contra caminho começando com traço. O tratamento de erro sério — `trap`, verificação de dependências, código de saída significativo — é o assunto do Volume 12.
+
+## Quando o shell deixa de ser a ferramenta
+
+O pipeline de shell é imbatível para: fluxo de texto, uma passada, agregação por chave, filtragem em volume. Ele é a ferramenta errada quando aparece qualquer um destes:
+
+- **Junção de várias tabelas grandes** por chaves diferentes — é banco de dados. O `duckdb` lê CSV e Parquet direto do disco e resolve em SQL o que seria uma sequência inviável de `sort` e `join`.
+- **Estruturas aninhadas de verdade**, além do que o `jq` cobre confortavelmente.
+- **Estado complexo entre registros**, mais de duas ou três variáveis acumuladas.
+- **Tratamento de erro por registro**, com retentativa, registro do que falhou e continuação.
+- **Testes automatizados** sobre a lógica de transformação.
+
+Nesses casos, Python com `csv`, `json` e `collections.Counter` custa vinte linhas e ganha em clareza, manutenção e mensagem de erro. Não é derrota: é a mesma escolha de ferramenta que fez o `awk` substituir o `cut` quando o `cut` não bastou.
+
+A heurística honesta: se o pipeline passa de cinco ou seis estágios, se precisa de mais de um `awk` não trivial, ou se você vai precisar explicá-lo a alguém na semana que vem, escreva o programa.
+
+## 🐉 No Kali
+
+- **A triagem de resultado de varredura é um pipeline de sete estágios.** Localizar (`find . -name '*.gnmap'`), reduzir (`grep -F 'Ports:'`), extrair (`awk`), normalizar (`tr -s ' '`), agregar (contagem por porta), ordenar e apresentar (`column -t`). Escrever isso como script parametrizado, e não como linha decorada, é o que permite rodar a mesma triagem em todo teste sem reconstruir o raciocínio.
+- **Paralelizar por alvo exige teto explícito.** `xargs -P 8` sobre uma lista de hosts multiplica por oito o tráfego que você gera no alvo. O contrato de um teste autorizado costuma ter limite de taxa, e estourá-lo é indisponibilidade provocada — mesmo sem intenção, e mesmo com autorização para testar. Use `-P` compatível com o combinado, `parallel --delay` para espaçar, e prefira paralelizar o **processamento local** dos resultados, que não toca o alvo.
+- **Todo pipeline que gera lista de alvos passa por um filtro de escopo.** O `FNR==NR` do @sec-cap067 é a forma curta: `awk 'FNR==NR{ok[$1];next} $1 in ok' escopo.txt candidatos.txt`. Colocar esse filtro como estágio obrigatório — e não como conferência mental — é o que impede que um `/16` digitado errado vire varredura fora do escopo, com o enquadramento da Lei 12.737/2012.
+- **`tee` preserva a evidência bruta.** Numa resposta a incidente ou num teste com relatório, o dado intermediário é prova. `zcat *.gz | tee bruto-preservado.txt | grep ... ` guarda a entrada exata do processamento, e um `sha256sum` sobre ela fixa a cadeia de custódia. Reprocessar depois com o pipeline corrigido só é possível se o bruto foi guardado.
+- **Redação sensível é o último estágio, e é verificada.** Antes de entregar qualquer arquivo gerado, passe o `sed`/`jq` de redação (@sec-cap066, @sec-cap069) e depois **confira** com `grep -c` procurando o que deveria ter sumido. Um pipeline de redação que falha em silêncio entrega senha em claro num PDF de relatório.
+
+> **Nota sobre a família RHEL.** As ferramentas do pipeline são as mesmas nas duas famílias. Três diferenças de ambiente importam. Primeira: no RHEL, os logs de serviço estão no `journald` em formato binário, então o estágio 1 é `journalctl --since ... -o json` em vez de `zcat /var/log/*.gz` — e a saída em JSON cai direto no `jq` (@sec-cap069). Segunda: `parallel` e `pv` não estão nos repositórios básicos do RHEL, exigindo EPEL, enquanto no Kali vêm com um `apt install`. Terceira: o `xargs` e o `find` são os da GNU nos dois, então `-print0`, `-0` e `-P` funcionam igual — o que não vale para BSD e macOS, onde `xargs -P` existe mas se comporta de outro jeito com `-I`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-pipeline`.
+
+1. **Gere um log de tamanho respeitável.**
+
+   ```bash
+   mkdir -p ~/lab-pipeline && cd ~/lab-pipeline
+   awk 'BEGIN {
+       srand(7)
+       split("10.0.0.1 10.0.0.2 10.0.0.3 192.168.1.9 172.16.5.9", ips, " ")
+       split("/index /admin /admin/login /administrativo /logo.png", url, " ")
+       split("curl/8.5 Mozilla/5.0 python-requests/2.31", ua, " ")
+       for (i = 1; i <= 200000; i++) {
+           h = (i % 3 == 0) ? "02" : "03"
+           printf "%s - - [14/Jul/2026:%s:%02d:%02d -0300] \"GET %s HTTP/1.1\" 200 %d \"-\" \"%s\"\n",
+                  ips[int(rand()*5)+1], h, int(rand()*60), int(rand()*60),
+                  url[int(rand()*5)+1], int(rand()*9000)+100, ua[int(rand()*3)+1]
+       }
+   }' > acesso.log
+   gzip -k acesso.log && ls -lh acesso.log*
+   wc -l acesso.log
+   ```
+
+2. **Olhe os dados antes de qualquer coisa.**
+
+   ```bash
+   head -3 acesso.log
+   awk '{print NF}' acesso.log | sort -u
+   ```
+
+   Esperado: três linhas de amostra e um único valor de `NF` — sinal de que o formato é uniforme. Se saíssem dois valores, haveria linha atípica a tratar.
+
+3. **Reproduza o falso positivo do `grep admin`.**
+
+   ```bash
+   grep -c 'admin' acesso.log
+   grep -cE '"(GET|POST) /admin(/| )' acesso.log
+   ```
+
+   Esperado: o primeiro número é bem maior, porque casa `/administrativo`. O segundo é o que a pergunta realmente pedia.
+
+4. **Construa por estágios, com amostra.**
+
+   ```bash
+   head -1000 acesso.log | grep -F ':02:' | head -2
+   head -1000 acesso.log | grep -F ':02:' | grep -E '"(GET|POST) /admin(/| )' | head -2
+   head -1000 acesso.log | grep -F ':02:' | grep -E '"(GET|POST) /admin(/| )' | awk '{print $1}' | head -2
+   ```
+
+   Esperado: cada comando acrescenta um estágio e o resultado continua fazendo sentido. É assim que se constrói sobre quarenta gigabytes sem esperar horas por tentativa.
+
+5. **Conte por estágio para achar onde as linhas se perdem.**
+
+   ```bash
+   wc -l < acesso.log
+   grep -cF ':02:' acesso.log
+   grep -F ':02:' acesso.log | grep -cE '"(GET|POST) /admin(/| )'
+   ```
+
+   Esperado: três números decrescentes. Se o terceiro fosse zero, o problema estaria no terceiro estágio, e não adiantaria mexer no resto.
+
+6. **Responda à pergunta da abertura.**
+
+   ```bash
+   LC_ALL=C zcat acesso.log.gz |
+     grep -F ':02:' |
+     grep -E '"(GET|POST) /admin(/| )' |
+     awk -F'"' '{ split($1, c, " "); print c[1] "\t" $6 }' |
+     sort | uniq -c | sort -rn | head -10 | column -t -s $'\t'
+   ```
+
+   Esperado: endereço e agente de usuário lado a lado, com a contagem à frente, do mais frequente ao menos.
+
+7. **Compare a cadeia de quatro processos com um `awk` só.**
+
+   ```bash
+   time (grep -F ':02:' acesso.log | awk '{print $1}' | sort | uniq -c | sort -rn > /dev/null)
+   time (awk '/:02:/ { n[$1]++ } END { for (k in n) print n[k], k }' acesso.log | sort -rn > /dev/null)
+   ```
+
+   Esperado: a segunda versão termina mais rápido, com o mesmo resultado. Confirme que os resultados batem trocando o `/dev/null` por dois arquivos e usando `diff`.
+
+8. **Meça o efeito da localidade.**
+
+   ```bash
+   time (         sort acesso.log > /dev/null)
+   time (LC_ALL=C sort acesso.log > /dev/null)
+   ```
+
+   Esperado: a segunda é sensivelmente mais rápida. Em arquivo maior, a diferença cresce.
+
+9. **Espie o meio do pipeline.**
+
+   ```bash
+   grep -F ':02:' acesso.log | tee /tmp/e2.txt |
+     grep -E '/admin(/| )' | tee /tmp/e3.txt |
+     awk '{print $1}' | sort | uniq -c | sort -rn | head -3
+   wc -l /tmp/e2.txt /tmp/e3.txt
+   ```
+
+   Esperado: o pipeline roda normalmente e os dois arquivos guardam os estágios, com contagens decrescentes.
+
+10. **Veja `SIGPIPE` sob `pipefail`.**
+
+    ```bash
+    bash -c 'set -o pipefail; zcat acesso.log.gz | head -2 > /dev/null; echo "status: $?"'
+    bash -c 'zcat acesso.log.gz | head -2 > /dev/null; echo "status: $?"'
+    ```
+
+    Esperado: com `pipefail`, status diferente de zero — o `zcat` foi morto pelo `SIGPIPE`. Sem ele, status 0. Os dois estão "certos"; o que muda é o que o script conclui disso.
+
+11. **Paralelize por arquivo e junte no fim.**
+
+    ```bash
+    split -n l/8 acesso.log parte-
+    time (for f in parte-*; do grep -cF ':02:' "$f"; done | paste -sd+ | bc)
+    time (ls parte-* | xargs -P 8 -I{} grep -cF ':02:' {} | paste -sd+ | bc)
+    ```
+
+    Esperado: os dois totais iguais, o segundo mais rápido numa máquina com vários núcleos. Note que aqui só o **número** é somado — se a saída fossem linhas, a intercalação do `-P` exigiria arquivos separados.
+
+12. **Transforme em script e rode.**
+
+    ```bash
+    cat > triagem.sh <<'EOF'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ARQ="${1:?uso: $0 <log> <hora> [limite]}"
+    HORA="${2:?uso: $0 <log> <hora> [limite]}"
+    LIM="${3:-100}"
+    export LC_ALL=C
+    grep -F ":${HORA}:" -- "$ARQ" |
+      grep -E '"(GET|POST) /admin(/| )' |
+      awk -v lim="$LIM" '{ n[$1]++ } END { for (ip in n) if (n[ip] > lim) print n[ip], ip }' |
+      sort -rn
+    EOF
+    chmod +x triagem.sh
+    ./triagem.sh acesso.log 02 500
+    ./triagem.sh acesso.log 02
+    ./triagem.sh 2>&1 | head -1
+    cd ~ && rm -rf ~/lab-pipeline /tmp/e[23].txt
+    ```
+
+    Esperado: a primeira chamada lista os endereços acima de 500 acessos; a segunda usa o limite padrão de 100; a terceira imprime a mensagem de uso e sai com erro, porque faltaram argumentos.
+
+## Resumo
+
+- **Todo pipeline tem sete estágios**: localizar, reduzir, extrair, normalizar, agregar, ordenar, apresentar. Nomeá-los é o que permite responder "em qual estágio isso se perdeu?".
+- **Descarte cedo, estruture tarde.** Só os dois primeiros estágios reduzem volume; tudo depois paga o preço do que passou. Filtro barato antes de filtro caro.
+- **Construa um estágio por vez, com `head` na frente.** Confira a contagem após cada estágio — é onde as perdas silenciosas aparecem.
+- **Uma passada de `awk` costuma vencer a cadeia `grep | cut | sort | uniq -c`** em arquivo grande com poucas chaves distintas. Em volume pequeno, a cadeia legível vence.
+- **`LC_ALL=C` muda desempenho e resultado.** Fixe-o em qualquer script cuja saída seja comparada ou ordenada.
+- **Paralelize por unidade independente, e cuide da saída.** `xargs -P` intercala; grave em arquivos separados ou use `parallel`. A redução final é sempre sequencial.
+- **Os erros que não aparecem como erro**: `uniq` sem `sort`, nome com espaço sem `-print0`, `\r` do Windows, entrada vazia com status 0, variável perdida em subshell, `SIGPIPE` sob `pipefail`.
+- **Pipeline que se repete vira script**: parâmetros nomeados, mensagem de uso, `set -euo pipefail`, `LC_ALL=C` e `--` antes dos caminhos.
+- **Saiba quando parar.** Junção de tabelas grandes, estruturas profundas, estado complexo ou necessidade de testes são sinais de que a ferramenta certa é um programa, não um pipeline.

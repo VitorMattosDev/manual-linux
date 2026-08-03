@@ -1,3 +1,387 @@
 # sed: o editor de fluxo {#sec-cap066}
 
-*(em elaboracao)*
+A migração era simples: o servidor de banco mudou de `10.0.0.5` para `10.0.0.59`, e trinta arquivos de configuração precisavam refletir isso. Um comando resolveria:
+
+```bash
+sed -i 's/10.0.0.5/10.0.0.59/' /etc/app/*.conf
+```
+
+Rodou em silêncio. No dia seguinte, três aplicações estavam apontando para lugar nenhum e ninguém sabia por quê. O comando tinha **três** defeitos, e cada um estragou um conjunto diferente de arquivos:
+
+- Os pontos não estavam escapados. `10.0.0.5` como expressão regular também casa com `10a0b0c5`, e casou — dentro de um identificador de instância que não tinha nada a ver com endereço de rede.
+- Faltou o `g`. Num arquivo com duas ocorrências na mesma linha, só a primeira mudou.
+- E o pior: em arquivos onde o endereço já era `10.0.0.59`, o padrão casou o prefixo e produziu `10.0.0.599`.
+
+Nada disso gerou erro. O `-i` gravou por cima, sem cópia de segurança, e o estado anterior só existia no backup da noite.
+
+O `sed` é a ferramenta certa para esse trabalho — ele foi feito exatamente para isso —, mas é uma ferramenta afiada que executa sem perguntar. Este capítulo cobre o modelo de execução, os comandos que importam e o hábito que evita o desastre acima.
+
+## O ciclo: uma linha por vez, num espaço de trabalho
+
+O `sed` (*stream editor*) não abre o arquivo na memória como um editor. Ele lê **uma linha**, coloca-a num buffer chamado **espaço de padrão** (*pattern space*), executa o script inteiro sobre esse buffer, imprime o resultado e passa para a próxima linha. Depois, esquece tudo — exceto o que você tiver guardado num segundo buffer, o **espaço de reserva** (*hold space*).
+
+::: {#fig-ciclo-do-sed}
+```{.tikz}
+%%| filename: ciclo-de-execucao-do-sed
+%%| alt: Fluxo circular do sed mostrando leitura da linha no espaco de padrao, execucao do script, impressao automatica e retorno, com o espaco de reserva ao lado
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,inner sep=4pt,font=\scriptsize},
+    et/.style={bx,draw=manualblue,fill=manualblue!10,minimum width=2.9cm,minimum height=0.75cm},
+    ac/.style={bx,draw=manualgreen,fill=manualgreen!12,minimum width=3.4cm,minimum height=0.75cm},
+    hs/.style={bx,draw=manualyellow,fill=manualyellow!20,minimum width=2.9cm,minimum height=0.75cm},
+    fl/.style={-{Latex[length=1.8mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[et] (le) at (2.2,6.4) {lê a próxima linha};
+  \node[et] (ep) at (2.2,5.1) {\textbf{espaço de padrão}\\a linha, sem o \texttt{\textbackslash n}};
+  \node[ac] (sc) at (6.8,5.1) {executa o \textbf{script inteiro}\\\texttt{s///}, \texttt{d}, \texttt{p}, \texttt{a}, \texttt{y}\ldots};
+  \node[et] (im) at (11.0,5.1) {imprime o espaço\\de padrão};
+  \node[hs] (hd) at (6.8,6.9) {\textbf{espaço de reserva}\\persiste entre linhas};
+  \node[bx,draw=manualgray,fill=manualgray!8,minimum width=2.2cm] (fim) at (11.0,6.9) {fim da entrada};
+
+  \draw[fl] (le) -- (ep);
+  \draw[fl] (ep) -- (sc);
+  \draw[fl] (sc) -- (im);
+  \draw[fl] (im.south) -- (11.0,4.45) -- (2.2,4.45) node[lb,pos=0.55,below] {próximo ciclo} -- (ep.south);
+  \draw[fl,manualyellow!65!black,dashed] (sc.north west) ++ (0.3,0) -- ++(0,1.05) node[lb,midway,left,manualyellow!65!black] {\texttt{h H x}};
+  \draw[fl,manualyellow!65!black,dashed] (hd.south east) ++ (-0.3,0) -- ++(0,-1.05) node[lb,midway,right,manualyellow!65!black] {\texttt{g G x}};
+  \draw[fl] (im.north) -- (fim.south);
+
+  \node[bx,draw=manualred,fill=manualred!8,align=left,text width=4.3cm] at (2.6,3.15) {\textbf{\textcolor{manualred}{o que interrompe o ciclo}}\\[2pt]\texttt{d} \ apaga e recomeça já\\\texttt{q} \ encerra o \texttt{sed}\\\texttt{n} \ imprime e lê a próxima\\\texttt{N} \ \emph{acrescenta} a próxima};
+
+  \node[nt,text width=7.8cm,anchor=north west] at (7.5,3.85) {A impressão da direita é \textbf{automática} --- é ela que faz o \texttt{sed} sem opções se comportar como \texttt{cat}. A opção \texttt{-n} desliga essa etapa, e a partir daí só sai o que o comando \texttt{p} mandar sair. Daí o idioma \texttt{sed -n '5p'}: nada é impresso por padrão, e a linha 5 é impressa por ordem explícita. Esquecer o \texttt{-n} num script com \texttt{p} é o motivo número um de saída duplicada.};
+
+  \node[nt,text width=12.6cm] at (6.4,1.3) {Como o script roda \textbf{inteiro} sobre cada linha antes de a próxima ser lida, a ordem dos comandos importa: \texttt{'s/a/b/; s/b/c/'} transforma \texttt{a} em \texttt{c}, não em \texttt{b}. E como o espaço de padrão contém uma linha só, nenhum \texttt{s///} comum enxerga duas linhas ao mesmo tempo --- para isso existem \texttt{N} e o espaço de reserva.};
+\end{tikzpicture}
+```
+O ciclo do `sed`: ler, executar o script, imprimir, repetir.
+:::
+
+Três consequências práticas desse modelo:
+
+1. **`sed` sem opções é `cat`.** `sed '' arquivo` copia a entrada para a saída, porque a impressão automática faz todo o trabalho.
+2. **O script roda por inteiro em cada linha.** Comandos encadeados se aplicam em sequência ao mesmo buffer.
+3. **O `\n` no fim da linha não está no espaço de padrão.** Por isso `$` casa com o fim do texto da linha, e por isso `s/$/;/` acrescenta um ponto e vírgula no final.
+
+## O comando `s`: substituir
+
+É o comando que responde por noventa por cento do uso do `sed`.
+
+::: {#fig-anatomia-do-s}
+```{.tikz}
+%%| filename: anatomia-do-comando-s-do-sed
+%%| alt: Decomposicao de um comando sed completo em endereco, comando s, padrao, substituicao e flags, com cada parte anotada
+\begin{tikzpicture}[
+    tk/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=4pt,minimum height=0.65cm},
+    ad/.style={tk,draw=manualred,fill=manualred!10},
+    dlm/.style={tk,draw=manualgray,fill=manualgray!12},
+    pd/.style={tk,draw=manualblue,fill=manualblue!10},
+    rp/.style={tk,draw=manualgreen,fill=manualgreen!12},
+    fg/.style={tk,draw=manualyellow,fill=manualyellow!20},
+    lb/.style={font=\tiny,align=center,text width=2.5cm},
+    fl/.style={-{Latex[length=1.2mm]},thin,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ad,minimum width=2.0cm] (a) at (1.2,5.6) {/\textasciicircum ip=/};
+  \node[dlm,minimum width=0.6cm] (s) at (2.5,5.6) {s};
+  \node[dlm,minimum width=0.4cm] (d1) at (3.0,5.6) {/};
+  \node[pd,minimum width=2.4cm] (p) at (4.4,5.6) {10\textbackslash .0\textbackslash .0\textbackslash .5};
+  \node[dlm,minimum width=0.4cm] (d2) at (5.8,5.6) {/};
+  \node[rp,minimum width=2.2cm] (r) at (7.1,5.6) {\&9};
+  \node[dlm,minimum width=0.4cm] (d3) at (8.4,5.6) {/};
+  \node[fg,minimum width=0.9cm] (f) at (9.1,5.6) {g};
+
+  \node[lb,manualred,anchor=north] (la) at (1.0,4.85) {endereço: só nas linhas que casam};
+  \draw[fl] (a.south) -- (la.north);
+
+  \node[lb,manualblue,anchor=north] (lp) at (4.4,3.55) {padrão, com os pontos escapados};
+  \draw[fl] (p.south) -- (lp.north);
+
+  \node[lb,manualgreen,anchor=north] (lr) at (7.4,4.85) {troca: \texttt{\&} é o trecho casado inteiro};
+  \draw[fl] (r.south) -- (lr.north);
+
+  \node[lb,manualyellow!60!black,anchor=north] (lf) at (10.3,3.55) {\emph{flag}: todas as ocorrências da linha};
+  \draw[fl] (f.south) -- (lf.north);
+
+  \node[lb,manualgray,anchor=south,text width=4.2cm] (ld) at (5.8,6.3) {delimitador: qualquer caractere serve};
+  \draw[fl] (d2.north) -- (ld.south);
+
+  \node[nt,text width=11.8cm] at (5.8,2.2) {O comando acima acrescenta um \texttt{9} ao endereço, mas \textbf{só} nas linhas que começam com \texttt{ip=} --- que é justamente a proteção que faltava no desastre da abertura. As \emph{flags} úteis: \texttt{g} todas as ocorrências; \texttt{3} apenas a terceira; \texttt{g3} da terceira em diante; \texttt{i} ignora maiúsculas e minúsculas; \texttt{p} imprime a linha alterada (par obrigatório do \texttt{-n}); \texttt{w saida.txt} grava as alteradas num arquivo.};
+
+  \node[nt,text width=11.8cm] at (5.8,0.75) {Quando o padrão contém barras --- caminhos de arquivo, quase sempre --- troque o delimitador em vez de escapar tudo: \texttt{s|/var/log|/srv/log|} é legível, \texttt{s/\textbackslash /var\textbackslash /log/\textbackslash /srv\textbackslash /log/} não é. O \texttt{sed} aceita \texttt{|}, \texttt{\#} ou qualquer outro caractere logo após o \texttt{s}.};
+\end{tikzpicture}
+```
+Um comando `sed` completo, decomposto: endereço, comando, padrão, substituição e *flags*.
+:::
+
+Na parte de substituição, três construções têm significado especial:
+
+```bash
+sed 's/erro/[&]/g'            # & = todo o trecho casado -> [erro]
+sed -E 's/(\w+)=(\w+)/\2=\1/' # \1 \2 = grupos capturados, trocados de lugar
+sed 's/x/\n/g'                # \n \t = quebra de linha e tabulacao (GNU)
+sed 's/preco/R$ 10 \& taxa/'  # & literal precisa de escape
+```
+
+E duas extensões da GNU que valem conhecer: `\U` e `\L` mudam a caixa do que vem depois, até `\E`.
+
+```bash
+sed -E 's/^(\w+)/\U\1/' arquivo      # deixa a primeira palavra em MAIUSCULAS
+```
+
+O padrão do `sed` é BRE por omissão. Use `-E` para ERE e escreva `(`, `+`, `?`, `{` sem barra — é mais legível e é o mesmo dialeto do `grep -E` e do `awk`. O `-r` é sinônimo de `-E`, mas só existe na GNU; `-E` é o portável.
+
+## Endereços: onde o comando se aplica
+
+Sem endereço, o comando roda em **todas** as linhas. Com endereço, só nas selecionadas — e essa é a diferença entre uma edição cirúrgica e o estrago da abertura.
+
+```bash
+sed '5d'                    # apaga a linha 5
+sed '$d'                    # apaga a ULTIMA linha
+sed '1,10d'                 # faixa por numero
+sed '/^#/d'                 # todas as linhas que comecam com #
+sed '/inicio/,/fim/d'       # da linha que casa "inicio" ate a que casa "fim"
+sed '/^\[web\]/,+5 s/on/off/'  # 5 linhas apos o cabecalho da secao
+sed '0~3d'                  # cada terceira linha (GNU)
+sed '/^#/!s/=/ = /'         # NEGACAO: nas linhas que NAO sao comentario
+sed -n '/ERRO/,$p'          # do primeiro ERRO ate o fim
+```
+
+A negação com `!` é subutilizada e resolve muita coisa: "faça isso em tudo, menos nos comentários" é `/^#/!comando`.
+
+Faixas por expressão regular têm um comportamento que surpreende: se a segunda expressão nunca casar, a faixa vai até o fim do arquivo. E a faixa pode **reabrir** — se `inicio` aparecer de novo depois de `fim`, um segundo bloco é selecionado.
+
+## Os outros comandos
+
+```bash
+sed -n '/ERRO/p'          # p   imprime (com -n, e o "grep" do sed)
+sed '/DEBUG/d'            # d   apaga a linha e comeca o proximo ciclo
+sed '10q'                 # q   encerra: "head -10" que para de ler mesmo
+sed '/^\[db\]/a porta=5432'   # a   ACRESCENTA linha depois
+sed '1i #!/bin/bash'          # i   INSERE linha antes
+sed '/senha/c REDIGIDO'       # c   TROCA a linha inteira
+sed 'y/abc/ABC/'              # y   transliteracao caractere a caractere
+sed -n '$='                   # =   imprime o NUMERO da linha
+sed '/marca/r trecho.txt'     # r   le arquivo e insere depois da linha
+sed -n '/ERRO/w erros.log'    # w   grava as linhas casadas em arquivo
+```
+
+Vários comandos se separam por `;` ou por `-e`, e se agrupam com chaves quando compartilham o endereço:
+
+```bash
+sed -e 's/a/b/' -e 's/c/d/' arquivo
+sed 's/a/b/; s/c/d/' arquivo
+sed '/^\[web\]/{ s/porta=80/porta=8080/; s/tls=off/tls=on/ }' arquivo
+```
+
+Script longo vai para arquivo e entra com `-f`, o que permite versionar a transformação junto do resto da automação.
+
+O `y` merece nota: ele traduz caractere por caractere, como o `tr` (@sec-cap068), e não aceita expressão regular. `y/abc/xyz/` troca todo `a` por `x`, todo `b` por `y`, todo `c` por `z`.
+
+## O espaço de reserva: quando uma linha não basta
+
+O segundo buffer é o que permite ao `sed` enxergar além da linha atual. Cinco comandos o manipulam, e a convenção de nome ajuda: minúscula sobrescreve, maiúscula acrescenta.
+
+| Comando | Efeito |
+|---|---|
+| `h` | copia o espaço de padrão **para** o de reserva (sobrescreve) |
+| `H` | acrescenta ao de reserva, com `\n` antes |
+| `g` | copia o de reserva **para** o de padrão (sobrescreve) |
+| `G` | acrescenta o de reserva ao de padrão |
+| `x` | troca os dois de lugar |
+
+: Comandos do espaço de reserva {#tbl-hold-space}
+
+Com eles saem idiomas que parecem mágica e são apenas o modelo em ação:
+
+```bash
+sed -n '1!G;h;$p' arquivo        # inverte o arquivo (o mesmo que tac)
+sed 'G' arquivo                  # dobra o espacamento (linha em branco entre todas)
+sed '$!N;s/\n/ /' arquivo        # junta linhas duas a duas
+sed ':a;N;$!ba;s/\n/,/g' arquivo # junta TODAS as linhas com virgula
+```
+
+O último usa rótulo (`:a`) e desvio (`ba`, "vá para a"), que existem e funcionam — mas quando um script de `sed` chega a esse ponto, quase sempre o `awk` do @sec-cap067 faz o mesmo em menos caracteres e com muito mais clareza. Vale saber ler; não vale escrever.
+
+## O `-i` e o hábito que evita o desastre
+
+O `-i` edita o arquivo no lugar. Ele não é atômico do jeito que parece: o `sed` cria um arquivo temporário e o renomeia por cima, o que significa que **o inode muda** — links físicos se quebram, e um link simbólico é substituído por arquivo comum, salvo com `--follow-symlinks`.
+
+A disciplina mínima tem três partes:
+
+```bash
+# 1. Ensaie SEM o -i e leia a saida
+sed -E 's/^(ip=)10\.0\.0\.5$/\110.0.0.59/' /etc/app/db.conf
+
+# 2. Confira o que MUDARIA, linha a linha
+diff <(cat /etc/app/db.conf) <(sed -E 's/.../.../' /etc/app/db.conf)
+
+# 3. So entao, com sufixo de backup
+sed -i.bak -E 's/^(ip=)10\.0\.0\.5$/\110.0.0.59/' /etc/app/*.conf
+```
+
+O `-i.bak` deixa um `db.conf.bak` ao lado de cada arquivo alterado. É a diferença entre um contratempo de dois minutos e uma restauração de backup.
+
+Revendo os três defeitos da abertura à luz do que veio acima: os pontos escapados (`10\.0\.0\.5`), a âncora `$` que impede casar o prefixo de `10.0.0.59`, e o endereço ou a âncora `^ip=` que restringe às linhas certas. O `g` continua ausente de propósito — com a âncora, há no máximo uma ocorrência por linha.
+
+## Quando não usar `sed`
+
+O `sed` opera sobre linhas de texto sem estrutura. Ele é a ferramenta errada, e não parcialmente errada, para:
+
+- **HTML e XML**, onde a estrutura é aninhada e as quebras de linha são arbitrárias — use `xmlstarlet` ou uma biblioteca;
+- **JSON**, pelo mesmo motivo — use `jq` (@sec-cap069);
+- **CSV com campos entre aspas contendo vírgula**, porque `sed` não conhece a regra de aspas — use `awk` com cuidado ou uma ferramenta de CSV;
+- **qualquer coisa que exija contar, somar ou lembrar de mais de um estado** — é `awk`.
+
+O sinal de que passou da hora de trocar de ferramenta é a chegada dos rótulos e desvios, ou de um `s///` com mais de três grupos de captura.
+
+## 🐉 No Kali
+
+- **Preparar wordlist é trabalho de `sed`.** Aplicar mutações comuns a uma lista de nomes da empresa alvo — `sed 's/$/2026/'` para acrescentar o ano, `sed 's/a/@/g; s/o/0/g'` para *leetspeak*, `sed -E 's/^(.)/\U\1/'` para capitalizar — gera candidatos derivados em segundos. É preparação de material para teste autorizado; a mesma lista contra sistema de terceiro sem contrato é tentativa de acesso não autorizado (Lei 12.737/2012).
+- **Sanitizar relatório antes de entregar.** Um relatório de teste costuma conter senhas em claro, tokens e nomes de usuário reais. `sed -E 's/(password=)[^[:space:]]+/\1REDIGIDO/g; s/([0-9]{1,3}\.){3}[0-9]{1,3}/IP-REDIGIDO/g' bruto.md > entrega.md` limpa em massa. Sempre com ensaio antes do `-i`, e sempre conferindo o resultado — redação que falha em silêncio é vazamento.
+- **Normalizar saída de ferramenta para o pipeline.** `nmap -oG` produz linhas que não se encaixam bem em `cut`; `sed -E 's/^Host: ([0-9.]+) .*Ports: /\1 /'` deixa o endereço e a lista de portas prontos para o `awk`. Boa parte do trabalho de encadear ferramentas do Kali é essa: aparar o formato de uma para servir de entrada da outra.
+- **`sed -n '/inicio/,/fim/p'` extrai blocos de saída longa.** Isolar a seção de um alvo específico num relatório de `nikto` ou de `enum4linux` com centenas de linhas é uma faixa por expressão regular. Combine com `-n` para não imprimir o resto.
+- **Editar configuração de serviço em massa pede endereço, não só padrão.** Trocar `PasswordAuthentication yes` por `no` em vinte hosts com `sed -i` funciona; trocar `yes` por `no` sem endereço destrói o arquivo inteiro. A forma segura é ancorar na diretiva: `sed -i.bak -E 's/^#?\s*(PasswordAuthentication)\s+yes/\1 no/' /etc/ssh/sshd_config`, seguida de `sshd -t` para validar a sintaxe **antes** de recarregar o serviço (@sec-cap041). Um `sshd` que não sobe por erro de configuração deixa você de fora da máquina remota.
+
+> **Nota sobre a família RHEL.** O `sed` da GNU é o mesmo nas duas famílias, com `-i`, `-E`, `\U`, `\n` na substituição e endereços `0~N`. A divergência aparece ao sair do mundo GNU: no BSD e no macOS, `sed -i` **exige** um argumento de sufixo (`sed -i '' 's/a/b/'`), `\n` na substituição não funciona e `-E` existe mas `-r` não. Script que precise atravessar essa fronteira usa `sed -i.bak` — que funciona nos dois — e evita `\U`, `\L` e `0~N`. Em RHEL, vale ainda lembrar que arquivos sob `/etc` podem ter contexto SELinux: como o `-i` recria o arquivo, o contexto pode se perder, e `restorecon -v arquivo` é o conserto.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-sed`.
+
+1. **Monte o cenário.**
+
+   ```bash
+   mkdir -p ~/lab-sed && cd ~/lab-sed
+   cat > db.conf <<'EOF'
+   # configuracao do banco
+   ip=10.0.0.5
+   ip_replica=10.0.0.59
+   instancia=10a0b0c5
+   porta=5432
+   porta_alt=5432
+
+   [web]
+   porta=80
+   tls=off
+   EOF
+   cp db.conf db.conf.original
+   ```
+
+2. **Reproduza o desastre da abertura — sem `-i`.**
+
+   ```bash
+   sed 's/10.0.0.5/10.0.0.59/' db.conf
+   ```
+
+   Esperado: `ip_replica` virou `10.0.0.599`, e `instancia=10a0b0c5` virou `instancia=10.0.0.59`. Dois estragos numa linha só de comando, e nenhum aviso.
+
+3. **Corrija com escape, âncora e endereço.**
+
+   ```bash
+   sed -E '/^ip=/ s/10\.0\.0\.5$/10.0.0.59/' db.conf
+   diff db.conf <(sed -E '/^ip=/ s/10\.0\.0\.5$/10.0.0.59/' db.conf)
+   ```
+
+   Esperado: o `diff` mostra exatamente uma linha alterada. Este é o ensaio que sempre precede o `-i`.
+
+4. **Aplique de verdade, com backup.**
+
+   ```bash
+   sed -i.bak -E '/^ip=/ s/10\.0\.0\.5$/10.0.0.59/' db.conf
+   diff db.conf.bak db.conf
+   ```
+
+   Esperado: uma linha de diferença, e o arquivo `db.conf.bak` com o conteúdo anterior.
+
+5. **Veja `-n` e `p` trabalharem juntos.**
+
+   ```bash
+   sed    '/porta/p' db.conf | head -8
+   echo '--- agora com -n ---'
+   sed -n '/porta/p' db.conf
+   ```
+
+   Esperado: sem `-n`, as linhas de porta saem **duplicadas** — uma pela impressão automática, outra pelo `p`. Com `-n`, saem uma vez.
+
+6. **Use `&` e grupos.**
+
+   ```bash
+   sed -E 's/[0-9]{4,5}/[&]/g'  db.conf
+   sed -E 's/^([a-z_]+)=(.*)$/\2 <- \1/' db.conf
+   ```
+
+   Esperado: no primeiro, todo número de quatro ou cinco dígitos entre colchetes. No segundo, chave e valor trocados de lado.
+
+7. **Aplique dentro de uma seção só.**
+
+   ```bash
+   sed '/^\[web\]/,$ { s/porta=80/porta=8080/; s/tls=off/tls=on/ }' db.conf
+   ```
+
+   Esperado: apenas as linhas depois de `[web]` mudam. A linha `porta=5432` do topo fica intacta, mesmo o padrão `porta=` existindo lá.
+
+8. **Negue o endereço.**
+
+   ```bash
+   sed '/^#/! s/=/ = /' db.conf
+   ```
+
+   Esperado: espaços ao redor do `=` em todas as linhas, exceto no comentário do topo.
+
+9. **Insira, acrescente e troque.**
+
+   ```bash
+   sed '1i # gerado automaticamente' db.conf | head -3
+   sed '/^\[web\]/a raiz=/var/www' db.conf | grep -A 1 '\[web\]'
+   sed '/^instancia/c instancia=REDIGIDO' db.conf | grep instancia
+   ```
+
+   Esperado: linha nova no topo, linha nova logo após o cabeçalho de seção, e a linha de instância substituída por inteiro.
+
+10. **Extraia um bloco.**
+
+    ```bash
+    sed -n '/^\[web\]/,/^$/p' db.conf
+    echo '--- e o numero da ultima linha ---'
+    sed -n '$=' db.conf
+    ```
+
+    Esperado: a seção `[web]` até o fim do arquivo (não há linha em branco depois dela, então a faixa vai até o fim) e a contagem total de linhas.
+
+11. **Brinque com o espaço de reserva.**
+
+    ```bash
+    printf 'um\ndois\ntres\n' > ordem.txt
+    sed -n '1!G;h;$p' ordem.txt
+    echo '--- todas as linhas numa so ---'
+    sed ':a;N;$!ba;s/\n/, /g' ordem.txt
+    ```
+
+    Esperado: `tres dois um`, um por linha, e depois `um, dois, tres` numa linha só. Compare com `tac ordem.txt` — mesmo resultado, muito menos esforço.
+
+12. **Redija dados sensíveis e confira.**
+
+    ```bash
+    cat > relatorio.txt <<'EOF'
+    host 192.168.1.10 respondeu
+    credencial encontrada: password=SenhaFraca123
+    host 192.168.1.11 respondeu
+    EOF
+    sed -E 's/(password=)[^[:space:]]+/\1REDIGIDO/g; s/([0-9]{1,3}\.){3}[0-9]{1,3}/IP-REDIGIDO/g' relatorio.txt
+    cd ~ && rm -rf ~/lab-sed
+    ```
+
+    Esperado: nenhum endereço e nenhuma senha na saída. Sempre confira com os olhos antes de entregar — e sempre com `grep -c` no resultado, procurando o que deveria ter sumido.
+
+## Resumo
+
+- **O `sed` processa uma linha por vez** num espaço de padrão, roda o script inteiro sobre ela, imprime e esquece. `sed ''` é `cat`; `-n` desliga a impressão automática e faz o `p` valer a pena.
+- **`s/padrão/troca/flags` é o comando central.** O delimitador pode ser qualquer caractere — use `|` quando o padrão tiver barras. `&` é o trecho casado inteiro; `\1`, `\2` são os grupos.
+- **Sem `g`, só a primeira ocorrência da linha muda.** E o `g` não é sempre o que se quer: com âncora, há no máximo uma.
+- **Endereço restringe onde o comando age**, e é a diferença entre edição cirúrgica e estrago geral. `/^ip=/ s/.../.../ `, faixas `/a/,/b/`, e a negação `!`.
+- **`-E` para ERE.** Mesmo dialeto do `grep -E` e do `awk`, e muito mais legível que BRE com barras invertidas.
+- **`-i` grava por cima sem perguntar e muda o inode.** Ensaie sem `-i`, confira com `diff`, e só então use `-i.bak`.
+- **O espaço de reserva (`h H g G x`) é o que permite ver além da linha atual.** Vale conhecer os idiomas; quando o script pede rótulo e desvio, a resposta é `awk`.
+- **`sed` não entende estrutura aninhada.** Para JSON, XML e CSV com aspas, a ferramenta é outra.

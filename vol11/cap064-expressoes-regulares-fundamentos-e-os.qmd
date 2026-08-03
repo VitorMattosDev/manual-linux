@@ -1,3 +1,418 @@
 # Expressões regulares: fundamentos e os diferentes sabores {#sec-cap064}
 
-*(em elaboracao)*
+O servidor estava sob tentativa de login por força bruta e o analista queria isolar o que partiu de um endereço específico:
+
+```bash
+grep 10.0.0.1 /var/log/auth.log
+```
+
+Vieram as linhas esperadas — e mais um punhado que não fazia sentido nenhum, incluindo uma com `10-0x0v1` no meio de um identificador de sessão. O ponto, que ele digitou querendo dizer "ponto", significa para o `grep` **qualquer caractere**. O padrão `10.0.0.1` casa com `10.0.0.1`, mas também com `10a0b0c1`, `100000001` e `10:0-0_1`.
+
+Na tentativa seguinte, ele quis capturar uma ou mais falhas seguidas:
+
+```bash
+grep "Failed+" /var/log/auth.log
+```
+
+Zero resultados. Nenhum erro, nenhum aviso: o `grep` sem `-E` não conhece o `+` como quantificador e foi procurar, literalmente, a palavra `Failed` seguida do sinal de mais.
+
+Os dois problemas têm a mesma raiz. Uma expressão regular não é um texto de busca com alguns símbolos a mais — é a descrição de uma **linguagem**, um conjunto de cadeias que um autômato aceita. E, para piorar, existem três dialetos distintos dessa notação convivendo na mesma máquina, com metacaracteres que trocam de sentido conforme a ferramenta. Este capítulo é sobre a notação e sobre os dialetos; os capítulos seguintes aplicam a notação em `grep`, `sed` e `awk`.
+
+## O que uma expressão regular descreve
+
+Uma expressão regular é uma especificação de forma, não de conteúdo. Ela não pergunta "esta cadeia é igual a X?", e sim "esta cadeia tem esta estrutura?". Um endereço IPv4 tem a estrutura "de um a três dígitos, ponto, e isso quatro vezes"; um carimbo de data tem a estrutura "quatro dígitos, traço, dois dígitos, traço, dois dígitos".
+
+Todo caractere que não seja metacaractere casa consigo mesmo. O trabalho de aprender expressões regulares é, quase inteiramente, aprender **quais caracteres são especiais e em qual dialeto**.
+
+Vale separar de saída dois mecanismos que se parecem e não são a mesma coisa. O globbing do @sec-cap013 é do **shell**, opera sobre nomes de arquivo e usa `*` para "qualquer sequência". A expressão regular é da **ferramenta** — `grep`, `sed`, `awk` —, opera sobre linhas de texto e usa `*` para "zero ou mais do item anterior". O padrão `*.log` como glob lista arquivos terminados em `.log`; como expressão regular, é sintaticamente estranho e não significa nada disso.
+
+A consequência prática vem primeiro, porque ela salva mais tempo do que qualquer metacaractere: **expressão regular vai entre aspas simples**. Sem elas, o shell processa `*`, `?`, `[...]`, `$` e `\` antes que a ferramenta veja o padrão (@sec-cap053), e o que chega ao `grep` já não é o que você escreveu.
+
+```bash
+grep '^root'  /etc/passwd     # correto
+grep "^root"  /etc/passwd     # funciona aqui, mas $ e ` seriam expandidos
+grep ^root    /etc/passwd     # frágil: depende de nao haver arquivo com esse nome
+```
+
+## Literais, o ponto e as classes de caracteres
+
+O `.` casa com um caractere qualquer, exceto a quebra de linha. Para dizer "ponto literal", escape com barra invertida: `\.`.
+
+```bash
+grep '10\.0\.0\.1' /var/log/auth.log      # agora e o endereco, de verdade
+```
+
+Uma **classe** entre colchetes casa com **um** caractere dentre os listados:
+
+```
+[aeiou]        uma vogal
+[0-9]          um digito
+[A-Za-z0-9_]   um caractere de identificador
+[^0-9]         qualquer coisa que NAO seja digito
+[.]            um ponto literal -- dentro da classe, o ponto perde o poder
+```
+
+Dentro dos colchetes as regras mudam: quase todo metacaractere vira literal, e três posições passam a importar. O `^` só nega se for o **primeiro** caractere; o `]` só é literal se vier **logo no início**; o `-` só é literal se estiver no **começo ou no fim**. Por isso `[]-]` casa com colchete ou traço, e `[a^]` casa com `a` ou circunflexo.
+
+Faixas como `a-z` dependem da ordem de colação da localidade. Em `pt_BR.UTF-8`, `[a-z]` pode incluir letras acentuadas e até maiúsculas, dependendo da implementação — comportamento que muda o resultado do script conforme a variável `LC_ALL`. A defesa é usar as **classes POSIX nomeadas**, que são estáveis e legíveis:
+
+| Classe | Equivale a | Classe | Equivale a |
+|---|---|---|---|
+| `[[:digit:]]` | `[0-9]` | `[[:space:]]` | espaço, tabulação, quebra |
+| `[[:alpha:]]` | letras | `[[:upper:]]` | maiúsculas |
+| `[[:alnum:]]` | letras e dígitos | `[[:lower:]]` | minúsculas |
+| `[[:punct:]]` | pontuação | `[[:xdigit:]]` | `[0-9A-Fa-f]` |
+
+: Classes POSIX nomeadas, disponíveis em BRE, ERE e PCRE {#tbl-classes-posix}
+
+O duplo colchete assusta, mas a leitura é simples: os externos abrem a classe, os internos fazem parte do nome. E o nome vai **dentro** de uma classe, então `[[:digit:][:space:]]` é uma classe só, que casa com dígito ou espaço.
+
+## Quantificadores: quantas vezes o item anterior se repete
+
+```
+X*        zero ou mais       -- pode nao aparecer
+X+        uma ou mais        -- tem que aparecer
+X?        zero ou uma        -- opcional
+X{3}      exatamente 3
+X{2,5}    de 2 a 5
+X{2,}     2 ou mais
+```
+
+O quantificador se aplica ao **item imediatamente anterior**, que pode ser um caractere, uma classe ou um grupo. Em `ab*`, o `*` governa só o `b`: casa com `a`, `ab`, `abbb`. Para repetir o par, é preciso agrupar: `(ab)*`.
+
+A combinação `.*` — "qualquer coisa, inclusive nada" — é a mais usada e a mais perigosa, porque é **gulosa**: consome o máximo possível e só devolve caracteres se o resto do padrão não fechar. Numa linha de log com dois pares de aspas, `".*"` captura da primeira à **última** aspa, atravessando o meio. A solução em POSIX é negar em vez de generalizar — `"[^"]*"` — e em PCRE existe também o quantificador preguiçoso `".*?"`, que para na primeira ocorrência possível.
+
+## Âncoras: onde o casamento pode acontecer
+
+Sem âncoras, a expressão casa em qualquer posição da linha.
+
+```
+^abc      linha COMECA com abc
+abc$      linha TERMINA com abc
+^abc$     a linha inteira e exatamente abc
+^$        linha vazia
+\<pai\>   a palavra pai, nao "papai" nem "paixao"  (GNU)
+\bpai\b   idem, sintaxe de borda de palavra        (GNU e PCRE)
+```
+
+Âncoras não consomem caractere nenhum: elas são condições sobre a posição. É por isso que `^` e `$` podem aparecer juntos numa expressão sem nada entre eles.
+
+O `^` fora do início e o `$` fora do fim são literais em BRE (`a^b` casa com o texto `a^b`), mas em ERE e PCRE o comportamento é indefinido ou erro. Escreva `\^` e `\$` quando quiser o símbolo.
+
+## Grupos, alternância e retrovisores
+
+Parênteses fazem dois trabalhos: delimitam um item para o quantificador e **capturam** o trecho casado para reuso.
+
+```
+(erro|falha|negado)        alternancia: um dos tres
+^(ERRO|WARN) [0-9]+        alternancia ancorada, seguida de numero
+(ab)+                      ab repetido
+```
+
+A alternância tem a **menor** precedência de todas: `^erro|falha` significa "linha começando com erro" **ou** "contém falha" — quase nunca o que se quer. Agrupe: `^(erro|falha)`.
+
+O trecho capturado pelo primeiro grupo fica disponível como `\1`, o segundo como `\2`, e assim por diante. Dentro do próprio padrão isso é uma **retrorreferência**, que exige que o texto se repita:
+
+```bash
+grep -E '(\b[a-z]+) \1\b' texto.txt      # encontra palavra duplicada: "o o", "de de"
+```
+
+Na substituição — assunto do @sec-cap066 — a mesma numeração serve para reordenar campos. Vale saber desde já que retrorreferência **não é uma expressão regular** no sentido formal: ela exige memória, o motor precisa de retrocesso para resolvê-la, e é a porta de entrada para o problema de desempenho descrito adiante.
+
+## Os três sabores que convivem na mesma máquina
+
+Aqui está a origem do `Failed+` que não funcionou. O POSIX definiu dois dialetos, e o Perl criou um terceiro que virou padrão de fato fora do mundo Unix.
+
+::: {#fig-sabores-de-regex}
+```{.tikz}
+%%| filename: sabores-de-expressao-regular
+%%| alt: Tabela comparando como os mesmos construtos sao escritos em BRE, ERE e PCRE, com a ferramenta tipica de cada sabor
+\begin{tikzpicture}[
+    bx/.style={rounded corners=1.5pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.52cm,minimum width=2.7cm},
+    bre/.style={bx,draw=manualred,fill=manualred!10},
+    ere/.style={bx,draw=manualgreen,fill=manualgreen!12},
+    pcre/.style={bx,draw=manualblue,fill=manualblue!12},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    rw/.style={font=\scriptsize,align=right,anchor=east},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,manualred]   at (4.3,7.3) {BRE};
+  \node[hd,manualgreen] at (7.5,7.3) {ERE};
+  \node[hd,manualblue]  at (10.7,7.3) {PCRE};
+  \node[font=\tiny,manualgray,align=center] at (4.3,6.92) {\texttt{grep}, \texttt{sed}, \texttt{expr}};
+  \node[font=\tiny,manualgray,align=center] at (7.5,6.92) {\texttt{grep -E}, \texttt{sed -E}, \texttt{awk}};
+  \node[font=\tiny,manualgray,align=center] at (10.7,6.92) {\texttt{grep -P}, \texttt{perl}, \texttt{python}};
+
+  \node[rw] at (2.6,6.3) {uma ou mais};
+  \node[bre] at (4.3,6.3) {a\textbackslash +};
+  \node[ere] at (7.5,6.3) {a+};
+  \node[pcre] at (10.7,6.3) {a+};
+
+  \node[rw] at (2.6,5.7) {opcional};
+  \node[bre] at (4.3,5.7) {a\textbackslash ?};
+  \node[ere] at (7.5,5.7) {a?};
+  \node[pcre] at (10.7,5.7) {a?};
+
+  \node[rw] at (2.6,5.1) {repetição contada};
+  \node[bre] at (4.3,5.1) {a\textbackslash \{2,5\textbackslash \}};
+  \node[ere] at (7.5,5.1) {a\{2,5\}};
+  \node[pcre] at (10.7,5.1) {a\{2,5\}};
+
+  \node[rw] at (2.6,4.5) {grupo};
+  \node[bre] at (4.3,4.5) {\textbackslash (ab\textbackslash )};
+  \node[ere] at (7.5,4.5) {(ab)};
+  \node[pcre] at (10.7,4.5) {(ab)};
+
+  \node[rw] at (2.6,3.9) {alternância};
+  \node[bre] at (4.3,3.9) {a\textbackslash |b};
+  \node[ere] at (7.5,3.9) {a|b};
+  \node[pcre] at (10.7,3.9) {a|b};
+
+  \node[rw] at (2.6,3.3) {dígito};
+  \node[bre] at (4.3,3.3) {[[:digit:]]};
+  \node[ere] at (7.5,3.3) {[[:digit:]]};
+  \node[pcre] at (10.7,3.3) {\textbackslash d};
+
+  \node[rw] at (2.6,2.7) {preguiçoso};
+  \node[bre,draw=manualgray,fill=manualgray!8] at (4.3,2.7) {não existe};
+  \node[ere,draw=manualgray,fill=manualgray!8] at (7.5,2.7) {não existe};
+  \node[pcre] at (10.7,2.7) {.*?};
+
+  \node[rw] at (2.6,2.1) {olhar adiante};
+  \node[bre,draw=manualgray,fill=manualgray!8] at (4.3,2.1) {não existe};
+  \node[ere,draw=manualgray,fill=manualgray!8] at (7.5,2.1) {não existe};
+  \node[pcre] at (10.7,2.1) {(?=...)};
+
+  \node[nt,text width=13.6cm] at (6.8,1.1) {A regra que resolve quase tudo: em \textbf{BRE} os construtos avançados exigem barra invertida e os caracteres simples são literais; em \textbf{ERE} é o contrário, e a barra invertida só serve para \emph{tirar} o poder de um símbolo. \textbf{PCRE} acrescenta abreviações e recursos que não são expressões regulares no sentido formal. Na dúvida, \texttt{grep -E} --- e escreva o mesmo padrão que você usaria em \texttt{awk}, \texttt{sed -E} ou em qualquer linguagem moderna.};
+\end{tikzpicture}
+```
+O mesmo construto nos três dialetos. A coluna da esquerda é o padrão histórico do `grep` sem opções.
+:::
+
+Em resumo:
+
+- **BRE** (*Basic Regular Expression*) é o padrão de `grep`, `sed` e `expr` sem opções. Os metacaracteres `+`, `?`, `{`, `|`, `(`, `)` são **literais**, e o poder deles se obtém escapando: `\+`, `\?`, `\{`, `\|`, `\(`, `\)`. É a inversão que confunde quem vem de outra linguagem.
+- **ERE** (*Extended*) é o de `grep -E`, `sed -E`, `awk` e `egrep`. Os símbolos valem por si; a barra invertida serve para anular. É o que você deve usar por padrão.
+- **PCRE** (*Perl Compatible*) é o de `grep -P`, `perl`, `python`, `php` e praticamente todo editor de texto. Acrescenta `\d`, `\w`, `\s`, `\b`, quantificadores preguiçosos, olhar adiante e atrás, grupos sem captura `(?:...)` e nomeados `(?<nome>...)`.
+
+O `egrep` e o `fgrep` ainda existem, mas estão obsoletos: no Kali atual eles imprimem um aviso de depreciação. Use `grep -E` e `grep -F`.
+
+Uma quarta variante merece menção porque não é expressão regular nenhuma: `grep -F` (*fixed strings*) desliga a interpretação inteira e busca texto literal. É a ferramenta certa quando o padrão vem de uma variável cujo conteúdo você não controla — e é também a mais rápida.
+
+## Como o motor casa, e por que isso importa
+
+Motores POSIX (`grep`, `sed`, `awk` da GNU) usam autômato finito e garantem o casamento **mais à esquerda e mais longo**, em tempo proporcional ao tamanho do texto. Motores PCRE usam **retrocesso** (*backtracking*) e garantem o mais à esquerda e o **primeiro** que a ordem das alternativas produzir — por isso `(a|ab)` casa só `a` em PCRE e `ab` em POSIX.
+
+O retrocesso tem um custo que pode explodir. Um padrão com quantificador aninhado, como `(a+)+b`, aplicado a uma cadeia de trinta `a` sem `b` no fim, faz o motor tentar um número exponencial de divisões antes de desistir. É o **retrocesso catastrófico**, e ele tem nome próprio quando aparece num serviço que aceita entrada do usuário: ReDoS, negação de serviço por expressão regular.
+
+```bash
+# NAO rode isto num servidor de producao -- prende um nucleo por minutos
+grep -P '(a+)+b' <<< "$(printf 'a%.0s' {1..40})"
+```
+
+Duas defesas práticas: prefira `grep -E` a `grep -P` quando ambos servirem, porque o motor POSIX não retrocede; e, quando precisar de PCRE, evite quantificador dentro de grupo quantificado e prefira classes negadas (`[^"]*`) a `.*`.
+
+## Anatomia de um padrão real
+
+::: {#fig-anatomia-regex-ip}
+```{.tikz}
+%%| filename: anatomia-de-um-padrao-de-ip
+%%| alt: Decomposicao de uma expressao regular de endereco IPv4 em pecas, cada uma com sua funcao anotada abaixo
+\begin{tikzpicture}[
+    tk/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=3.5pt,minimum height=0.62cm},
+    anc/.style={tk,draw=manualred,fill=manualred!10},
+    grp/.style={tk,draw=manualblue,fill=manualblue!10},
+    cls/.style={tk,draw=manualgreen,fill=manualgreen!12},
+    qnt/.style={tk,draw=manualyellow,fill=manualyellow!22},
+    lit/.style={tk,draw=manualgray,fill=manualgray!10},
+    lb/.style={font=\tiny,align=center,text width=1.9cm},
+    fl/.style={-{Latex[length=1.2mm]},thin,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[anc,minimum width=0.6cm] (a1) at (0.6,5.4) {\textasciicircum};
+  \node[grp,minimum width=0.5cm] (g1) at (1.4,5.4) {(};
+  \node[cls,minimum width=1.3cm] (c1) at (2.55,5.4) {[0-9]};
+  \node[qnt,minimum width=1.5cm] (q1) at (4.05,5.4) {\{1,3\}};
+  \node[lit,minimum width=1.0cm] (p1) at (5.35,5.4) {\textbackslash .};
+  \node[grp,minimum width=0.5cm] (g2) at (6.15,5.4) {)};
+  \node[qnt,minimum width=1.0cm] (q2) at (7.0,5.4) {\{3\}};
+  \node[cls,minimum width=1.3cm] (c2) at (8.25,5.4) {[0-9]};
+  \node[qnt,minimum width=1.5cm] (q3) at (9.75,5.4) {\{1,3\}};
+  \node[anc,minimum width=0.6cm] (a2) at (10.8,5.4) {\$};
+
+  \node[lb,manualred,anchor=north] (la) at (0.6,4.6) {início da linha};
+  \draw[fl] (a1.south) -- (la.north);
+
+  \node[lb,manualgreen,anchor=north] (lc) at (2.55,4.6) {um dígito, qualquer um};
+  \draw[fl] (c1.south) -- (lc.north);
+
+  \node[lb,manualyellow!70!black,anchor=north] (lq) at (4.3,3.35) {repetido de 1 a 3 vezes};
+  \draw[fl] (q1.south) -- (lq.north);
+
+  \node[lb,manualgray,anchor=north] (lp) at (5.9,4.6) {ponto literal, escapado};
+  \draw[fl] (p1.south) -- (lp.north);
+
+  \node[lb,manualblue,anchor=north,text width=2.6cm] (lg) at (7.9,3.35) {o grupo inteiro (dígitos + ponto) repetido 3 vezes};
+  \draw[fl] (q2.south) -- (lg.north);
+
+  \node[lb,manualred,anchor=north] (l2) at (10.8,4.6) {fim da linha};
+  \draw[fl] (a2.south) -- (l2.north);
+
+  \draw[decorate,decoration={brace,amplitude=4pt},manualblue,thick] (g2.north east) -- (g1.north west);
+  \node[font=\tiny,manualblue] at (3.8,6.15) {grupo capturável};
+
+  \node[nt,text width=13.4cm] at (6.5,1.25) {Lida da esquerda para a direita, a expressão diz: \emph{da borda esquerda da linha, três repetições de ``um a três dígitos seguidos de ponto'', depois mais um a três dígitos, e então a borda direita}. Note o que ela \textbf{não} diz: nada impede \texttt{999.999.999.999}. Validar a faixa de 0 a 255 exige uma alternância bem mais longa --- e, na prática, é trabalho de \texttt{awk} ou de uma linguagem, não do padrão. Expressão regular reconhece \textbf{forma}; validar \textbf{valor} é outro problema.};
+\end{tikzpicture}
+```
+Um padrão de endereço IPv4 decomposto peça por peça.
+:::
+
+Esse último ponto é a lição mais cara do capítulo. Existe uma tentação forte de resolver tudo com um padrão cada vez maior — validar e-mail, extrair campos de HTML, conferir intervalo numérico. Expressões regulares reconhecem linguagens regulares; HTML, JSON e parênteses balanceados **não são** linguagens regulares, e nenhum padrão resolve o caso geral. Quando o padrão passa de umas três linhas ou precisa contar, a resposta é mudar de ferramenta: `awk` (@sec-cap067), `jq` (@sec-cap069) ou Python.
+
+## 🐉 No Kali
+
+- **`grep -F` para tudo que veio de fora.** Filtrar a saída de uma varredura por um domínio contido em variável (`grep "$ALVO"`) trata o conteúdo da variável como padrão: um ponto vira coringa e um `[` mal fechado derruba o comando com *Unmatched [*. Se o alvo veio de arquivo de escopo, de argumento de linha de comando ou de resposta de API, use `grep -F -- "$ALVO"`. O `--` fecha a lista de opções e evita que um alvo começando com traço seja lido como flag.
+- **Wordlists se filtram com ERE, e o ganho é grande.** Reduzir a `rockyou.txt` à política de senha do alvo antes de entregá-la a uma ferramenta corta horas de execução: `grep -E '^.{8,}$' rockyou.txt | grep -E '[[:upper:]]' | grep -E '[[:digit:]]'` deixa só o que tem oito caracteres ou mais, uma maiúscula e um dígito. Três `grep` em cadeia são mais legíveis — e frequentemente mais rápidos — que um único padrão com olhar adiante.
+- **Extrair indicadores de um log é o uso diário.** `grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'` puxa endereços IPv4; `grep -oE '[0-9a-f]{32}'` puxa hashes MD5; `grep -oPi 'href="\K[^"]+'` puxa URLs de um HTML salvo — o `\K` do PCRE descarta o que veio antes e é a forma curta de capturar sem grupo. O `-o` imprime só o casado, e é o que transforma o `grep` em extrator (@sec-cap065).
+- **ReDoS é uma classe de vulnerabilidade, não só um incômodo.** Uma aplicação web que valida entrada do usuário com um padrão de retrocesso aninhado pode ser derrubada por uma requisição de poucos quilobytes. Ao revisar código em teste autorizado, `grep -rnE '\(\[?[^)]*[+*]\)?[+*]' --include='*.js' --include='*.py'` levanta candidatos a quantificador aninhado. Isso é análise de código com autorização do dono do sistema; disparar a carga contra serviço de terceiro sem contrato é indisponibilidade provocada, enquadrada na Lei 12.737/2012.
+- **A localidade muda o resultado da varredura.** Com `LC_ALL=pt_BR.UTF-8`, faixas como `[a-z]` podem se comportar de forma inesperada e o `grep` fica mais lento por conta da decodificação multibyte. Em pipeline de análise de log, `LC_ALL=C` deixa a semântica previsível e costuma acelerar de forma expressiva — mas quebra o casamento de acentos, então não use quando o texto for em português.
+
+> **Nota sobre a família RHEL.** O `grep` da GNU é o mesmo em Debian, Kali e RHEL, com as extensões `\<`, `\>`, `\b` e `-P` disponíveis nos três. As divergências reais aparecem fora do mundo GNU: no macOS e nos BSD, `sed -E` existe mas `sed -r` não, `grep -P` não existe, e `\+` em BRE não é reconhecido. Script que precise atravessar essa fronteira usa ERE puro, sem `-P`, sem `\<` e sem `\K`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-regex`.
+
+1. **Monte o cenário.**
+
+   ```bash
+   mkdir -p ~/lab-regex && cd ~/lab-regex
+   cat > acesso.log <<'EOF'
+   2026-07-14 09:22:01 INFO  login ok user=kali ip=10.0.0.1
+   2026-07-14 09:22:07 ERRO  login falhou user=root ip=10.0.0.14
+   2026-07-14 09:23:11 ERRO  login falhou user=root ip=192.168.1.240
+   2026-07-14 09:23:12 WARN  sessao id=10a0b0c1 reiniciada
+   2026-07-14 10:01:59 ERRO  login falhou user=admin ip=172.16.5.9
+   2026-07-15 08:00:00 INFO  backup concluido em 10.0.0.1
+   EOF
+   ```
+
+2. **Reproduza o bug da abertura.**
+
+   ```bash
+   grep '10.0.0.1' acesso.log
+   echo '--- agora com o ponto escapado ---'
+   grep '10\.0\.0\.1' acesso.log
+   ```
+
+   Esperado: a primeira busca traz a linha do `id=10a0b0c1`, que não contém endereço nenhum. A segunda, não. Note que `10.0.0.14` continua aparecendo nas duas — é casamento parcial, resolvido com `\b` no passo 6.
+
+3. **Veja o `+` falhar em BRE e funcionar em ERE.**
+
+   ```bash
+   grep  'ERRO +login' acesso.log     # zero linhas
+   grep -E 'ERRO +login' acesso.log   # tres linhas
+   grep  'ERRO \+login' acesso.log    # tres linhas -- BRE com escape
+   ```
+
+   Esperado: o primeiro comando não imprime nada e sai com status 1 (`echo $?` confirma). Os outros dois são equivalentes.
+
+4. **Compare classe POSIX e faixa.**
+
+   ```bash
+   printf 'café\ncafe\nCAFE\n' > palavras.txt
+   grep -E '^[a-z]+$'        palavras.txt
+   grep -E '^[[:alpha:]]+$'  palavras.txt
+   LC_ALL=C grep -E '^[[:alpha:]]+$' palavras.txt
+   ```
+
+   Esperado: a faixa `[a-z]` não pega `café`; a classe nomeada pega, porque na localidade UTF-8 o `é` é letra. Sob `LC_ALL=C`, a classe volta a ser apenas ASCII e `café` some. É a demonstração de que localidade muda o resultado.
+
+5. **Ancore.**
+
+   ```bash
+   grep -cE 'ERRO'   acesso.log
+   grep -cE '^ERRO'  acesso.log
+   grep -E '^2026-07-15' acesso.log
+   ```
+
+   Esperado: três, zero e uma linha. O `^ERRO` não casa nada porque toda linha começa com a data.
+
+6. **Extraia com `-o` e delimite com bordas de palavra.**
+
+   ```bash
+   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' acesso.log
+   echo '--- so o endereco exato ---'
+   grep -oE '\b10\.0\.0\.1\b' acesso.log
+   ```
+
+   Esperado: a primeira lista cinco endereços, um por linha. A segunda traz duas ocorrências e **não** casa dentro de `10.0.0.14`, porque o `\b` exige borda depois do `1`.
+
+7. **Veja a alternância sem parênteses morder.**
+
+   ```bash
+   grep -E '^2026-07-15|ERRO'  acesso.log | wc -l
+   grep -E '^(2026-07-15|ERRO)' acesso.log | wc -l
+   ```
+
+   Esperado: quatro e uma. Sem os parênteses, a âncora vale só para a primeira alternativa.
+
+8. **Observe a gula do `.*`.**
+
+   ```bash
+   echo 'usuario="root" host="alvo" porta="22"' > campos.txt
+   grep -oE '".*"'    campos.txt
+   grep -oE '"[^"]*"' campos.txt
+   ```
+
+   Esperado: o primeiro imprime uma única cadeia gigante, de `"root"` até `"22"`. O segundo imprime três campos separados. Se quiser ver a versão preguiçosa: `grep -oP '".*?"' campos.txt`.
+
+9. **Use uma retrorreferência.**
+
+   ```bash
+   printf 'erro erro no disco\ntudo bem por aqui\nde de novo\n' > dup.txt
+   grep -E '(\b[a-z]+) \1\b' dup.txt
+   ```
+
+   Esperado: as duas linhas com palavra repetida, e não a do meio.
+
+10. **Compare o motor POSIX com o PCRE na escolha da alternativa.**
+
+    ```bash
+    echo abcd | grep -oE  '(a|ab)'
+    echo abcd | grep -oP  '(a|ab)'
+    ```
+
+    Esperado: `ab` no primeiro (POSIX, mais longo) e `a` no segundo (PCRE, primeira alternativa que fecha). É a diferença de motor, não de sintaxe.
+
+11. **Meça o custo do retrocesso — com prudência.**
+
+    ```bash
+    alvo=$(printf 'a%.0s' {1..24})
+    time (echo "$alvo" | grep -qP '(a+)+b'; true)
+    time (echo "$alvo" | grep -qE  '(a+)+b'; true)
+    ```
+
+    Esperado: o `-P` demora ordens de grandeza mais que o `-E`, que responde instantaneamente. Aumente o `24` de um em um e veja o tempo do PCRE dobrar a cada passo — mas pare em 28 ou 30, e tenha o `Ctrl+C` à mão.
+
+12. **Confirme por que o padrão vai entre aspas simples.**
+
+    ```bash
+    touch ERROx
+    grep ERRO* acesso.log      # o shell expandiu antes
+    grep 'ERRO*' acesso.log
+    cd ~ && rm -rf ~/lab-regex
+    ```
+
+    Esperado: sem aspas, o shell troca `ERRO*` por `ERROx` (o arquivo que existe) e o `grep` procura essa palavra, sem achar nada. Com aspas, o padrão chega intacto.
+
+## Resumo
+
+- **Expressão regular descreve forma, não texto literal.** O `.` é qualquer caractere, e `grep 10.0.0.1` casa com `10a0b0c1`. Ponto literal se escreve `\.`.
+- **Padrão vai entre aspas simples, sempre.** Sem elas, `*`, `?`, `$`, `[` e `\` são consumidos pelo shell (@sec-cap053) e a ferramenta recebe outra coisa.
+- **São três dialetos.** BRE (`grep`, `sed` sem opção) exige `\+`, `\?`, `\{`, `\(`, `\|`; ERE (`grep -E`, `sed -E`, `awk`) usa os símbolos direto; PCRE (`grep -P`, linguagens) acrescenta `\d`, `\b`, `.*?` e olhar adiante. Na dúvida, ERE.
+- **Classes POSIX nomeadas (`[[:digit:]]`) são mais estáveis que faixas (`[0-9]`)**, porque faixas dependem da localidade — e `LC_ALL` chega a mudar o resultado da mesma busca.
+- **Quantificador governa só o item anterior.** Para repetir mais de um caractere, agrupe. E a alternância tem a menor precedência de todas: `^a|b` quase nunca é o que se quer.
+- **`.*` é guloso e atravessa delimitadores.** Prefira a classe negada `[^"]*`; em PCRE existe também `.*?`.
+- **O motor POSIX não retrocede; o PCRE sim.** Daí `(a|ab)` casar diferente nos dois, e daí o retrocesso catastrófico ser possível só no segundo — ReDoS é vulnerabilidade real.
+- **Nem tudo é linguagem regular.** HTML, JSON e estruturas aninhadas não se resolvem com padrão; quando a expressão passa de três linhas ou precisa contar, troque de ferramenta.
