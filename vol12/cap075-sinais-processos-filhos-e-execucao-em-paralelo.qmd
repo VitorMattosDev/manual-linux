@@ -1,3 +1,562 @@
 # Sinais, processos filhos e execução em paralelo {#sec-cap075}
 
-*(em elaboracao)*
+O operador apertou `Ctrl-C`. O script parou de imprimir na tela e o prompt voltou. Trinta segundos depois, o roteador da rede de laboratório caiu.
+
+O script tinha lançado doze processos em segundo plano:
+
+```bash
+for alvo in $(cat alvos.txt); do
+    varrer "$alvo" > "saida-$alvo.txt" &
+done
+wait
+```
+
+O `Ctrl-C` enviou `SIGINT` ao **grupo de processos do primeiro plano**. O shell morreu. Os doze filhos, que continuavam no mesmo grupo, deveriam ter morrido junto — mas alguns já haviam trocado de grupo, e outros ignoravam `SIGINT` por conta própria. O tráfego continuou saindo por meia hora até que alguém rodou `pkill`.
+
+Um script que cria processos assume a responsabilidade por eles. Interromper o pai não interrompe os filhos automaticamente, e "parece que parou" não é o mesmo que "parou". Este capítulo é sobre criar processos com controle: lançar, esperar, limitar, e garantir que morram junto.
+
+## Sinais: o vocabulário mínimo
+
+Um sinal é uma notificação assíncrona entregue a um processo. O @sec-cap029 apresentou o mecanismo; aqui interessa a perspectiva de quem escreve o script.
+
+| Sinal     | Nº | Padrão | Interceptável | Origem típica                       |
+|-----------|----|--------|---------------|-------------------------------------|
+| `SIGINT`  | 2  | mata   | sim           | `Ctrl-C` no terminal                |
+| `SIGQUIT` | 3  | mata   | sim           | `Ctrl-\`                            |
+| `SIGKILL` | 9  | mata   | **não**       | `kill -9`                           |
+| `SIGTERM` | 15 | mata   | sim           | `kill` sem argumento, `systemctl stop` |
+| `SIGHUP`  | 1  | mata   | sim           | terminal fechado; recarga de config |
+| `SIGPIPE` | 13 | mata   | sim           | escreveu num pipe sem leitor        |
+| `SIGCHLD` | 17 | ignora | sim           | um filho terminou                   |
+| `SIGUSR1` | 10 | mata   | sim           | uso livre do programa               |
+
+: Sinais que aparecem em scripts {#tbl-sinais-script}
+
+Três consequências práticas:
+
+- **`SIGKILL` não pode ser interceptado.** Nenhum `trap` roda, nenhuma limpeza acontece. É por isso que `kill -9` deve ser o último recurso, e por isso o `flock` do @sec-cap073 é melhor que um arquivo `.pid`: a trava do kernel some mesmo num `-9`.
+- **`SIGTERM` é o pedido educado.** Um script bem escrito o intercepta, encerra o que está fazendo, limpa e sai. É o que o `systemctl stop` envia, esperando `TimeoutStopSec` antes de escalar para `SIGKILL`.
+- **Morte por sinal N devolve status `128 + N`.** `130` é `Ctrl-C`, `143` é `SIGTERM`, `137` é `SIGKILL`. Reconhecer esses números no log economiza investigação.
+
+### Traps e o momento em que disparam
+
+Uma peculiaridade do Bash que causa confusão: se o script está esperando um **comando externo** terminar, o trap **não roda até que esse comando retorne**. Um script parado num `sleep 300` que recebe `SIGTERM` só executa o handler depois dos 300 segundos.
+
+```bash
+trap 'echo "recebi SIGTERM"; exit 143' TERM
+sleep 300           # o trap fica pendente durante os 300 segundos
+```
+
+A solução é colocar o comando longo em segundo plano e usar `wait`, que **é** interrompível:
+
+```bash
+trap 'echo "recebi SIGTERM"; kill "$filho" 2>/dev/null; exit 143' TERM
+sleep 300 &
+filho=$!
+wait "$filho"
+```
+
+Com `wait`, o sinal é atendido na hora. É o padrão a usar em qualquer script de longa duração que precise responder a `systemctl stop`.
+
+## Lançar em segundo plano: `&`, `$!` e `wait`
+
+```bash
+comando &            # lanca em segundo plano; nao bloqueia
+pid=$!               # PID do ultimo processo lancado -- capture IMEDIATAMENTE
+wait "$pid"          # espera aquele processo; devolve o status DELE
+wait                 # espera todos os filhos; devolve 0 se todos deram certo
+```
+
+O `$!` é volátil: ele muda a cada `&` novo. Capturá-lo na linha seguinte ao lançamento é obrigatório.
+
+O `wait` com PID específico devolve o código de saída daquele processo — e é assim que se descobre qual tarefa paralela falhou:
+
+```bash
+declare -A pid_de
+for alvo in "${alvos[@]}"; do
+    processar "$alvo" > "saida-$alvo.txt" &
+    pid_de[$!]="$alvo"
+done
+
+falhas=0
+for pid in "${!pid_de[@]}"; do
+    if ! wait "$pid"; then
+        printf 'falhou: %s\n' "${pid_de[$pid]}" >&2
+        (( falhas++ ))
+    fi
+done
+exit $(( falhas > 0 ))
+```
+
+Este é o esqueleto de qualquer paralelismo em Bash: um array associativo mapeando PID para a unidade de trabalho, e um segundo laço que colhe os status. Sem ele, `wait` sozinho devolve zero e a falha de um dos filhos passa despercebida.
+
+Em Bash 5.1 ou mais recente, `wait -n` retorna assim que **qualquer** filho terminar, o que permite implementar uma fila com limite de concorrência sem esperar lotes inteiros.
+
+::: {#fig-ciclo-de-vida-dos-filhos}
+```{.tikz}
+%%| filename: ciclo-de-vida-de-processos-filhos
+%%| alt: Ciclo de vida de processos filhos lancados por um script, do fork ao wait, mostrando zumbi e orfao como estados indesejados
+\begin{tikzpicture}[
+    est/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.0cm,minimum height=0.95cm},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[est,draw=manualblue,fill=manualblue!10]   (n1) at (2.0,6.6) {\textbf{pai lança}\\\texttt{comando \&}};
+  \node[est,draw=manualgray,fill=manualgray!8]    (n2) at (6.2,6.6) {\textbf{filho executando}\\\texttt{\$!} guarda o PID};
+  \node[est,draw=manualgray,fill=manualgray!8]    (n3) at (10.4,6.6) {\textbf{filho terminou}\\devolveu um status};
+  \node[est,draw=manualgreen,fill=manualgreen!13] (n4) at (13.9,6.6) {\textbf{pai fez \texttt{wait}}\\status colhido};
+
+  \node[est,draw=manualred,fill=manualred!10]     (z1) at (10.4,4.4) {\textbf{zumbi}\\terminou, mas ninguém\\leu o status};
+  \node[est,draw=manualred,fill=manualred!10]     (z2) at (6.2,4.4) {\textbf{órfão}\\o pai morreu antes;\\adotado pelo \texttt{init}};
+
+  \draw[fl] (n1) -- (n2);
+  \draw[fl] (n2) -- (n3);
+  \draw[fl] (n3) -- (n4);
+  \draw[fl,manualred] (n3) -- node[lb,right]{sem \texttt{wait}} (z1);
+  \draw[fl,manualred] (n2) -- node[lb,right,pos=0.55]{pai morreu} (z2);
+  \draw[fl,manualgreen] (z1) -- node[lb,sloped,above]{\texttt{wait} tardio recolhe} (n4);
+
+  \node[nt,text width=14.4cm,anchor=north] at (7.5,3.4) {O \textbf{zumbi} ocupa uma entrada na tabela de processos até que alguém leia seu status; num laço que lança milhares de filhos sem \texttt{wait}, isso esgota o limite de processos do usuário. O \textbf{órfão} é o problema da abertura: o pai morreu, o filho continua rodando e agora responde ao \texttt{init}, fora do alcance do seu \texttt{Ctrl-C}. As duas curas são a mesma disciplina: \textbf{todo filho lançado tem um \texttt{wait} correspondente}, e todo script que lança filhos tem um \texttt{trap} que os mata antes de sair.};
+\end{tikzpicture}
+```
+Ciclo de vida de um processo filho, com zumbi e órfão como desvios.
+:::
+
+## Matar os filhos junto com o pai
+
+O defeito da abertura tem três correções, da mais simples à mais completa.
+
+**1. Registrar os PIDs e matar no `trap`:**
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+filhos=()
+encerrar() {
+    trap - INT TERM EXIT
+    printf 'encerrando %d tarefas...\n' "${#filhos[@]}" >&2
+    kill -TERM "${filhos[@]}" 2>/dev/null || true
+    wait 2>/dev/null || true
+    exit 130
+}
+trap encerrar INT TERM
+
+for alvo in "${alvos[@]}"; do
+    processar "$alvo" &
+    filhos+=("$!")
+done
+wait
+```
+
+O `trap - INT TERM EXIT` na primeira linha do handler evita reentrância — sem ele, um segundo `Ctrl-C` durante a limpeza reentra no próprio handler.
+
+**2. Matar o grupo de processos inteiro.** Um PID negativo em `kill` significa "todo o grupo":
+
+```bash
+kill -TERM -$$        # mata o grupo cujo lider e este script
+```
+
+Só funciona se o script for líder do próprio grupo, o que acontece quando ele é executado por um shell interativo com controle de tarefas. Chamado de dentro de outro script, ele compartilha o grupo com o pai — e `kill -TERM -$$` mata o chamador também. É poderoso e perigoso; verifique com `ps -o pid,pgid,comm -p $$`.
+
+**3. `setsid` e o grupo próprio.** Para garantir o isolamento, lance o trabalho num grupo novo e mate esse grupo:
+
+```bash
+setsid --wait bash -c 'trabalho_pesado' &
+grupo=$!
+trap 'kill -TERM -"$grupo" 2>/dev/null' INT TERM
+```
+
+Na prática, a opção 1 resolve a esmagadora maioria dos casos e é a que se deve preferir por ser previsível.
+
+Uma advertência sobre `SIGKILL` em paralelo: matar filhos com `-9` impede que eles removam os próprios temporários e fechem os próprios arquivos. Sempre `TERM` primeiro, uma pausa curta, e `KILL` apenas no que sobrou:
+
+```bash
+kill -TERM "${filhos[@]}" 2>/dev/null || true
+sleep 2
+kill -KILL "${filhos[@]}" 2>/dev/null || true
+```
+
+## Limitar a concorrência
+
+Lançar quinhentos processos de uma vez não é paralelismo, é sobrecarga: a máquina passa mais tempo trocando de contexto que trabalhando, e — se o trabalho toca a rede — a taxa gerada é imprevisível.
+
+Há três formas de impor um teto.
+
+**`xargs -P`**, a mais simples quando o trabalho vem de uma lista:
+
+```bash
+printf '%s\n' "${alvos[@]}" | xargs -P 4 -I{} -- ./processar.sh {}
+
+# com nomes contendo espaco, a forma segura:
+find . -name '*.log' -print0 | xargs -0 -P 4 -n 1 ./processar.sh
+```
+
+O `-P` define o teto; o `-n 1` ou `-I{}` define quantos itens por invocação. Como visto no @sec-cap070, `xargs -P` **intercala a saída** dos processos: cada um deve escrever no próprio arquivo, e a junção acontece no fim.
+
+**GNU `parallel`**, quando a saída importa:
+
+```bash
+parallel -j 4 --halt now,fail=1 ./processar.sh ::: "${alvos[@]}"
+parallel -j 4 --joblog trabalho.log --resume-failed ./processar.sh :::: alvos.txt
+```
+
+Ele serializa a saída por padrão, tem registro de trabalhos com `--joblog`, permite retomar o que falhou e sabe parar tudo no primeiro erro com `--halt`. Custa uma dependência (`apt install parallel`) e uma sintaxe própria.
+
+**Fila em Bash puro**, quando não se quer dependência nenhuma:
+
+```bash
+MAX=4
+for alvo in "${alvos[@]}"; do
+    while (( $(jobs -rp | wc -l) >= MAX )); do
+        wait -n            # Bash >= 5.1: retorna quando QUALQUER filho terminar
+    done
+    processar "$alvo" &
+done
+wait
+```
+
+O `jobs -rp` lista os PIDs dos jobs em execução; o `wait -n` bloqueia até um vagar. Em Bash anterior ao 5.1, sem `wait -n`, a alternativa é `sleep 0.2` no laço de espera — funcional, menos elegante.
+
+::: {#fig-limite-de-concorrencia}
+```{.tikz}
+%%| filename: limite-de-concorrencia-em-script
+%%| alt: Comparacao entre lancar todos os processos de uma vez e usar uma fila com limite de quatro processos simultaneos
+\begin{tikzpicture}[
+    tk/.style={rounded corners=1.5pt,draw,semithick,align=center,font=\tiny,inner sep=1.5pt,text width=0.72cm,minimum height=0.42cm},
+    slot/.style={rounded corners=2pt,draw,thick,align=center,font=\tiny,inner sep=2pt,text width=1.15cm,minimum height=0.5cm},
+    hdr/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    fl/.style={-{Latex[length=1.2mm]},semithick,manualgray},
+    lb/.style={font=\tiny,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---- sem limite
+  \node[hdr,manualred] at (0.2,7.6) {sem limite: \texttt{for ...; do cmd \& done}};
+  \foreach \ii in {0,...,11} {
+     \node[tk,draw=manualred,fill=manualred!11] at ({0.75 + \ii*0.92},6.75) {p\the\numexpr\ii+1\relax};
+  }
+  \node[lb,manualred,text width=3.6cm,anchor=west] at (11.6,6.75) {12 processos disputando\\4 núcleos e uma placa de rede};
+
+  % ---- com limite
+  \node[hdr,manualgreen] at (0.2,5.4) {com teto: \texttt{xargs -P 4} ou \texttt{wait -n}};
+  \node[slot,draw=manualgreen,fill=manualgreen!14] at (1.0,4.5) {p1};
+  \node[slot,draw=manualgreen,fill=manualgreen!14] at (2.4,4.5) {p2};
+  \node[slot,draw=manualgreen,fill=manualgreen!14] at (3.8,4.5) {p3};
+  \node[slot,draw=manualgreen,fill=manualgreen!14] at (5.2,4.5) {p4};
+  \node[font=\tiny,manualgreen,anchor=west] at (6.0,4.5) {4 executando};
+
+  \foreach \ii in {0,...,7} {
+     \node[tk,draw=manualgray,fill=manualgray!10] at ({1.0 + \ii*0.92},3.5) {p\the\numexpr\ii+5\relax};
+  }
+  \node[font=\tiny,manualgray,anchor=west] at (8.3,3.5) {8 na fila, esperando vaga};
+
+  \draw[fl] (1.0,3.8) -- (1.0,4.2);
+  \node[font=\tiny,manualgray,anchor=west] at (1.25,4.0) {entra quando um sai};
+
+  \node[nt,text width=14.2cm,anchor=north] at (7.2,2.75) {O teto certo depende do gargalo. Trabalho de \textbf{CPU}: perto do número de núcleos (\texttt{nproc}). Trabalho de \textbf{disco} num HD mecânico: 1 ou 2 --- mais que isso faz o cabeçote passar o tempo se deslocando e fica \emph{mais lento} que sequencial. Trabalho de \textbf{rede}: o número combinado com quem opera o alvo, e não o que a sua máquina aguenta. E a etapa final de agregação é sempre sequencial: ela é o gargalo que sobra depois de paralelizar tudo o que dava.};
+\end{tikzpicture}
+```
+Lançar tudo de uma vez contra uma fila com teto de concorrência.
+:::
+
+## Tempo limite
+
+Um filho que trava é pior que um filho que falha: o `wait` nunca retorna e o script fica pendurado para sempre. O `timeout` resolve:
+
+```bash
+timeout 30 comando_demorado            # SIGTERM aos 30 segundos
+timeout -k 5 30 comando_demorado       # TERM aos 30, KILL 5 segundos depois
+timeout -s INT 30 comando              # envia SIGINT em vez de TERM
+```
+
+O `timeout` devolve **124** quando estoura o prazo, o que permite distinguir o caso:
+
+```bash
+if ! timeout 30 varrer "$alvo" > "$saida"; then
+    st=$?
+    (( st == 124 )) && echo "tempo esgotado em $alvo" >&2 \
+                    || echo "erro $st em $alvo" >&2
+fi
+```
+
+O `-k` merece atenção: sem ele, um processo que ignora `SIGTERM` continua rodando depois do prazo, e o `timeout` não terá adiantado nada. Em script que dispara ferramenta externa, `timeout -k 5 <prazo>` deve ser o padrão.
+
+## `nohup`, `disown` e o script que sobrevive ao terminal
+
+Recapitulando o @sec-cap030 na perspectiva de quem escreve script: quando o terminal fecha, o shell envia `SIGHUP` aos seus jobs.
+
+```bash
+nohup ./demorado.sh > saida.log 2>&1 &     # imune ao SIGHUP desde o lancamento
+./demorado.sh & disown -h %1               # protege um job ja lancado
+setsid ./demorado.sh > saida.log 2>&1 < /dev/null   # sessao propria, desligado do terminal
+```
+
+Para trabalho realmente longo, nenhuma das três é a resposta certa: uma unidade do systemd (@sec-cap040) dá registro no `journald`, reinício automático e encerramento controlado — coisas que `nohup` não oferece. `tmux` é a alternativa quando é preciso voltar a interagir com o processo (@sec-cap031).
+
+## Uma armadilha do `wait` com substituição de processo
+
+Já mencionada no @sec-cap073 e que reaparece aqui com consequência maior:
+
+```bash
+gerar | tee >(processar_lento > resultado.txt) > /dev/null
+cat resultado.txt      # pode estar vazio ou incompleto
+```
+
+O shell não considera o processo de `>(...)` um filho de que se deva esperar. Em Bash recente, um `wait` sem argumentos costuma alcançá-lo, mas o comportamento variou entre versões e não é algo em que apoiar um script de produção. Quando a ordem importa, use PID explícito:
+
+```bash
+processar_lento < <(gerar) > resultado.txt &
+pid=$!
+wait "$pid"
+cat resultado.txt      # agora garantido
+```
+
+## 🐉 No Kali
+
+- **Paralelismo contra alvo externo é decisão de contrato, não de máquina.** `-P 8` multiplica por oito o tráfego que você gera. O teto vem do que foi combinado com quem opera o alvo — taxa máxima, janela de execução, limite de conexões simultâneas. Estourá-lo por acidente é indisponibilidade provocada, e a autorização para testar não cobre negar o serviço. `parallel --delay 0.5` e `--jobs` explícito documentam a intenção no próprio comando.
+- **`Ctrl-C` tem de parar de verdade.** É o problema da abertura, e o mais importante deste capítulo em contexto ofensivo: quando o operador manda parar, o tráfego tem de cessar. Sem o `trap` que mata os filhos, o script "para" na tela e continua atacando por baixo — situação que, num teste com janela combinada, coloca a atividade fora da janela autorizada, com o enquadramento da Lei 12.737/2012.
+- **`timeout -k` em toda ferramenta externa.** Varredura contra host que descarta pacotes fica pendurada indefinidamente, e uma fila de oito processos com quatro travados não anda. Prazo explícito, com `-k` para o caso de a ferramenta ignorar o `TERM`, e status 124 tratado como "sem resposta" em vez de "erro".
+- **Registrar PID e alvo, e conferir status um a um.** O array associativo `pid_de[$!]="$alvo"` é o que permite dizer, no relatório, quais alvos foram efetivamente testados e quais falharam. Um `wait` sozinho devolve zero e produz relatório que afirma cobertura que não houve — o pior tipo de erro num teste de segurança.
+- **Interrupção deixa evidência parcial.** Combine com o `trap EXIT` do @sec-cap071: ao encerrar por sinal, marque no arquivo de resultado que a execução foi interrompida e em que ponto. Arquivo truncado sem marca parece completo, e alguém vai concluir que os alvos restantes estavam limpos.
+
+> **Nota sobre a família RHEL.** Sinais e controle de processos são do kernel e idênticos. Duas diferenças de operação: no RHEL, como no Debian, unidades do systemd usam `KillMode=` para decidir o que morre no `systemctl stop` — o padrão `control-group` mata todos os processos do cgroup, o que é justamente a garantia que o script sozinho não tem, e é mais um argumento para empacotar trabalho longo como serviço em vez de `nohup`. E o `parallel` não está no repositório base do RHEL, exigindo EPEL, enquanto `xargs -P` e `timeout` (ambos do `coreutils`/`findutils`) estão presentes nas duas famílias sem instalar nada.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-paralelo`.
+
+1. **Prepare uma tarefa de duração variável.**
+
+   ```bash
+   mkdir -p ~/lab-paralelo && cd ~/lab-paralelo
+   cat > tarefa.sh <<'EOF'
+   #!/usr/bin/env bash
+   nome=$1
+   dur=$(( (RANDOM % 4) + 1 ))
+   echo "[$nome] comecou (pid $$, ${dur}s)"
+   sleep "$dur"
+   [[ "$nome" == "delta" ]] && { echo "[$nome] FALHOU" >&2; exit 3; }
+   echo "[$nome] terminou"
+   EOF
+   chmod +x tarefa.sh
+   ./tarefa.sh alfa
+   ```
+
+2. **Lance em segundo plano e colha os status individualmente.**
+
+   ```bash
+   cat > colher.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -uo pipefail
+   declare -A pid_de
+   for n in alfa bravo charlie delta; do
+       ./tarefa.sh "$n" &
+       pid_de[$!]="$n"
+   done
+   falhas=0
+   for p in "${!pid_de[@]}"; do
+       if ! wait "$p"; then
+           echo ">> falhou: ${pid_de[$p]} (pid $p)" >&2
+           (( falhas++ ))
+       fi
+   done
+   echo "falhas: $falhas"
+   EOF
+   chmod +x colher.sh
+   ./colher.sh
+   ```
+
+   Esperado: as quatro tarefas rodam simultâneas, `delta` falha e é identificada pelo nome. Compare com um `wait` sozinho no fim, que devolveria zero.
+
+3. **Veja o problema do órfão.**
+
+   ```bash
+   cat > sem_trap.sh <<'EOF'
+   #!/usr/bin/env bash
+   for n in um dois tres; do
+       ( sleep 60; echo "[$n] ainda vivo" ) &
+   done
+   echo "lancados; pressione Ctrl-C"
+   wait
+   EOF
+   chmod +x sem_trap.sh
+   ./sem_trap.sh   # pressione Ctrl-C depois de dois segundos
+   pgrep -af 'sleep 60'
+   ```
+
+   Esperado: depois do `Ctrl-C` o prompt volta, **mas** o `pgrep` ainda lista processos `sleep 60` vivos. Mate-os com `pkill -f 'sleep 60'`.
+
+4. **Corrija com `trap` que mata os filhos.**
+
+   ```bash
+   cat > com_trap.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -uo pipefail
+   filhos=()
+   encerrar() {
+       trap - INT TERM
+       echo; echo "encerrando ${#filhos[@]} tarefas..." >&2
+       kill -TERM "${filhos[@]}" 2>/dev/null || true
+       wait 2>/dev/null || true
+       exit 130
+   }
+   trap encerrar INT TERM
+   for n in um dois tres; do
+       ( sleep 60; echo "[$n] ainda vivo" ) &
+       filhos+=("$!")
+   done
+   echo "lancados; pressione Ctrl-C"
+   wait
+   EOF
+   chmod +x com_trap.sh
+   ./com_trap.sh   # Ctrl-C depois de dois segundos
+   echo "status: $?"
+   pgrep -af 'sleep 60' || echo "nenhum orfao -- correto"
+   ```
+
+   Esperado: a mensagem de encerramento, status 130 e **nenhum** processo sobrevivente.
+
+5. **O trap que não dispara durante um comando externo.**
+
+   ```bash
+   cat > bloqueado.sh <<'EOF'
+   #!/usr/bin/env bash
+   trap 'echo "TERM recebido"; exit 143' TERM
+   echo "dormindo 20s em primeiro plano (pid $$)"
+   sleep 20
+   echo "acordei"
+   EOF
+   cat > interrompivel.sh <<'EOF'
+   #!/usr/bin/env bash
+   trap 'echo "TERM recebido"; kill "$f" 2>/dev/null; exit 143' TERM
+   echo "dormindo 20s via wait (pid $$)"
+   sleep 20 & f=$!
+   wait "$f"
+   echo "acordei"
+   EOF
+   chmod +x bloqueado.sh interrompivel.sh
+   ./bloqueado.sh &     sleep 1; kill -TERM %1; time wait
+   ./interrompivel.sh & sleep 1; kill -TERM %1; time wait
+   ```
+
+   Esperado: o primeiro só imprime "TERM recebido" depois dos 20 segundos; o segundo responde quase imediatamente. É a diferença entre um serviço que para no `systemctl stop` e um que estoura o tempo limite e leva `SIGKILL`.
+
+6. **Meça o efeito do teto de concorrência.**
+
+   ```bash
+   printf 'alvo%02d\n' $(seq 1 12) > alvos.txt
+   cat > lento.sh <<'EOF'
+   #!/usr/bin/env bash
+   sleep 1; echo "$1 pronto"
+   EOF
+   chmod +x lento.sh
+   echo "--- sequencial:"; time (while read -r a; do ./lento.sh "$a"; done < alvos.txt > /dev/null)
+   echo "--- P=4:";        time (xargs -P 4  -n 1 ./lento.sh < alvos.txt > /dev/null)
+   echo "--- P=12:";       time (xargs -P 12 -n 1 ./lento.sh < alvos.txt > /dev/null)
+   ```
+
+   Esperado: cerca de 12s, 3s e 1s. O ganho de 4 para 12 existe porque a tarefa é `sleep` (não usa CPU); com trabalho real de CPU, passar do número de núcleos não ajuda.
+
+7. **Fila em Bash puro com `wait -n`.**
+
+   ```bash
+   cat > fila.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -uo pipefail
+   MAX=3
+   while read -r alvo; do
+       while (( $(jobs -rp | wc -l) >= MAX )); do wait -n; done
+       ./lento.sh "$alvo" &
+   done < alvos.txt
+   wait
+   EOF
+   chmod +x fila.sh
+   time ./fila.sh | tail -3
+   ```
+
+   Esperado: cerca de 4 segundos (12 tarefas de 1s, três de cada vez) e nunca mais de três processos simultâneos.
+
+8. **Confirme o teto observando os processos.**
+
+   ```bash
+   ./fila.sh > /dev/null &
+   for _ in 1 2 3 4; do sleep 0.6; echo "simultaneos: $(pgrep -c -f 'lento.sh')"; done
+   wait
+   ```
+
+   Esperado: a contagem nunca passa de 3.
+
+9. **`timeout` e o status 124.**
+
+   ```bash
+   timeout 2 sleep 10; echo "estourou: $?"
+   timeout 2 sleep 1;  echo "coube:    $?"
+   cat > teimoso.sh <<'EOF'
+   #!/usr/bin/env bash
+   trap 'echo "ignorei o TERM"' TERM
+   sleep 30
+   EOF
+   chmod +x teimoso.sh
+   time timeout 3 ./teimoso.sh;       echo "sem -k: $?"
+   time timeout -k 2 3 ./teimoso.sh;  echo "com -k: $?"
+   ```
+
+   Esperado: `124` no primeiro, `0` no segundo. O script teimoso sobrevive ao `timeout` sem `-k`; com `-k 2` ele leva `SIGKILL` dois segundos depois e morre de fato.
+
+10. **Os códigos de saída por sinal.**
+
+    ```bash
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -INT  "$p"; wait "$p"; echo "SIGINT  -> $?"
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -TERM "$p"; wait "$p"; echo "SIGTERM -> $?"
+    bash -c 'sleep 30' & p=$!; sleep 0.3; kill -KILL "$p"; wait "$p"; echo "SIGKILL -> $?"
+    ```
+
+    Esperado: `130`, `143` e `137` — os `128 + N` de cada sinal.
+
+11. **`SIGKILL` não roda trap.**
+
+    ```bash
+    cat > limpa.sh <<'EOF'
+    #!/usr/bin/env bash
+    t=$(mktemp /tmp/kill-teste.XXXXXX)
+    trap 'echo "limpando $t"; rm -f "$t"' EXIT
+    echo "criei $t (pid $$)"
+    sleep 30
+    EOF
+    chmod +x limpa.sh
+    ./limpa.sh & p=$!; sleep 1; kill -TERM "$p"; wait "$p" 2>/dev/null; ls /tmp/kill-teste.* 2>/dev/null || echo "TERM: limpou"
+    ./limpa.sh & p=$!; sleep 1; kill -KILL "$p"; wait "$p" 2>/dev/null; ls /tmp/kill-teste.* 2>/dev/null && echo "KILL: temporario ficou para tras"
+    rm -f /tmp/kill-teste.*
+    ```
+
+    Esperado: com `TERM`, o temporário é removido; com `KILL`, ele fica. É a razão de `-9` ser último recurso.
+
+12. **`$!` é volátil.**
+
+    ```bash
+    sleep 5 & sleep 5 & p=$!
+    echo "capturei $p, mas ha $(jobs -rp | wc -l) jobs rodando"
+    jobs -rp
+    wait
+    ```
+
+    Esperado: `$!` guarda só o PID do **último** lançamento; o primeiro `sleep` ficaria sem ninguém guardando seu PID se não fosse o `jobs -rp`.
+
+13. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && pkill -f 'lento.sh' 2>/dev/null; rm -rf ~/lab-paralelo
+    ```
+
+## Resumo
+
+- **`SIGKILL` não pode ser interceptado**, então nenhum `trap` roda e nenhuma limpeza acontece. Sempre `TERM` primeiro, pausa, `KILL` só no que sobrou.
+- **Morte por sinal devolve `128 + N`**: 130 é `Ctrl-C`, 143 é `SIGTERM`, 137 é `SIGKILL`. Reconhecer esses números no log poupa investigação.
+- **Trap não dispara enquanto um comando externo está em primeiro plano.** Ponha o comando longo em segundo plano e use `wait`, que é interrompível — é o que faz um serviço parar no `systemctl stop`.
+- **Capture `$!` na linha seguinte ao `&`**, porque ele muda a cada lançamento. Um array associativo de PID para unidade de trabalho é o esqueleto de qualquer paralelismo em Bash.
+- **`wait` sozinho não revela qual filho falhou.** Colha os status um a um se o resultado importar — e num relatório de cobertura ele sempre importa.
+- **Todo script que lança filhos precisa de um `trap INT TERM` que os mate.** Sem isso, `Ctrl-C` para a tela e não para o trabalho.
+- **Imponha teto de concorrência**: `xargs -P`, `parallel -j` ou fila com `wait -n`. O número certo vem do gargalo — núcleos para CPU, 1 ou 2 para disco mecânico, o combinado com o operador do alvo para rede.
+- **`timeout -k` em toda ferramenta externa.** Sem `-k`, um processo que ignora `SIGTERM` sobrevive ao prazo; o status 124 identifica o estouro.
+- **Para trabalho longo de verdade, uma unidade do systemd vence `nohup`**: registro, reinício e encerramento do cgroup inteiro.

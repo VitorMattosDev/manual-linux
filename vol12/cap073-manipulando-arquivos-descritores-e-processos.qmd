@@ -1,3 +1,567 @@
 # Manipulando arquivos, descritores e processos em scripts {#sec-cap073}
 
-*(em elaboracao)*
+O comando parecia inofensivo. O analista queria ordenar o arquivo de alvos e deixá-lo ordenado no lugar:
+
+```bash
+sort alvos.txt > alvos.txt
+```
+
+O arquivo ficou com zero bytes. Não houve mensagem de erro, não houve confirmação, e o backup mais recente era de três dias antes.
+
+A explicação não está no `sort`. Está na ordem em que o shell faz as coisas. Antes de executar qualquer comando, o shell **prepara os redirecionamentos** — e `> alvos.txt` significa "abra este arquivo para escrita, truncando-o". Quando o `sort` finalmente começou a rodar e foi ler `alvos.txt`, o arquivo já tinha sido esvaziado pelo próprio shell, milissegundos antes.
+
+Entender essa ordem, e o mecanismo de descritores de arquivo que está por baixo dela, é o que separa um script que manipula arquivos com segurança de um que destrói dados em silêncio. É o assunto deste capítulo.
+
+## Descritores de arquivo: o que o shell realmente manipula
+
+Todo processo no Linux tem uma tabela de descritores: números inteiros que apontam para arquivos abertos, pipes, sockets ou dispositivos. Três já vêm abertos quando o processo nasce (@sec-cap012):
+
+- **0** — `stdin`, entrada padrão
+- **1** — `stdout`, saída padrão
+- **2** — `stderr`, saída de erro
+
+Do 3 em diante, o programa abre o que quiser. E o shell permite fazer isso diretamente, o que é a chave de várias técnicas deste capítulo.
+
+Dá para olhar a tabela de qualquer processo pelo `/proc`:
+
+```bash
+ls -l /proc/$$/fd
+```
+
+```
+lrwx------ 1 kali kali 64 ago  3 14:22 0 -> /dev/pts/1
+lrwx------ 1 kali kali 64 ago  3 14:22 1 -> /dev/pts/1
+lrwx------ 1 kali kali 64 ago  3 14:22 2 -> /dev/pts/1
+lr-x------ 1 kali kali 64 ago  3 14:22 255 -> /dev/pts/1
+```
+
+Os três primeiros apontando para o mesmo terminal é o que faz `echo` aparecer na tela e o erro também. Redirecionar é, literalmente, apontar um desses números para outro lugar.
+
+::: {#fig-tabela-de-descritores}
+```{.tikz}
+%%| filename: tabela-de-descritores-de-arquivo
+%%| alt: Tabela de descritores de um processo shell, mostrando os descritores 0 1 e 2 apontando para o terminal e um descritor 3 aberto por exec apontando para um arquivo
+\begin{tikzpicture}[
+    proc/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=6pt,text width=3.1cm,minimum height=1.0cm},
+    fdb/.style={draw,thick,align=center,font=\scriptsize,inner sep=3pt,text width=1.75cm,minimum height=0.72cm},
+    alvo/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=3.4cm,minimum height=0.78cm},
+    fl/.style={-{Latex[length=1.5mm]},semithick},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[proc,draw=manualblue,fill=manualblue!10] (p) at (1.6,4.5) {\textbf{seu script}\\\texttt{bash backup.sh}\\\texttt{PID 4821}};
+  \node[font=\tiny,manualblue] at (5.35,7.35) {tabela de descritores};
+
+  \node[fdb,draw=manualgray,fill=manualgray!10]   (f0) at (5.35,6.5) {\texttt{0}\ \tiny stdin};
+  \node[fdb,draw=manualgray,fill=manualgray!10]   (f1) at (5.35,5.5) {\texttt{1}\ \tiny stdout};
+  \node[fdb,draw=manualgray,fill=manualgray!10]   (f2) at (5.35,4.5) {\texttt{2}\ \tiny stderr};
+  \node[fdb,draw=manualgreen,fill=manualgreen!14] (f3) at (5.35,3.5) {\texttt{3}};
+  \node[fdb,draw=manualyellow,fill=manualyellow!25](f4) at (5.35,2.5) {\texttt{9}};
+
+  \draw[thick,manualblue] (3.25,4.5) -- (4.4,4.5);
+
+  \node[alvo,draw=manualgray,fill=manualgray!8]     (t1) at (10.3,6.5) {\texttt{/dev/pts/1}\\\tiny o terminal};
+  \node[alvo,draw=manualred,fill=manualred!10]      (t2) at (10.3,5.5) {\texttt{saida.txt}\\\tiny \texttt{exec 1> saida.txt}};
+  \node[alvo,draw=manualgray,fill=manualgray!8]     (t3) at (10.3,4.5) {\texttt{/dev/pts/1}\\\tiny o terminal};
+  \node[alvo,draw=manualgreen,fill=manualgreen!10]  (t4) at (10.3,3.5) {\texttt{dados.csv}\\\tiny \texttt{exec 3< dados.csv}};
+  \node[alvo,draw=manualyellow,fill=manualyellow!20](t5) at (10.3,2.5) {\texttt{rastro.log}\\\tiny \texttt{BASH\_XTRACEFD=9}};
+
+  \draw[fl,manualgray]   (f0) -- (t1);
+  \draw[fl,manualred]    (f1) -- (t2);
+  \draw[fl,manualgray]   (f2) -- (t3);
+  \draw[fl,manualgreen]  (f3) -- (t4);
+  \draw[fl,manualyellow!70!black] (f4) -- (t5);
+
+  \node[nt,text width=13.8cm,anchor=north] at (6.9,1.75) {Redirecionar é trocar o destino de uma seta. \texttt{> arq} aponta o 1 para um arquivo; \texttt{2>\&1} faz o 2 apontar para \emph{onde o 1 aponta agora} --- por isso a ordem importa. O \texttt{exec} sem comando aplica a troca ao \textbf{próprio shell}, de forma permanente, em vez de aplicá-la a um comando só. E descritores acima de 2 são território livre: o 3 para ler um arquivo com \texttt{read -u 3}, o 9 para o rastro do \texttt{set -x}, o 200 para um bloqueio de \texttt{flock}.};
+\end{tikzpicture}
+```
+A tabela de descritores de um processo, com o 3 e o 9 abertos pelo próprio script.
+:::
+
+## As formas de redirecionamento
+
+| Forma          | Efeito                                                                |
+|----------------|-----------------------------------------------------------------------|
+| `> arq`        | abre para escrita, **truncando**                                       |
+| `>> arq`       | abre para escrita, acrescentando ao fim                                |
+| `< arq`        | abre para leitura                                                      |
+| `<> arq`       | abre para leitura **e** escrita, sem truncar                            |
+| `>\| arq`      | escreve mesmo com `noclobber` ligado                                   |
+| `2>&1`         | faz o 2 apontar para onde o 1 aponta **naquele momento**                |
+| `&> arq`       | atalho do Bash para `> arq 2>&1`                                        |
+| `n> arq`       | redireciona o descritor `n`                                            |
+| `n<&-`         | fecha o descritor `n`                                                  |
+| `n>&m`         | duplica: `n` passa a apontar para o mesmo lugar que `m`                 |
+
+: Formas de redirecionamento do Bash {#tbl-redirecionamentos}
+
+A pegadinha clássica é a ordem de `2>&1`:
+
+```bash
+comando > log.txt 2>&1      # ambos vão para log.txt
+comando 2>&1 > log.txt      # stderr vai para o TERMINAL, stdout para log.txt
+```
+
+No segundo, quando `2>&1` é processado, o descritor 1 ainda aponta para o terminal; o 2 copia esse destino. Só depois o 1 é redirecionado, e o 2 fica onde estava. Ler da esquerda para a direita, como uma sequência de atribuições, é o modelo mental correto.
+
+## `exec`: redirecionamento permanente
+
+Usado sem comando, o `exec` aplica os redirecionamentos ao shell atual — todos os comandos seguintes os herdam.
+
+```bash
+exec 3< entrada.csv        # abre o arquivo para leitura no descritor 3
+exec 4> resultado.txt      # abre para escrita no 4
+read -r cabecalho <&3      # lê UMA linha do 3
+echo "processado" >&4      # escreve no 4
+exec 3<&- 4>&-             # fecha os dois
+```
+
+Isso resolve um problema real: manter um arquivo aberto entre comandos, sem reabri-lo a cada iteração e sem perder a posição de leitura.
+
+O idioma mais útil é **salvar e restaurar** a saída padrão:
+
+```bash
+exec 3>&1                  # guarda para onde o stdout aponta
+exec 1> /tmp/relatorio.txt # tudo daqui pra frente vai para o arquivo
+echo "linha de relatorio"
+exec 1>&3 3>&-             # restaura e fecha a cópia
+echo "de volta ao terminal"
+```
+
+E, para registrar tudo o que o script produz **sem** perder a saída na tela, a combinação com substituição de processo:
+
+```bash
+exec > >(tee -a /var/log/meuscript.log) 2>&1
+```
+
+A partir dessa linha, `stdout` e `stderr` aparecem no terminal **e** ficam no arquivo. É uma linha só, e substitui a prática de acrescentar `| tee` a cada comando.
+
+## Ler arquivos linha a linha, sem perder nada
+
+O laço de leitura tem uma forma canônica, e cada peça dela corrige um defeito específico:
+
+```bash
+while IFS= read -r linha || [[ -n "$linha" ]]; do
+    printf '[%s]\n' "$linha"
+done < entrada.txt
+```
+
+- **`IFS=`** (vazio) impede que espaços e tabulações do começo e do fim da linha sejam removidos.
+- **`-r`** impede que a barra invertida seja interpretada — sem ele, `C:\novo` vira `C:ovo`.
+- **`|| [[ -n "$linha" ]]`** trata a última linha quando o arquivo **não** termina em quebra de linha. Sem isso, ela é lida na variável mas o `read` devolve status 1, e o laço a descarta em silêncio.
+- **`< entrada.txt` no fim do `done`**, e não `cat entrada.txt |`. O pipe cria subshell, e toda variável modificada dentro do laço se perde ao sair dele (@sec-cap058).
+
+Quando o arquivo cabe na memória e você quer o conteúdo num array, `mapfile` (também chamado `readarray`) é mais rápido e mais simples:
+
+```bash
+mapfile -t linhas < entrada.txt          # -t remove a quebra de linha final
+printf 'total: %d\n' "${#linhas[@]}"
+printf 'terceira: %s\n' "${linhas[2]}"
+
+mapfile -t alvos < <(grep -v '^#' escopo.txt)   # direto de um comando
+```
+
+E, para consumir a saída de um comando sem perder variáveis, a substituição de processo no lugar do pipe:
+
+```bash
+total=0
+while IFS=, read -r host porta _; do
+    (( total++ ))
+done < <(grep -v '^#' servicos.csv)
+echo "total: $total"        # agora imprime o número certo
+```
+
+Um detalhe que pega muita gente: se o corpo do laço chama um comando que lê `stdin` — `ssh`, `ffmpeg`, `mysql` —, esse comando **consome o resto do arquivo** e o laço termina na primeira volta. As duas curas são `< /dev/null` no comando de dentro, ou ler por outro descritor:
+
+```bash
+while IFS= read -r -u 3 host; do
+    ssh "$host" 'uptime'
+done 3< hosts.txt
+```
+
+## Escrita segura: nunca no lugar
+
+O desastre da abertura tem três soluções, em ordem de preferência.
+
+**1. Arquivo temporário e `mv` atômico.** É a forma certa, e a única que sobrevive a uma queda de energia no meio da operação:
+
+```bash
+tmp="$(mktemp "${arquivo}.XXXXXX")"
+sort "$arquivo" > "$tmp" && mv -- "$tmp" "$arquivo"
+```
+
+O `mv` dentro do mesmo sistema de arquivos é uma operação atômica de renomear: em nenhum instante existe um arquivo pela metade. Se o `sort` falhar, o `&&` impede o `mv` e o original continua intacto. Criar o temporário **no mesmo diretório** do original é o que garante que seja o mesmo sistema de arquivos — `/tmp` costuma ser outro, e aí o `mv` vira cópia mais remoção, que não é atômica.
+
+**2. `sponge`, do pacote `moreutils`.** Absorve toda a entrada antes de abrir o destino:
+
+```bash
+sort alvos.txt | sponge alvos.txt
+```
+
+Curto e legível. A ressalva é que ele mantém tudo em memória, e o pacote pode não estar instalado.
+
+**3. A opção de edição no lugar da própria ferramenta.** `sed -i`, `perl -i`, `gawk -i inplace` (@sec-cap066, @sec-cap067). Vale lembrar que `sed -i` não é atômico de verdade: ele grava num temporário e renomeia, o que preserva o conteúdo, mas troca o inode e quebra hard links.
+
+Como rede de segurança adicional, o `noclobber` transforma sobrescrita acidental em erro:
+
+```bash
+set -o noclobber
+echo teste > existente.txt      # bash: existente.txt: cannot overwrite existing file
+echo teste >| existente.txt     # explicitamente permitido
+```
+
+::: {#fig-escrita-atomica}
+```{.tikz}
+%%| filename: escrita-no-lugar-versus-atomica
+%%| alt: Comparacao entre sobrescrever um arquivo diretamente com redirecionamento e gravar num temporario seguido de renomeacao atomica
+\begin{tikzpicture}[
+    pas/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=2.85cm,minimum height=0.95cm},
+    fl/.style={-{Latex[length=1.5mm]},semithick,manualgray},
+    hdr/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---- errado
+  \node[hdr,manualred] at (0.2,7.6) {\texttt{sort alvos.txt > alvos.txt}};
+  \node[pas,draw=manualgray,fill=manualgray!8] (x1) at (1.8,6.6) {shell prepara o\\redirecionamento};
+  \node[pas,draw=manualred,fill=manualred!12]  (x2) at (5.4,6.6) {\texttt{alvos.txt}\\\textbf{truncado}};
+  \node[pas,draw=manualgray,fill=manualgray!8] (x3) at (9.0,6.6) {\texttt{sort} começa\\a rodar};
+  \node[pas,draw=manualred,fill=manualred!12]  (x4) at (12.6,6.6) {lê 0 bytes\\e grava 0 bytes};
+  \foreach \sr/\ds in {x1/x2, x2/x3, x3/x4} { \draw[fl] (\sr) -- (\ds); }
+  \node[lb,manualred,text width=4.2cm,anchor=north] at (12.6,5.9) {sem erro, sem aviso:\\o arquivo simplesmente some};
+
+  % ---- certo
+  \node[hdr,manualgreen] at (0.2,4.5) {\texttt{sort a > tmp \&\& mv tmp a}};
+  \node[pas,draw=manualgray,fill=manualgray!8]   (y1) at (1.8,3.5) {\texttt{mktemp} no\\mesmo diretório};
+  \node[pas,draw=manualblue,fill=manualblue!10]  (y2) at (5.4,3.5) {\texttt{sort} lê o original\\e grava no temporário};
+  \node[pas,draw=manualyellow,fill=manualyellow!22] (y3) at (9.0,3.5) {\texttt{\&\&}: só segue\\se deu certo};
+  \node[pas,draw=manualgreen,fill=manualgreen!14] (y4) at (12.6,3.5) {\texttt{mv} renomeia\\atomicamente};
+  \foreach \sr/\ds in {y1/y2, y2/y3, y3/y4} { \draw[fl] (\sr) -- (\ds); }
+  \node[lb,manualgreen,text width=4.4cm,anchor=north] at (9.0,2.8) {se o \texttt{sort} falhar, o original\\continua intacto e o temporário\\é removido pelo \texttt{trap EXIT}};
+
+  \node[nt,text width=13.8cm,anchor=north] at (6.9,1.6) {A regra vale para qualquer transformação de arquivo, não só \texttt{sort}: \textbf{leia de um lugar, escreva em outro, troque no fim}. O ponto de atomicidade é o \texttt{mv} dentro do \emph{mesmo sistema de arquivos} --- entre sistemas diferentes o \texttt{mv} vira cópia seguida de remoção, e o intervalo entre as duas é exatamente a janela que se queria eliminar. Por isso o temporário nasce ao lado do original, e não em \texttt{/tmp}.};
+\end{tikzpicture}
+```
+Sobrescrita direta contra gravação em temporário com troca atômica.
+:::
+
+## Bloqueio: impedir que duas cópias rodem juntas
+
+Um script de `cron` que demora mais que o intervalo de agendamento acaba rodando concorrente consigo mesmo. Se ele escreve num arquivo ou mexe num banco, o resultado é corrupção. A solução do shell é o `flock`, que usa um descritor como trava:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec 200> /var/lock/meuscript.lock
+flock -n 200 || { echo "já há uma execução em andamento" >&2; exit 1; }
+
+# daqui pra baixo, exclusividade garantida
+processar_tudo
+```
+
+O `-n` faz falhar imediatamente em vez de esperar; sem ele, a segunda cópia fica bloqueada até a primeira terminar — o que às vezes é o desejado. Não é preciso remover o arquivo de lock: a trava é liberada pelo kernel quando o processo morre, inclusive se ele for morto com `SIGKILL`. É por isso que `flock` é superior ao antigo padrão de "criar um arquivo `.pid` e apagar no fim", que deixa lock órfão em qualquer morte anormal.
+
+A forma alternativa, que reexecuta o próprio script sob a trava, cabe em uma linha no topo:
+
+```bash
+[[ "${JA_TRAVADO:-}" ]] || exec env JA_TRAVADO=1 flock -n /var/lock/meu.lock "$0" "$@"
+```
+
+## Arquivos especiais que o Bash entende
+
+Além de `/dev/null` e `/dev/zero`, o shell reconhece alguns caminhos que não são arquivos de verdade:
+
+```bash
+comando < /dev/stdin           # lê da entrada padrão explicitamente
+diff <(sort a.txt) <(sort b.txt)   # /dev/fd/63 e /dev/fd/62, criados na hora
+exec 3<>/dev/tcp/exemplo.com/80    # socket TCP, um recurso só do Bash
+```
+
+O `/dev/tcp/host/porta` merece nota: é implementado pelo próprio Bash, não existe no sistema de arquivos e não funciona em `dash` nem em `sh`. Permite um teste de porta sem `nc` instalado:
+
+```bash
+timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' && echo "porta 22 aberta"
+```
+
+A substituição de processo `<(...)` e `>(...)` é o mecanismo mais subutilizado do Bash. Ela transforma a **saída** de um comando num caminho de arquivo, o que permite alimentar programas que exigem arquivo e não aceitam pipe:
+
+```bash
+# comparar duas saidas sem arquivo temporario
+diff <(rpm -qa | sort) <(cat pacotes-esperados.txt)
+
+# alimentar dois consumidores diferentes com a mesma saida
+gerar_relatorio | tee >(gzip > relatorio.gz) >(sha256sum > relatorio.sha) > relatorio.txt
+```
+
+Uma advertência: com `>(...)`, o shell **não espera** o processo de dentro terminar. Ler `relatorio.gz` na linha seguinte pode encontrar um arquivo incompleto. Quando a ordem importar, use `wait` (@sec-cap075) ou arquivos temporários explícitos.
+
+Para comunicação persistente entre processos, o pipe nomeado é um arquivo de verdade:
+
+```bash
+mkfifo /tmp/canal
+produtor > /tmp/canal &        # bloqueia ate alguem abrir para leitura
+consumidor < /tmp/canal
+rm -f /tmp/canal
+```
+
+## Temporários com higiene
+
+Recapitulando o que o @sec-cap071 estabeleceu, e acrescentando o que falta:
+
+```bash
+umask 077                              # o que eu criar sera 0600 / 0700
+TMPDIR="${TMPDIR:-/tmp}"
+TRABALHO="$(mktemp -d -t meuscript.XXXXXXXX)"
+trap 'rm -rf -- "$TRABALHO"' EXIT
+```
+
+Quatro pontos: o `umask 077` antes de criar; o respeito ao `TMPDIR`, que em serviços do systemd com `PrivateTmp=yes` aponta para um diretório isolado; o `-t` com molde nomeado, que torna o diretório identificável no `ls /tmp` quando algo dá errado; e o `trap` que garante a remoção.
+
+Para conteúdo sensível que não deve tocar o disco, `/dev/shm` é um sistema de arquivos em memória:
+
+```bash
+segredo="$(mktemp -p /dev/shm segredo.XXXXXX)"
+```
+
+Ainda é legível por quem tem privilégio na máquina, mas não sobrevive ao desligamento e não deixa rastro no disco.
+
+## Processos: o que o script precisa saber
+
+O script é um processo, e o Bash expõe isso em variáveis:
+
+| Variável   | Conteúdo                                                       |
+|------------|-----------------------------------------------------------------|
+| `$$`       | PID do shell atual (não muda em subshell)                       |
+| `BASHPID`  | PID real, que **muda** em subshell                              |
+| `$!`       | PID do último processo posto em segundo plano                   |
+| `$0`       | nome pelo qual o script foi invocado                            |
+| `PPID`     | PID do processo pai                                             |
+
+: Variáveis de processo do Bash {#tbl-vars-processo}
+
+A diferença entre `$$` e `BASHPID` é a que causa surpresa:
+
+```bash
+echo "shell: $$"
+( echo "subshell \$\$: $$   BASHPID: $BASHPID" )
+```
+
+O `$$` continua o do shell original; o `BASHPID` mostra o do subshell. Para nome de arquivo temporário único por processo real, é `BASHPID` que serve — embora `mktemp` continue sendo melhor que os dois.
+
+E, para saber se o script está sendo executado ou carregado com `source`:
+
+```bash
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    principal "$@"        # executado diretamente
+fi                        # se veio de `source`, so define as funcoes
+```
+
+É o idioma que permite que o mesmo arquivo seja biblioteca e programa — tema desenvolvido no @sec-cap077.
+
+## 🐉 No Kali
+
+- **Coleta que grava enquanto lê é o desastre da abertura em escala.** Um script que refina a lista de alvos a cada rodada e a grava por cima do próprio arquivo perde o escopo inteiro na primeira falha. Temporário no mesmo diretório e `mv` no fim: a lista de escopo é o artefato mais importante de um teste autorizado, e reconstruí-la de memória é como escopo vira excesso, com o enquadramento da Lei 12.737/2012.
+- **`flock` em varredura agendada.** Uma varredura que demora mais do que o intervalo do agendamento acaba com duas cópias disparando pacotes ao mesmo tempo contra o mesmo alvo — o dobro da taxa combinada no contrato, sem que ninguém tenha pedido isso. O `exec 200> /var/lock/varredura.lock; flock -n 200 || exit 0` é uma linha e resolve.
+- **`exec > >(tee -a registro.log) 2>&1` no topo do script de coleta.** Registro completo do que foi executado, com a saída ainda visível no terminal. Num teste autorizado, esse arquivo é a prova de que a atividade ficou dentro do combinado; sem ele, a defesa é a sua memória.
+- **`/dev/shm` para credencial, `/tmp` nunca.** Hash, token e chave temporária pertencem à memória, com `umask 077` antes e remoção garantida por `trap`. E vale a advertência: em máquina compartilhada, `/dev/shm` é legível por quem tem privilégio — ele reduz o rastro em disco, não elimina a exposição.
+- **`/dev/tcp` para verificar porta sem instalar nada.** Numa máquina onde você tem acesso legítimo mas não pode instalar pacotes, `timeout 2 bash -c 'exec 3<>/dev/tcp/host/porta'` verifica conectividade usando só o Bash. É recurso de diagnóstico, e usá-lo para varrer faixa de endereços fora de um escopo autorizado é a mesma infração que fazê-lo com `nmap`.
+
+> **Nota sobre a família RHEL.** Os descritores e redirecionamentos são do Bash e não mudam. Duas diferenças de ambiente aparecem. Primeira: no RHEL, serviços do systemd frequentemente rodam com `PrivateTmp=yes`, o que dá ao serviço um `/tmp` privado — um script que grava em `/tmp` esperando que outro processo leia de lá simplesmente não se encontra, e o `TMPDIR` é o caminho correto de coordenação. Segunda: o SELinux rotula arquivos, e um script que cria arquivo em `/var/lock` ou `/var/run` sob um contexto e o lê sob outro recebe "Permission denied" com as permissões POSIX corretas; a solução idiomática é usar `/run/lock` com `RuntimeDirectory=` na unidade em vez de criar o diretório à mão (@sec-cap040).
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-descritores`.
+
+1. **Reproduza o truncamento, com um arquivo descartável.**
+
+   ```bash
+   mkdir -p ~/lab-descritores && cd ~/lab-descritores
+   printf 'delta\nalfa\ncharlie\nbravo\n' > alvos.txt
+   cp alvos.txt alvos-backup.txt
+   wc -c alvos.txt
+   sort alvos.txt > alvos.txt
+   wc -c alvos.txt
+   cp alvos-backup.txt alvos.txt
+   ```
+
+   Esperado: 24 bytes antes, **0 bytes** depois, sem nenhuma mensagem de erro. O `cp` final restaura para os passos seguintes.
+
+2. **Faça do jeito certo.**
+
+   ```bash
+   tmp="$(mktemp alvos.XXXXXX)"
+   sort alvos.txt > "$tmp" && mv -- "$tmp" alvos.txt
+   cat alvos.txt
+   ```
+
+   Esperado: as quatro linhas em ordem alfabética, no arquivo original.
+
+3. **Veja a tabela de descritores do seu shell.**
+
+   ```bash
+   ls -l /proc/$$/fd
+   exec 3> /tmp/teste-fd.txt
+   ls -l /proc/$$/fd
+   echo "escrito pelo descritor 3" >&3
+   exec 3>&-
+   cat /tmp/teste-fd.txt
+   ```
+
+   Esperado: o descritor 3 aparece na segunda listagem apontando para `/tmp/teste-fd.txt`, some depois do fechamento, e o arquivo contém a linha.
+
+4. **A ordem de `2>&1`.**
+
+   ```bash
+   ls /etc/hostname /nao/existe > saida1.txt 2>&1
+   ls /etc/hostname /nao/existe 2>&1 > saida2.txt
+   echo "--- saida1 (ambos):"; cat saida1.txt
+   echo "--- saida2 (so stdout):"; cat saida2.txt
+   ```
+
+   Esperado: `saida1.txt` tem o erro e o resultado; `saida2.txt` tem só o resultado, e o erro apareceu no terminal.
+
+5. **Salvar e restaurar a saída padrão.**
+
+   ```bash
+   bash -c '
+   exec 3>&1
+   exec 1> /tmp/desviado.txt
+   echo "isto vai para o arquivo"
+   exec 1>&3 3>&-
+   echo "isto volta para o terminal"'
+   cat /tmp/desviado.txt
+   ```
+
+   Esperado: só a segunda mensagem aparece no terminal; a primeira está no arquivo.
+
+6. **Registrar tudo sem perder a tela.**
+
+   ```bash
+   bash -c '
+   exec > >(tee -a /tmp/completo.log) 2>&1
+   echo "linha normal"
+   ls /nao/existe
+   echo "fim"'
+   sleep 0.3
+   echo "--- arquivo:"; cat /tmp/completo.log
+   ```
+
+   Esperado: as três saídas no terminal e as mesmas três no arquivo, erro incluído.
+
+7. **O laço de leitura canônico e o que cada peça corrige.**
+
+   ```bash
+   printf '  espaco nas bordas  \nC:\\novo\\caminho\nsem quebra final' > estranho.txt
+   echo "--- ingenuo:"
+   while read linha; do printf '[%s]\n' "$linha"; done < estranho.txt
+   echo "--- canonico:"
+   while IFS= read -r linha || [[ -n "$linha" ]]; do printf '[%s]\n' "$linha"; done < estranho.txt
+   ```
+
+   Esperado: a versão ingênua perde os espaços das bordas, come as barras invertidas e **descarta a última linha**. A canônica preserva as três.
+
+8. **A variável que some no pipe.**
+
+   ```bash
+   n=0; printf 'a\nb\nc\n' | while read -r _; do ((n++)); done; echo "com pipe: $n"
+   n=0; while read -r _; do ((n++)); done < <(printf 'a\nb\nc\n'); echo "com <(): $n"
+   ```
+
+   Esperado: `0` no primeiro, `3` no segundo.
+
+9. **O comando de dentro que engole o laço.**
+
+   ```bash
+   printf 'um\ndois\ntres\n' > itens.txt
+   echo "--- sem protecao:"
+   while IFS= read -r i; do echo "item: $i"; cat > /dev/null; done < itens.txt
+   echo "--- com descritor proprio:"
+   while IFS= read -r -u 3 i; do echo "item: $i"; cat > /dev/null; done 3< itens.txt
+   ```
+
+   Esperado: a primeira versão processa **um** item (o `cat` consumiu o resto); a segunda processa os três.
+
+10. **`mapfile` para carregar de uma vez.**
+
+    ```bash
+    mapfile -t itens < itens.txt
+    printf 'total: %d\n' "${#itens[@]}"
+    printf 'ultimo: %s\n' "${itens[-1]}"
+    ```
+
+    Esperado: `total: 3` e `ultimo: tres`.
+
+11. **`noclobber` como rede de segurança.**
+
+    ```bash
+    bash -c 'set -o noclobber; echo novo > itens.txt' ; echo "status: $?"
+    bash -c 'set -o noclobber; echo novo >| descartavel.txt'; echo "status: $?"
+    cat itens.txt
+    ```
+
+    Esperado: o primeiro falha com "cannot overwrite existing file" e `itens.txt` continua intacto; o segundo, com `>|`, funciona.
+
+12. **`flock` impedindo execução concorrente.**
+
+    ```bash
+    cat > exclusivo.sh <<'EOF'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec 200> /tmp/exclusivo.lock
+    flock -n 200 || { echo "[$$] ja ha uma execucao em andamento" >&2; exit 1; }
+    echo "[$$] entrei na secao exclusiva"
+    sleep 3
+    echo "[$$] sai"
+    EOF
+    chmod +x exclusivo.sh
+    ./exclusivo.sh & sleep 0.5; ./exclusivo.sh; wait
+    ```
+
+    Esperado: a primeira cópia entra e dorme; a segunda imprime a mensagem de conflito e sai com status 1.
+
+13. **Substituição de processo com dois consumidores.**
+
+    ```bash
+    seq 1 100000 | tee >(gzip > numeros.gz) >(sha256sum > numeros.sha) > numeros.txt
+    wait; sleep 0.5
+    ls -l numeros.*; cat numeros.sha
+    ```
+
+    Esperado: os três arquivos existem, o `.gz` bem menor que o `.txt`. Note o `sleep`: sem ele, os processos de dentro do `>(...)` podem não ter terminado.
+
+14. **Teste de porta com `/dev/tcp`.**
+
+    ```bash
+    timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' && echo "22 aberta" || echo "22 fechada"
+    timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/9' && echo "9 aberta"  || echo "9 fechada"
+    ```
+
+    Esperado: o resultado depende do serviço SSH estar rodando; a porta 9 quase certamente aparece como fechada. Em `dash` o mesmo comando falharia — é recurso do Bash.
+
+15. **`$$` contra `BASHPID`.**
+
+    ```bash
+    echo "shell: $$"
+    ( echo "dentro do subshell -> \$\$ = $$ , BASHPID = $BASHPID" )
+    ```
+
+    Esperado: o `$$` é igual nas duas linhas; o `BASHPID` é diferente.
+
+16. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-descritores /tmp/teste-fd.txt /tmp/desviado.txt \
+                   /tmp/completo.log /tmp/exclusivo.lock
+    ```
+
+## Resumo
+
+- **O shell prepara os redirecionamentos antes de executar o comando**, e é por isso que `sort a > a` esvazia o arquivo. Leia de um lugar, escreva em outro, troque com `mv` no fim.
+- **Redirecionar é apontar um descritor para outro destino.** `2>&1` copia o destino **atual** do 1, então `cmd > log 2>&1` e `cmd 2>&1 > log` fazem coisas diferentes.
+- **`exec` sem comando redireciona o shell inteiro.** `exec 3>&1` salva a saída, `exec > >(tee -a log) 2>&1` registra tudo sem perder a tela.
+- **O laço de leitura canônico é `while IFS= read -r linha || [[ -n "$linha" ]]; do ... done < arquivo`.** Cada peça corrige um defeito: espaços, barras invertidas, última linha sem quebra e subshell do pipe.
+- **Comando dentro do laço que lê `stdin` engole o resto do arquivo.** Use `-u 3` com `3< arquivo`, ou `< /dev/null` no comando de dentro.
+- **`mktemp` no mesmo diretório do original** é o que torna o `mv` final atômico; entre sistemas de arquivos diferentes ele deixa de ser.
+- **`flock` sobre um descritor é a trava correta**: o kernel a libera mesmo em `SIGKILL`, ao contrário de arquivo `.pid` criado à mão.
+- **`<(...)` e `>(...)` viram caminhos de arquivo**, o que alimenta programas que não aceitam pipe — lembrando que o shell não espera o processo de `>(...)` terminar.
+- **`umask 077` antes de `mktemp`, `/dev/shm` para segredo** e `trap ... EXIT` para a remoção. Nome previsível em diretório público é vulnerabilidade, não descuido.

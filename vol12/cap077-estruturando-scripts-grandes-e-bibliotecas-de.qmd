@@ -1,3 +1,613 @@
 # Estruturando scripts grandes e bibliotecas de funções {#sec-cap077}
 
-*(em elaboracao)*
+O `deploy.sh` tinha 1.400 linhas. Ninguém o havia escrito: ele **cresceu**. Começou com trinta linhas em 2021 e recebeu um trecho novo a cada incidente, sempre colado no fim, sempre por alguém com pressa.
+
+Havia quatro funções chamadas `log`, `log2`, `registrar` e `_log_novo`, e nenhuma delas fazia a mesma coisa. Uma variável `TMP` era usada em três blocos com significados diferentes. Havia dezenove ocorrências de `curl` com combinações ligeiramente distintas de `-s`, `-f` e `--retry`. E, no meio, uma linha que ninguém ousava tocar:
+
+```bash
+# NAO REMOVER -- quebra a producao (nao sabemos por que)
+sleep 3
+```
+
+Todo mundo tinha medo do arquivo. Mexer nele exigia meia hora lendo, e mesmo assim o efeito de uma mudança era imprevisível. É o estado terminal de um script que nunca foi **estruturado** — não porque quem escreveu era descuidado, mas porque cada acréscimo isolado era razoável e ninguém parou para reorganizar.
+
+Este capítulo é sobre a organização que evita esse destino, e sobre quando aceitar que o shell deixou de ser a ferramenta certa.
+
+## O esqueleto de um script sério
+
+Um script que vai durar tem uma forma reconhecível. Do topo para baixo:
+
+```bash
+#!/usr/bin/env bash
+#
+# implantar.sh — publica a versão indicada no ambiente informado.
+#
+# Uso:  implantar.sh [-a ambiente] [-v] [-n] <versão>
+# Ex.:  implantar.sh -a homolog -n 2.4.1
+#
+# Saídas: 0 sucesso | 64 uso incorreto | 69 dependência ausente | 70 falha interna
+
+set -Eeuo pipefail
+shopt -s inherit_errexit 2>/dev/null || true
+
+# ---------- constantes ----------
+readonly PROGRAMA="${0##*/}"
+readonly VERSAO_PROGRAMA='1.4.0'
+readonly RAIZ="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly EX_USO=64 EX_INDISP=69 EX_ERRO=70
+
+# ---------- estado (as ÚNICAS globais mutáveis) ----------
+AMBIENTE='homolog'
+VERBOSO=0
+SIMULAR=0
+TRABALHO=''
+
+# ---------- bibliotecas ----------
+source "$RAIZ/lib/log.sh"
+source "$RAIZ/lib/http.sh"
+
+# ---------- funções ----------
+uso() { sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \?//' ; }
+
+analisar_opcoes() { ...; }
+validar_ambiente() { ...; }
+publicar()        { ...; }
+
+principal() {
+    analisar_opcoes "$@"
+    validar_ambiente
+    publicar
+}
+
+# ---------- ponto de entrada ----------
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    principal "$@"
+fi
+```
+
+Cada bloco resolve um problema concreto.
+
+**O cabeçalho de comentário é a documentação.** Colocar o texto de uso ali e extraí-lo com `sed` na função `uso()` garante que a ajuda nunca fique dessincronizada do que está escrito no topo — o defeito mais comum em script de vida longa.
+
+**`RAIZ` calculado a partir de `BASH_SOURCE`** faz o script achar seus próprios arquivos independentemente do diretório de onde foi chamado. Usar `$0` ou `pwd` no lugar quebra assim que alguém chama por caminho relativo ou por link simbólico. Para resolver links, `readlink -f "${BASH_SOURCE[0]}"` antes do `dirname`.
+
+**`readonly` para o que não muda** transforma atribuição acidental em erro em vez de bug silencioso.
+
+**A guarda do ponto de entrada** é o que permite ao mesmo arquivo ser programa e biblioteca: executado, roda `principal`; carregado com `source`, apenas define as funções — que é como um arquivo de teste consegue chamar as funções individualmente.
+
+::: {#fig-anatomia-script-grande}
+```{.tikz}
+%%| filename: anatomia-de-um-script-estruturado
+%%| alt: Camadas de um script shell bem estruturado, do cabecalho ao ponto de entrada, com a responsabilidade de cada bloco
+\begin{tikzpicture}[
+    cam/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=6pt,text width=5.6cm,minimum height=0.82cm},
+    obs/.style={font=\scriptsize,manualgray,align=left,text width=7.0cm,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cam,draw=manualgray,fill=manualgray!8]      (a) at (3.3,8.0) {\textbf{1.} shebang + cabeçalho de uso};
+  \node[cam,draw=manualred,fill=manualred!9]        (b) at (3.3,7.0) {\textbf{2.} \texttt{set -Eeuo pipefail}, \texttt{inherit\_errexit}};
+  \node[cam,draw=manualblue,fill=manualblue!9]      (c) at (3.3,6.0) {\textbf{3.} constantes \texttt{readonly}};
+  \node[cam,draw=manualblue,fill=manualblue!9]      (d) at (3.3,5.0) {\textbf{4.} estado global mutável (mínimo)};
+  \node[cam,draw=manualyellow,fill=manualyellow!20] (e) at (3.3,4.0) {\textbf{5.} \texttt{source} das bibliotecas};
+  \node[cam,draw=manualyellow,fill=manualyellow!20] (f) at (3.3,3.0) {\textbf{6.} funções, das genéricas às específicas};
+  \node[cam,draw=manualgreen,fill=manualgreen!12]   (g) at (3.3,2.0) {\textbf{7.} \texttt{principal()}};
+  \node[cam,draw=manualgreen,fill=manualgreen!12]   (h) at (3.3,1.0) {\textbf{8.} guarda do ponto de entrada};
+
+  \node[obs] at (6.5,8.0) {a ajuda sai daqui por \texttt{sed} --- nunca dessincroniza};
+  \node[obs] at (6.5,7.0) {antes de qualquer comando que possa falhar};
+  \node[obs] at (6.5,6.0) {caminhos, códigos de saída, versão};
+  \node[obs] at (6.5,5.0) {tudo o mais é \texttt{local} dentro de função};
+  \node[obs] at (6.5,4.0) {depois das constantes: a biblioteca pode usá-las};
+  \node[obs] at (6.5,3.0) {uma responsabilidade cada, nome verbo\_substantivo};
+  \node[obs] at (6.5,2.0) {só orquestra; não contém lógica de negócio};
+  \node[obs] at (6.5,1.0) {\texttt{[[ "\$\{BASH\_SOURCE[0]\}" == "\$0" ]]}};
+
+  \node[nt,text width=13.6cm,anchor=north] at (6.9,0.25) {A ordem não é estética: cada camada depende só das anteriores. \texttt{source} \emph{depois} das constantes permite que a biblioteca as use; \texttt{set -e} \emph{antes} de tudo garante que nem a leitura da biblioteca escape da proteção; e a guarda do fim é o que torna o arquivo testável, porque um arquivo de teste pode carregá-lo e chamar cada função isoladamente sem disparar o programa inteiro.};
+\end{tikzpicture}
+```
+As oito camadas de um script estruturado, de cima para baixo.
+:::
+
+## Funções: a unidade de organização
+
+Recapitulando o @sec-cap059 do ponto de vista de quem organiza um programa grande.
+
+**Uma função, uma responsabilidade, um nome que diz o que ela faz.** A convenção `verbo_substantivo` (`validar_ambiente`, `baixar_artefato`, `enviar_notificacao`) elimina a ambiguidade de nomes como `processar` ou `handle`. Funções internas de biblioteca ganham prefixo de sublinhado (`_http_montar_cabecalho`) para sinalizar que não fazem parte da interface pública.
+
+**Todas as variáveis de dentro são `local`.** Sem isso, a variável `i` de um laço interno destrói a variável `i` do chamador — e o bug resultante é dos mais difíceis de rastrear, porque o sintoma aparece longe da causa.
+
+```bash
+processar_lote() {
+    local -r entrada=$1              # -r: local e somente-leitura
+    local -a resultados=()           # -a: array local
+    local -i total=0                 # -i: inteiro
+    local linha
+
+    while IFS= read -r linha; do
+        resultados+=("$linha")
+        (( total += 1 ))
+    done < "$entrada"
+
+    printf '%s\n' "${resultados[@]}"
+    return 0
+}
+```
+
+**Devolver valor: três formas, três usos.**
+
+```bash
+# 1. status: para perguntas de sim ou nao
+eh_valido() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+eh_valido "$v" || die "$EX_USO" "versão inválida: $v"
+
+# 2. stdout capturado: para um valor
+versao_atual() { < "$RAIZ/VERSION" tr -d '[:space:]'; }
+v=$(versao_atual)
+
+# 3. nameref: para muitos valores, sem subshell (Bash >= 4.3)
+carregar_config() {
+    local -n destino=$1             # destino vira apelido do array do chamador
+    destino[host]='exemplo.local'
+    destino[porta]=8443
+}
+declare -A cfg
+carregar_config cfg
+echo "${cfg[host]}:${cfg[porta]}"
+```
+
+A terceira forma merece destaque: `local -n` cria uma **referência** ao array do chamador, o que evita a serialização em texto que a captura por `$(...)` exigiria — e evita o `fork` do subshell. É como se devolve estrutura de dados em Bash. A ressalva é o nome: `local -n destino=$1` explode se o chamador passar uma variável também chamada `destino`, e a convenção é prefixar o parâmetro (`local -n _ref=$1`).
+
+**Documentar o contrato num comentário de três linhas** vale mais que qualquer outra convenção:
+
+```bash
+# baixar_artefato <versao> <destino>
+# Baixa o artefato da versão indicada para o caminho de destino.
+# Saída: 0 sucesso | 69 rede indisponível | 65 checksum divergente
+baixar_artefato() { ... }
+```
+
+## Bibliotecas: código que se compartilha
+
+Quando três scripts precisam da mesma função de log, ela vira arquivo.
+
+```
+projeto/
+├── bin/
+│   ├── implantar.sh
+│   └── reverter.sh
+├── lib/
+│   ├── log.sh
+│   ├── http.sh
+│   └── validacao.sh
+└── tests/
+    └── log.bats
+```
+
+Uma biblioteca bem comportada tem cinco propriedades.
+
+**1. Não executa nada ao ser carregada.** Só define funções e, no máximo, constantes. Um `source` que dispara ação é uma armadilha, porque quem carrega não espera efeito colateral.
+
+**2. É protegida contra carregamento duplo.** Duas bibliotecas que carregam uma terceira redefiniriam tudo:
+
+```bash
+# lib/log.sh
+[[ -n "${_LIB_LOG_CARREGADA:-}" ]] && return 0
+readonly _LIB_LOG_CARREGADA=1
+```
+
+**3. Usa prefixo nos nomes**, porque o Bash tem um espaço de nomes só. `log_info`, `log_erro`, `http_get` — não `info`, `erro`, `get`.
+
+**4. Não tem shebang**, e sim uma diretiva para o ShellCheck saber o dialeto:
+
+```bash
+# shellcheck shell=bash
+```
+
+**5. É carregada por caminho absoluto calculado**, nunca relativo ao diretório atual:
+
+```bash
+source "$RAIZ/lib/log.sh"
+```
+
+E, no ponto de carregamento, a checagem que transforma um erro obscuro em mensagem clara:
+
+```bash
+carregar() {
+    local arq="$RAIZ/lib/$1"
+    [[ -r "$arq" ]] || { printf '%s: biblioteca ausente: %s\n' "$PROGRAMA" "$arq" >&2; exit 70; }
+    # shellcheck source=/dev/null
+    source "$arq"
+}
+carregar log.sh
+carregar http.sh
+```
+
+Sem isso, um `source` de arquivo inexistente sob `set -e` mata o script com uma mensagem que não diz qual arquivo faltou.
+
+::: {#fig-organizacao-do-projeto}
+```{.tikz}
+%%| filename: organizacao-de-projeto-de-scripts
+%%| alt: Estrutura de diretorios de um projeto de scripts com bin lib e tests, e o fluxo de dependencia entre eles
+\begin{tikzpicture}[
+    dir/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.5cm,minimum height=1.5cm},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[dir,draw=manualgreen,fill=manualgreen!11] (bin) at (2.4,6.3)
+       {\texttt{bin/}\\[2pt]\tiny implantar.sh\\reverter.sh\\coletar.sh\\[2pt]\scriptsize executáveis};
+  \node[dir,draw=manualblue,fill=manualblue!10] (lib) at (7.6,6.3)
+       {\texttt{lib/}\\[2pt]\tiny log.sh\\http.sh\\validacao.sh\\[2pt]\scriptsize só definem funções};
+  \node[dir,draw=manualyellow,fill=manualyellow!20] (tst) at (12.8,6.3)
+       {\texttt{tests/}\\[2pt]\tiny log.bats\\validacao.bats\\[2pt]\scriptsize carregam e verificam};
+
+  \draw[fl] (bin) -- node[lb,above]{\texttt{source}} (lib);
+  \draw[fl] (tst) -- node[lb,above]{\texttt{source}} (lib);
+  \draw[fl,manualgray] (tst.south) -- ++(0,-0.7) -| node[lb,above,pos=0.25]{executa com \texttt{run}} (bin.south);
+
+  \node[nt,text width=14.0cm,anchor=north] at (7.6,4.15) {\textbf{A dependência aponta numa direção só.} \texttt{bin/} usa \texttt{lib/}; \texttt{lib/} não conhece \texttt{bin/}. Uma biblioteca que chama uma função definida no executável cria um ciclo que impede testar qualquer um dos dois isoladamente --- e é o começo do arquivo de 1.400 linhas, porque a única forma de fazer funcionar passa a ser juntar tudo.\\[4pt]
+  \textbf{Como o script acha a própria \texttt{lib/}:} \texttt{RAIZ="\$(cd -- "\$(dirname -- "\$\{BASH\_SOURCE[0]\}")/.." \&\& pwd)"}. O \texttt{BASH\_SOURCE} é o caminho do \emph{arquivo}, e não o do processo, então funciona igual quando o script é chamado por caminho relativo, por link simbólico no \texttt{PATH} ou por outro script. Usar \texttt{\$0} ou \texttt{\$PWD} aqui é o defeito que só aparece quando alguém chama de outro diretório.};
+\end{tikzpicture}
+```
+Organização de um projeto de scripts e a direção das dependências.
+:::
+
+## Configuração: fora do código
+
+Valores que mudam entre ambientes não pertencem ao corpo do script. A ordem de precedência convencional, da menor para a maior prioridade:
+
+1. valores padrão no próprio script;
+2. arquivo de configuração do sistema (`/etc/meuprog/config`);
+3. arquivo do usuário (`~/.config/meuprog/config`);
+4. variáveis de ambiente;
+5. opções de linha de comando.
+
+```bash
+# 1. padroes
+DESTINO='/var/lib/meuprog'
+TEMPO_LIMITE=30
+
+# 2 e 3. arquivos, se existirem
+for arq in /etc/meuprog/config "${XDG_CONFIG_HOME:-$HOME/.config}/meuprog/config"; do
+    # shellcheck source=/dev/null
+    [[ -r "$arq" ]] && source "$arq"
+done
+
+# 4. ambiente
+DESTINO="${MEUPROG_DESTINO:-$DESTINO}"
+TEMPO_LIMITE="${MEUPROG_TEMPO_LIMITE:-$TEMPO_LIMITE}"
+
+# 5. opcoes -- analisadas por ultimo, sobrepondo tudo (@sec-cap061)
+```
+
+Um alerta de segurança: `source` de arquivo de configuração **executa** o arquivo. Um `config` gravável por outro usuário é execução de código arbitrário com o privilégio de quem roda o script. Se o arquivo puder ser de terceiros, ou verifique a propriedade e as permissões antes, ou use um formato de dados que não seja código:
+
+```bash
+[[ "$(stat -c '%U %a' "$arq")" == "root 600" ]] || die "$EX_ERRO" "config com permissão insegura: $arq"
+```
+
+## Quando parar de usar shell
+
+O ponto mais importante do capítulo, e o que teria salvado o `deploy.sh`.
+
+O shell é excelente em orquestrar processos, encadear ferramentas e manipular arquivos. Ele é ruim em tudo o mais. Os sinais de que o limite foi ultrapassado:
+
+- **Estruturas de dados aninhadas.** Bash tem arrays e arrays associativos, e não tem nada além disso. Simular um objeto dentro de uma lista com nomes de variáveis concatenados é o sinal mais claro de todos.
+- **Aritmética não inteira.** Bash não faz ponto flutuante; chamar `bc` ou `awk` a cada operação é caro e ilegível.
+- **Tratamento de erro por item**, com retentativa, registro do que falhou e continuação. Dá para fazer, e o resultado tem três vezes o tamanho do equivalente em Python.
+- **Concorrência com estado compartilhado.** Paralelismo por arquivo o shell faz bem (@sec-cap075); coordenação com estado compartilhado, não.
+- **Passar de 300 ou 400 linhas** sem que a maior parte seja invocação de comando externo.
+- **Precisar de testes de unidade extensos.** `bats` funciona, mas o ecossistema de testes de qualquer linguagem de propósito geral é incomparavelmente melhor.
+
+A migração não precisa ser total. O padrão que funciona é manter o shell como **casca**, fazendo o que ele faz bem — analisar opções, verificar dependências, orquestrar processos — e delegar a lógica complexa a um programa em Python ou Go:
+
+```bash
+principal() {
+    analisar_opcoes "$@"
+    verificar_dependencias
+    exec python3 "$RAIZ/lib/processar.py" --ambiente "$AMBIENTE" --versao "$VERSAO"
+}
+```
+
+O `exec` substitui o processo do shell, deixando o programa como filho direto do chamador — o que faz sinais e códigos de saída se propagarem corretamente, sem uma camada de shell no meio.
+
+## O caminho de volta: refatorar sem quebrar
+
+Herdou o arquivo de 1.400 linhas? A ordem que funciona:
+
+1. **Coloque sob controle de versão**, se ainda não estiver. Sem isso, nada mais é seguro.
+2. **`shellcheck` no arquivo inteiro** e corrija só os erros de severidade alta. Não mexa em estilo ainda.
+3. **Acrescente `set -Eeuo pipefail`** e rode. Vai quebrar em vários lugares — cada quebra é um bug que já existia e estava sendo engolido.
+4. **Escreva um teste de caracterização**: um `bats` que roda o script com entradas conhecidas e registra a saída atual, correta ou não. Ele é a rede de segurança para tudo o que vem depois.
+5. **Extraia funções sem mudar comportamento**, uma por vez, rodando o teste a cada extração.
+6. **Só então** unifique as quatro funções de log, elimine a duplicação de `curl`, e descubra o que o `sleep 3` estava escondendo (quase sempre é uma condição de corrida que deveria ser um laço de espera com verificação).
+
+O que não funciona é reescrever do zero. O arquivo de 1.400 linhas contém anos de correções de casos particulares que ninguém documentou, e a reescrita as perde todas — para redescobri-las uma a uma, em produção.
+
+## 🐉 No Kali
+
+- **A caixa de ferramentas da equipe é uma biblioteca, não vinte scripts com o mesmo `log()` copiado.** Padronizar `lib/log.sh`, `lib/escopo.sh` e `lib/relatorio.sh` faz com que a verificação de escopo e o formato do relatório sejam idênticos em todo utilitário — e uma correção na verificação de escopo passa a valer para todos de uma vez, em vez de precisar ser replicada em vinte arquivos, onde inevitavelmente um fica para trás.
+- **A validação de escopo pertence à biblioteca e é chamada por todo executável.** É a aplicação mais importante deste capítulo: uma função `escopo_validar "$alvo" || die "$EX_USO" "fora do escopo"` centralizada, testada com `bats` contra casos de borda (CIDR, nome de host, endereço IPv6), evita que um utilitário novo escrito às pressas dispare contra um alvo não autorizado — o que caracteriza acesso não autorizado nos termos da Lei 12.737/2012, independentemente de haver contrato para os demais alvos.
+- **`source` de configuração é execução de código.** Um arquivo de configuração de teste que veio do cliente por e-mail, ou que está num diretório gravável por outros, executa com o seu privilégio no momento do `source`. Verifique dono e permissão antes, ou leia como dados (`jq`, ou um laço de `key=value` com validação) em vez de `source`.
+- **`readonly` nos caminhos de saída.** Num utilitário que grava evidência, deixar `SAIDA` mutável permite que um trecho posterior a sobrescreva e o relatório vá parar no lugar errado, ou por cima do de outro alvo. `readonly` depois da análise de opções transforma isso em erro imediato.
+- **Casca de shell, motor em Python.** Correlacionar resultados de varredura, deduplicar achados e gerar relatório são exatamente o tipo de trabalho com estrutura aninhada que o shell faz mal. A divisão que funciona: shell para invocar as ferramentas e organizar os arquivos, Python para ler os resultados e produzir o documento final.
+
+> **Nota sobre a família RHEL.** A estrutura de projeto é independente de distribuição. Duas diferenças de empacotamento aparecem quando o conjunto de scripts vira algo instalável: no Debian e no Kali, a convenção é `/usr/local/bin` para o executável e `/usr/local/lib/<programa>/` para as bibliotecas, com a configuração em `/etc/<programa>/`; no RHEL, os mesmos caminhos valem, mas o SELinux exige que arquivos executáveis fora de `/usr/bin` recebam o rótulo correto (`restorecon -Rv /usr/local/bin`), sob pena de o script funcionar quando chamado à mão e falhar quando invocado por um serviço. E, nas duas famílias, empacotar como `.deb` ou `.rpm` é preferível a copiar arquivos: o gerenciador de pacotes registra o que está instalado e permite remover sem deixar resto (@sec-cap035).
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-estrutura`.
+
+1. **Monte a estrutura do projeto.**
+
+   ```bash
+   mkdir -p ~/lab-estrutura/{bin,lib,tests} && cd ~/lab-estrutura
+   ```
+
+2. **Escreva a biblioteca de log.**
+
+   ```bash
+   cat > lib/log.sh <<'EOF'
+   # shellcheck shell=bash
+   # Biblioteca de registro. Funcoes: log_debug, log_info, log_aviso, log_erro.
+   [[ -n "${_LIB_LOG_CARREGADA:-}" ]] && return 0
+   readonly _LIB_LOG_CARREGADA=1
+
+   LOG_NIVEL="${LOG_NIVEL:-info}"
+
+   _log_emitir() {
+       local nivel=$1; shift
+       local -A ordem=([debug]=0 [info]=1 [aviso]=2 [erro]=3)
+       (( ordem[$nivel] < ordem[$LOG_NIVEL] )) && return 0
+       printf '%s [%-5s] %s\n' "$(date +'%F %T')" "${nivel^^}" "$*" >&2
+   }
+   log_debug() { _log_emitir debug "$@"; }
+   log_info()  { _log_emitir info  "$@"; }
+   log_aviso() { _log_emitir aviso "$@"; }
+   log_erro()  { _log_emitir erro  "$@"; }
+   EOF
+   bash -n lib/log.sh && shellcheck lib/log.sh && echo "log.sh: limpo"
+   ```
+
+3. **Escreva a biblioteca de validação.**
+
+   ```bash
+   cat > lib/validacao.sh <<'EOF'
+   # shellcheck shell=bash
+   [[ -n "${_LIB_VALIDACAO_CARREGADA:-}" ]] && return 0
+   readonly _LIB_VALIDACAO_CARREGADA=1
+
+   # validacao_versao <string> -> 0 se for X.Y.Z
+   validacao_versao() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+   # validacao_ambiente <string> -> 0 se for um ambiente conhecido
+   validacao_ambiente() {
+       case "$1" in dev|homolog|producao) return 0 ;; *) return 1 ;; esac
+   }
+   EOF
+   shellcheck lib/validacao.sh && echo "validacao.sh: limpo"
+   ```
+
+4. **Escreva o executável com o esqueleto completo.**
+
+   ```bash
+   cat > bin/implantar.sh <<'EOF'
+   #!/usr/bin/env bash
+   #
+   # implantar.sh -- simula a publicacao de uma versao num ambiente.
+   #
+   # Uso:  implantar.sh [-a ambiente] [-n] [-v] <versao>
+   # Ex.:  implantar.sh -a homolog -n 2.4.1
+   #
+   # Saidas: 0 sucesso | 64 uso incorreto | 69 dependencia ausente
+
+   set -Eeuo pipefail
+   shopt -s inherit_errexit 2>/dev/null || true
+
+   readonly PROGRAMA="${0##*/}"
+   readonly RAIZ="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+   readonly EX_USO=64 EX_INDISP=69
+
+   AMBIENTE='homolog'
+   SIMULAR=0
+   VERSAO=''
+
+   carregar() {
+       local arq="$RAIZ/lib/$1"
+       [[ -r "$arq" ]] || { printf '%s: biblioteca ausente: %s\n' "$PROGRAMA" "$arq" >&2; exit 70; }
+       # shellcheck source=/dev/null
+       source "$arq"
+   }
+   carregar log.sh
+   carregar validacao.sh
+
+   uso() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; }
+
+   die() { local st=$1; shift; printf '%s: %s\n' "$PROGRAMA" "$*" >&2; exit "$st"; }
+
+   analisar_opcoes() {
+       local o
+       while getopts ':a:nvh' o; do
+           case "$o" in
+               a) AMBIENTE=$OPTARG ;;
+               n) SIMULAR=1 ;;
+               v) LOG_NIVEL=debug ;;
+               h) uso; exit 0 ;;
+               :) die "$EX_USO" "a opcao -$OPTARG exige um argumento" ;;
+               ?) die "$EX_USO" "opcao desconhecida: -$OPTARG" ;;
+           esac
+       done
+       shift $((OPTIND - 1))
+       [[ $# -eq 1 ]] || { uso >&2; exit "$EX_USO"; }
+       VERSAO=$1
+   }
+
+   verificar_dependencias() {
+       local c
+       for c in date sed; do
+           command -v "$c" >/dev/null || die "$EX_INDISP" "comando ausente: $c"
+       done
+   }
+
+   publicar() {
+       log_debug "raiz do projeto: $RAIZ"
+       validacao_versao   "$VERSAO"   || die "$EX_USO" "versao invalida: $VERSAO"
+       validacao_ambiente "$AMBIENTE" || die "$EX_USO" "ambiente invalido: $AMBIENTE"
+       (( SIMULAR )) && { log_aviso "modo simulacao: nada sera alterado"; return 0; }
+       log_info "publicando $VERSAO em $AMBIENTE"
+       log_info "concluido"
+   }
+
+   principal() {
+       analisar_opcoes "$@"
+       verificar_dependencias
+       publicar
+   }
+
+   if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+       principal "$@"
+   fi
+   EOF
+   chmod +x bin/implantar.sh
+   shellcheck bin/implantar.sh && echo "implantar.sh: limpo"
+   ```
+
+5. **Exercite todos os caminhos.**
+
+   ```bash
+   ./bin/implantar.sh -h
+   ./bin/implantar.sh -a homolog -n 2.4.1;      echo "status: $?"
+   ./bin/implantar.sh -a homolog -v -n 2.4.1;   echo "status: $?"
+   ./bin/implantar.sh -a producao 2.4.1;        echo "status: $?"
+   ./bin/implantar.sh -a inexistente 2.4.1;     echo "status: $?"
+   ./bin/implantar.sh -a homolog 2.4;           echo "status: $?"
+   ./bin/implantar.sh;                          echo "status: $?"
+   ./bin/implantar.sh -z 1.0.0;                 echo "status: $?"
+   ```
+
+   Esperado: ajuda extraída do próprio cabeçalho; `-v` acrescenta a linha de depuração; ambiente e versão inválidos saem com 64; sem argumento, imprime o uso e sai com 64.
+
+6. **Confirme que `RAIZ` funciona de qualquer diretório.**
+
+   ```bash
+   cd /tmp && ~/lab-estrutura/bin/implantar.sh -n 1.0.0; echo "status: $?"
+   sudo ln -sf ~/lab-estrutura/bin/implantar.sh /usr/local/bin/implantar-lab
+   implantar-lab -n 1.0.0 2>&1 | tail -2
+   cd ~/lab-estrutura
+   ```
+
+   Esperado: funciona chamado por caminho absoluto de outro diretório. Pelo link simbólico ele falha ao achar a `lib/` — e a mensagem diz exatamente qual arquivo faltou, graças à função `carregar`. A correção é `readlink -f` no cálculo de `RAIZ`.
+
+7. **Corrija o caso do link simbólico.**
+
+   ```bash
+   sed -i 's|RAIZ="\$(cd -- "\$(dirname -- "\${BASH_SOURCE\[0\]}")/.." \&\& pwd)"|RAIZ="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." \&\& pwd)"|' bin/implantar.sh
+   grep -n 'readonly RAIZ' bin/implantar.sh
+   implantar-lab -n 1.0.0; echo "status: $?"
+   ```
+
+   Esperado: agora funciona também pelo link simbólico.
+
+8. **A guarda do ponto de entrada torna o arquivo testável.**
+
+   ```bash
+   bash -c 'source ~/lab-estrutura/bin/implantar.sh; echo "carreguei sem executar";
+            validacao_versao 1.2.3 && echo "1.2.3 -> valida"
+            validacao_versao 1.2   || echo "1.2   -> invalida"'
+   ```
+
+   Esperado: o `source` não dispara o programa, e as funções ficam disponíveis para chamada individual.
+
+9. **Escreva os testes com `bats`.**
+
+   ```bash
+   sudo apt install -y bats
+   cat > tests/validacao.bats <<'EOF'
+   setup() { source "${BATS_TEST_DIRNAME}/../lib/validacao.sh"; }
+
+   @test "aceita versao semantica" {
+       run validacao_versao "10.4.27"
+       [ "$status" -eq 0 ]
+   }
+   @test "recusa versao incompleta" {
+       run validacao_versao "1.2"
+       [ "$status" -ne 0 ]
+   }
+   @test "recusa versao com sufixo" {
+       run validacao_versao "1.2.3-rc1"
+       [ "$status" -ne 0 ]
+   }
+   @test "aceita os tres ambientes conhecidos" {
+       for a in dev homolog producao; do run validacao_ambiente "$a"; [ "$status" -eq 0 ]; done
+   }
+   @test "recusa ambiente desconhecido" {
+       run validacao_ambiente "qa"
+       [ "$status" -ne 0 ]
+   }
+   @test "o executavel sai com 64 sem argumentos" {
+       run "${BATS_TEST_DIRNAME}/../bin/implantar.sh"
+       [ "$status" -eq 64 ]
+   }
+   EOF
+   bats tests/
+   ```
+
+   Esperado: seis testes passando. Note que os testes carregam a **biblioteca** e executam o **executável** — a direção de dependência da figura, na prática.
+
+10. **A proteção contra carregamento duplo.**
+
+    ```bash
+    bash -c 'source lib/log.sh; source lib/log.sh; echo "carregou duas vezes sem erro"'
+    bash -c 'source lib/log.sh; readonly X=1; source lib/log.sh; log_info "ainda funciono"'
+    ```
+
+    Esperado: nenhuma reclamação de "readonly variable". Comente as duas primeiras linhas de `lib/log.sh` e repita para ver o erro que a proteção evita.
+
+11. **`local -n` para devolver estrutura.**
+
+    ```bash
+    bash -c '
+    carregar_config() {
+        local -n _ref=$1
+        _ref[host]="exemplo.local"
+        _ref[porta]=8443
+    }
+    declare -A cfg
+    carregar_config cfg
+    echo "${cfg[host]}:${cfg[porta]}"'
+    ```
+
+    Esperado: `exemplo.local:8443`, sem subshell e sem serializar em texto.
+
+12. **A variável que vaza por falta de `local`.**
+
+    ```bash
+    bash -c '
+    contar() { for i in 1 2 3; do :; done; }
+    for i in a b c; do contar; echo "esperava letra, tenho: $i"; done'
+    bash -c '
+    contar() { local i; for i in 1 2 3; do :; done; }
+    for i in a b c; do contar; echo "com local: $i"; done'
+    ```
+
+    Esperado: a primeira versão imprime `3` e sai do laço depois de uma volta; a segunda percorre `a`, `b`, `c` normalmente.
+
+13. **Limpe o laboratório.**
+
+    ```bash
+    sudo rm -f /usr/local/bin/implantar-lab
+    cd ~ && rm -rf ~/lab-estrutura
+    ```
+
+## Resumo
+
+- **Script grande tem forma reconhecível**: cabeçalho de uso, `set -Eeuo pipefail`, constantes `readonly`, estado mínimo, `source` das bibliotecas, funções, `principal()` e a guarda do ponto de entrada.
+- **`RAIZ` calculado a partir de `BASH_SOURCE`**, não de `$0` nem de `pwd` — e com `readlink -f` se o script puder ser chamado por link simbólico.
+- **A guarda `[[ "${BASH_SOURCE[0]}" == "$0" ]]` é o que torna o arquivo testável**: executado roda o programa, carregado só define as funções.
+- **Toda variável de função é `local`.** Sem isso, o `i` de dentro destrói o `i` de fora, e o sintoma aparece longe da causa.
+- **Três formas de devolver valor**: status para sim ou não, `stdout` capturado para um valor, `local -n` para estrutura sem subshell.
+- **Biblioteca não executa nada ao ser carregada**, protege-se contra carregamento duplo, prefixa os nomes e é carregada por caminho absoluto com verificação explícita de existência.
+- **A dependência aponta numa direção só**: `bin/` usa `lib/`, nunca o contrário. O ciclo é o começo do arquivo de 1.400 linhas.
+- **`source` de configuração executa código.** Verifique dono e permissão, ou leia como dados.
+- **Saiba quando parar**: estrutura aninhada, ponto flutuante, tratamento de erro por item, mais de 300 linhas de lógica própria. A saída é o shell como casca e o motor em outra linguagem, com `exec` na entrega.
+- **Refatorar vence reescrever.** Controle de versão, `shellcheck`, `set -Eeuo pipefail`, teste de caracterização, extração de funções uma a uma — nessa ordem.

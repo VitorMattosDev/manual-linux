@@ -1,3 +1,531 @@
 # Subshells, agrupamento e here-documents {#sec-cap074}
 
-*(em elaboracao)*
+O script de implantação tinha uma função para compilar cada módulo:
+
+```bash
+compilar() {
+    cd "src/$1"
+    make
+}
+
+for modulo in rede parser interface; do
+    compilar "$modulo"
+done
+```
+
+O módulo `rede` compilou. O `parser` falhou com "diretório não encontrado". O `interface` também.
+
+O motivo: o `cd` dentro da função mudou o diretório do **script inteiro**, não só o da função. Depois da primeira chamada, o processo estava em `src/rede`, e a segunda tentou entrar em `src/rede/src/parser`.
+
+A correção cabe em dois caracteres:
+
+```bash
+compilar() {
+    ( cd "src/$1" && make )
+}
+```
+
+Os parênteses criam um **subshell**: um processo filho onde o `cd` acontece e morre junto com ele. O diretório do script não muda.
+
+Saber exatamente o que atravessa a fronteira de um subshell — e em que direção — é um dos conhecimentos que mais separa quem escreve shell por hábito de quem escreve shell com intenção. É a primeira metade deste capítulo. A segunda é sobre alimentar comandos com blocos de texto: os here-documents.
+
+## `( )` contra `{ }`: a diferença que importa
+
+As duas formas agrupam comandos. Uma cria processo, a outra não.
+
+```bash
+( comando1; comando2 )       # subshell: processo filho
+{ comando1; comando2; }      # agrupamento: mesmo processo
+```
+
+A sintaxe do `{ }` tem duas exigências fáceis de esquecer, porque `{` e `}` são **palavras reservadas**, não operadores: precisam de espaço depois da abertura e de `;` (ou quebra de linha) antes do fechamento. `{comando;}` é erro de sintaxe; `{ comando; }` está certo.
+
+::: {#fig-fronteira-do-subshell}
+```{.tikz}
+%%| filename: fronteira-do-subshell
+%%| alt: Diagrama do que atravessa a fronteira entre o shell pai e um subshell, mostrando o que e herdado na entrada e o que se perde na saida
+\begin{tikzpicture}[
+    cxa/.style={rounded corners=4pt,draw,thick,align=left,font=\scriptsize,inner sep=7pt,text width=5.5cm},
+    ttl/.style={font=\scriptsize\bfseries,align=center},
+    seta/.style={-{Latex[length=2mm]},very thick},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ttl,manualblue] at (3.0,7.5) {shell pai};
+  \node[cxa,draw=manualblue,fill=manualblue!8] at (3.0,5.6)
+       {\texttt{PWD=/projeto}\\
+        \texttt{contador=0}\\
+        \texttt{umask 022}\\
+        \texttt{trap limpar EXIT}\\
+        opções: \texttt{set -e}};
+
+  \node[ttl,manualyellow!70!black] at (11.6,7.5) {subshell \texttt{( ... )}};
+  \node[cxa,draw=manualyellow,fill=manualyellow!18] at (11.6,5.6)
+       {recebe \textbf{cópia} de tudo\\
+        \texttt{cd /tmp} $\rightarrow$ só aqui dentro\\
+        \texttt{contador=99} $\rightarrow$ só aqui dentro\\
+        \texttt{exit 1} $\rightarrow$ encerra só o subshell\\
+        traps de sinal voltam ao padrão};
+
+  \draw[seta,manualgreen] (6.1,6.15) -- node[lb,manualgreen,above,text width=2.5cm]{herda tudo\\na entrada} (8.5,6.15);
+  \draw[seta,manualred] (8.5,4.95) -- node[lb,manualred,below,text width=2.5cm]{só o \textbf{código}\\\textbf{de saída} volta} (6.1,4.95);
+
+  \node[nt,text width=14.2cm,anchor=north] at (7.3,3.55) {\textbf{Onde nascem subshells sem que você escreva parênteses:} cada estágio de um pipeline (\texttt{a | b | c} são três), toda substituição de comando \texttt{\$(...)}, todo comando posto em segundo plano com \texttt{\&}, toda substituição de processo \texttt{<(...)} e \texttt{>(...)}. É por isso que \texttt{n=0; seq 3 | while read x; do ((n++)); done; echo \$n} imprime \texttt{0}: o \texttt{while} rodou num processo que já morreu levando o \texttt{n} junto.\\[3pt]
+  \textbf{O agrupamento \texttt{\{ ... ; \}} não tem fronteira nenhuma:} roda no mesmo processo, então \texttt{cd} e atribuição persistem, e \texttt{exit} encerra o script inteiro. Use \texttt{( )} quando quiser isolamento, \texttt{\{ \}} quando quiser apenas aplicar um redirecionamento ou um operador a vários comandos de uma vez.};
+\end{tikzpicture}
+```
+O que atravessa a fronteira de um subshell, e em que direção.
+:::
+
+Os três efeitos práticos, em ordem de frequência com que mordem:
+
+**1. Atribuição não volta.**
+
+```bash
+n=0
+( n=99 )
+echo "$n"        # 0
+{ n=99; }
+echo "$n"        # 99
+```
+
+**2. `exit` tem alcance diferente.** Dentro de `( )`, encerra apenas o subshell; dentro de `{ }`, encerra o script. Uma função de validação que usa `{ }` e chama `exit` derruba o programa inteiro — às vezes é o que se quer, mas raramente é o que se pretendia.
+
+**3. Redirecionamento aplicado ao grupo** vale para todos os comandos de dentro, e é o principal uso legítimo do `{ }`:
+
+```bash
+{
+    echo "=== relatório de $(date +%F) ==="
+    df -h
+    echo "=== fim ==="
+} > relatorio.txt
+
+{ comando1; comando2; } 2>> erros.log
+```
+
+Sem o agrupamento seria preciso repetir `>> relatorio.txt` em cada linha — e a primeira teria de ser `>` para truncar, o que é justamente o tipo de assimetria que se erra.
+
+### Onde os subshells custam caro
+
+Cada subshell é um `fork`. Num laço com dez mil iterações, a diferença aparece:
+
+```bash
+# tres subshells por iteracao
+for f in *.log; do
+    linhas=$(cat "$f" | wc -l)
+    nome=$(basename "$f" .log)
+    tamanho=$(stat -c %s "$f")
+done
+```
+
+Cada uma dessas três linhas cria um processo (ou dois, no caso do `cat` inútil). As alternativas embutidas não criam nenhum:
+
+```bash
+linhas=$(wc -l < "$f")     # um processo em vez de dois -- o `cat` era desnecessario
+nome="${f%.log}"           # expansao de parametro, zero processos (@sec-cap062)
+conteudo=$(<"$f")          # forma especial do Bash: le o arquivo sem fork
+```
+
+O `$(<arquivo)` é reconhecido pelo Bash e implementado internamente — é a forma mais rápida de colocar um arquivo numa variável. A regra geral: **antes de abrir um subshell, verifique se existe uma expansão que faz o mesmo**.
+
+### `coproc`: um subshell com quem se conversa
+
+Para os casos em que é preciso manter um processo vivo e trocar dados com ele, o Bash tem o `coproc`, que abre o filho com dois pipes já conectados:
+
+```bash
+coproc CALC { bc -l; }
+echo "scale=4; 22/7" >&"${CALC[1]}"
+read -r resultado <&"${CALC[0]}"
+echo "pi aproximado: $resultado"
+kill "$CALC_PID"
+```
+
+É um recurso de nicho, e a advertência vale: qualquer coisa mais complexa que uma troca de linhas pede uma linguagem com controle de fluxo de verdade, sob pena de travar em impasse quando o buffer do pipe enche.
+
+## Here-documents: blocos de texto como entrada
+
+Um here-document alimenta a entrada padrão de um comando com um bloco literal escrito ali mesmo:
+
+```bash
+cat <<FIM
+primeira linha
+segunda linha
+FIM
+```
+
+O delimitador (`FIM`, `EOF`, o que você quiser) precisa aparecer sozinho na linha, sem espaços antes nem depois. Um espaço invisível depois do delimitador de fechamento é a causa número um de "unexpected end of file" em here-document — o shell lê o resto do arquivo procurando o fim que nunca chega.
+
+Há quatro variantes, e escolher a errada é fonte de bug silencioso.
+
+::: {#fig-variantes-heredoc}
+```{.tikz}
+%%| filename: variantes-de-here-document
+%%| alt: As quatro variantes de here-document e here-string do Bash, indicando quais expandem variaveis e qual remove tabulacoes
+\begin{tikzpicture}[
+    vrt/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=6pt,text width=6.4cm,minimum height=2.15cm},
+    tg/.style={font=\tiny\bfseries,align=center,inner sep=2pt,rounded corners=2pt,draw,thick},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[vrt,draw=manualred,fill=manualred!7] (v1) at (3.7,6.4)
+       {\texttt{<{}<EOF}\\[2pt]
+        \textbf{expande} \texttt{\$var}, \texttt{\$(cmd)}, \texttt{\textbackslash}\\[2pt]
+        Use quando o bloco precisa\\de valores do script.\\
+        Cuidado: um \texttt{\$} literal no\\texto vira expansão sem aviso.};
+
+  \node[vrt,draw=manualgreen,fill=manualgreen!9] (v2) at (11.0,6.4)
+       {\texttt{<{}<'EOF'}\\[2pt]
+        \textbf{não expande nada}: literal\\[2pt]
+        O padrão para gerar scripts,\\configuração e código.\\
+        As aspas no delimitador são\\o que faz a diferença.};
+
+  \node[vrt,draw=manualblue,fill=manualblue!8] (v3) at (3.7,3.4)
+       {\texttt{<{}<-EOF}\\[2pt]
+        expande, e remove as\\\textbf{tabulações} do início das linhas\\[2pt]
+        Permite indentar o bloco dentro\\de um \texttt{if} ou \texttt{while}. Só \textbf{TAB},\\nunca espaço.};
+
+  \node[vrt,draw=manualyellow,fill=manualyellow!18] (v4) at (11.0,3.4)
+       {\texttt{<{}<{}< "texto"}  (here-string)\\[2pt]
+        uma linha só, com expansão\\se estiver entre aspas duplas\\[2pt]
+        \texttt{read -r a b <{}<{}< "\$linha"}\\
+        substitui o \texttt{echo | read} e evita\\o subshell do pipe.};
+
+  \node[tg,draw=manualred,fill=white,text=manualred] at (1.35,7.55) {expande};
+  \node[tg,draw=manualgreen,fill=white,text=manualgreen] at (8.7,7.55) {literal};
+  \node[tg,draw=manualblue,fill=white,text=manualblue] at (1.5,4.55) {indentável};
+  \node[tg,draw=manualyellow!70!black,fill=white,text=manualyellow!70!black] at (9.05,4.55) {linha única};
+
+  \node[nt,text width=13.8cm,anchor=north] at (7.35,1.85) {A combinação \texttt{<{}<-'EOF'} existe e junta as duas coisas: literal \emph{e} indentável. É a forma de escolha para gerar um arquivo de dentro de um bloco aninhado. E a regra prática que evita a maior parte dos acidentes: \textbf{use aspas no delimitador por padrão}, e tire-as só quando você realmente quiser que o bloco veja as variáveis do script.};
+\end{tikzpicture}
+```
+As variantes de here-document e here-string, e quando usar cada uma.
+:::
+
+A diferença entre as duas primeiras, na prática:
+
+```bash
+nome="mundo"
+
+cat <<EOF
+olá, $nome; hoje é $(date +%A)
+EOF
+# saida: ola, mundo; hoje e domingo
+
+cat <<'EOF'
+olá, $nome; hoje é $(date +%A)
+EOF
+# saida: ola, $nome; hoje e $(date +%A)
+```
+
+A versão sem aspas é a certa para preencher um modelo com valores; a versão com aspas é a certa para **gerar código**, que é onde o descuido custa caro:
+
+```bash
+cat > /usr/local/bin/limpar.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for f in /var/tmp/*; do
+    echo "removendo $f"
+    rm -rf -- "$f"
+done
+EOF
+```
+
+Sem as aspas no `EOF`, o `$f` seria expandido **na hora de gerar o arquivo** — e como `f` não existe no script gerador, o resultado seria `rm -rf -- ""` gravado no disco. O bug só aparece quando o script gerado roda.
+
+### `<<-` e a armadilha da tabulação
+
+O `<<-` permite indentar o here-document junto com o código:
+
+```bash
+if [[ -n "$erro" ]]; then
+	cat <<-FIM
+	Falha na etapa $etapa.
+	Consulte /var/log/deploy.log.
+	FIM
+fi
+```
+
+Só que ele remove **tabulações**, não espaços. Um editor configurado para converter TAB em espaços — o que é o padrão em quase todos — faz o `<<-` parar de funcionar, e o delimitador indentado com espaços não é reconhecido, produzindo o mesmo "unexpected end of file". Por isso muita gente evita `<<-` e prefere não indentar o bloco, ou usa uma função auxiliar. É uma escolha defensável.
+
+### Here-strings: a linha única
+
+O `<<<` alimenta a entrada com uma string, sem criar processo nem pipe:
+
+```bash
+read -r usuario shell <<< "$(getent passwd kali | tr ':' ' ')"
+
+grep -c 'erro' <<< "$conteudo"
+
+while IFS=: read -r campo1 campo2 _; do
+    echo "$campo1 -> $campo2"
+done <<< "$linhas"
+```
+
+O ganho sobre `echo "$var" | read ...` é duplo: menos um processo, e principalmente **nenhum subshell** — as variáveis atribuídas pelo `read` continuam existindo depois.
+
+### Here-document com redirecionamento e em pipeline
+
+A ordem dos operadores é livre; as duas formas abaixo são equivalentes, e a segunda costuma ser mais legível:
+
+```bash
+cat > config.ini <<'EOF'
+...
+EOF
+
+cat <<'EOF' > config.ini
+...
+EOF
+```
+
+Em pipeline, o here-document alimenta o primeiro comando:
+
+```bash
+sort <<'EOF' | uniq -c
+alfa
+bravo
+alfa
+EOF
+```
+
+E, para escrever num arquivo que exige privilégio, o `sudo tee` — porque `sudo echo x > /etc/arquivo` **não funciona**: o redirecionamento é feito pelo shell do usuário comum, antes do `sudo` entrar em cena.
+
+```bash
+sudo tee /etc/systemd/system/coleta.service > /dev/null <<'EOF'
+[Unit]
+Description=Coleta periódica
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/coletar.sh
+EOF
+```
+
+### Here-document sobre SSH: o problema das aspas
+
+Executar um bloco de comandos numa máquina remota é onde as duas metades deste capítulo se encontram, e onde o descuido com aspas mais aparece:
+
+```bash
+# o bloco e expandido LOCALMENTE: $HOSTNAME e o da sua maquina
+ssh servidor <<EOF
+echo "rodando em \$HOSTNAME"
+df -h | grep "$PARTICAO"
+EOF
+
+# o bloco vai literal: $HOSTNAME e resolvido NO REMOTO
+ssh servidor <<'EOF'
+echo "rodando em $HOSTNAME"
+df -h
+EOF
+```
+
+A pergunta a fazer sempre é: **esta variável deve ser resolvida aqui ou lá?** Quando as duas coisas precisam acontecer no mesmo bloco, a saída é o delimitador com aspas mais o escape explícito das poucas que devem vir de fora — ou, mais legível, passar os valores como variáveis de ambiente na chamada.
+
+Vale a mesma advertência do @sec-cap073: um comando dentro de um laço que lê `stdin` engole o resto da entrada, e `ssh` é o exemplo clássico. Em laço, `ssh -n` ou `< /dev/null`.
+
+## Escolhendo entre as formas
+
+Uma síntese operacional:
+
+- **`( )`** quando precisar isolar `cd`, alterar `umask` ou opções do shell temporariamente, ou rodar algo em paralelo com `&`.
+- **`{ }`** quando quiser aplicar um redirecionamento, um `|` ou um `&&` a vários comandos, mantendo o efeito no shell atual.
+- **`<<'EOF'`** por padrão para gerar arquivos; **`<<EOF`** só quando o bloco precisar ver variáveis do script.
+- **`<<<`** no lugar de `echo x | comando`, sempre que couber numa linha.
+- **`$(<arquivo)`** no lugar de `$(cat arquivo)`.
+
+## 🐉 No Kali
+
+- **Gerar arquivo de configuração de ferramenta é caso de `<<'EOF'`.** Modelos de `proxychains`, `nuclei`, `msfconsole` e afins são cheios de `$`, `%` e `\`. Sem as aspas no delimitador, o shell come metade da sintaxe e o arquivo gerado fica sutilmente errado — o tipo de defeito que só aparece quando a ferramenta se comporta de um jeito inesperado no meio de um teste.
+- **Subshell para isolar o ambiente de uma ferramenta.** `( export HTTP_PROXY=http://127.0.0.1:8080; export HTTPS_PROXY=$HTTP_PROXY; ferramenta )` faz o proxy valer só naquela invocação. Sem os parênteses, o resto do script — inclusive comandos que você não pretendia interceptar — continua atravessando o proxy.
+- **`ssh` com here-document em máquina de laboratório.** A pergunta "aqui ou lá?" tem consequência: um `$(...)` que você achou que rodaria localmente e roda no remoto é execução não pretendida numa máquina de outra pessoa. Em ambiente autorizado isso é um erro a corrigir; fora dele, é acesso não autorizado nos termos da Lei 12.737/2012. Teste o bloco com `cat` no lugar do `ssh` antes de disparar.
+- **`sudo tee` para instalar unidade ou regra.** Escrever unidade do systemd, regra de `udev` ou arquivo em `/etc/sudoers.d` a partir de script exige `sudo tee`, nunca `sudo echo >`. E, em `/etc/sudoers.d`, sempre validar com `visudo -cf arquivo` antes de mover para o lugar definitivo: um arquivo malformado ali derruba o `sudo` da máquina inteira.
+- **Custo de `fork` em varredura grande.** Um laço sobre dez mil linhas de resultado com três substituições de comando por iteração são trinta mil processos. Trocar `$(cat "$f")` por `$(<"$f")` e `$(basename "$f" .log)` por `${f%.log}` derruba o tempo de minutos para segundos, e a triagem de resultado é exatamente o lugar onde esse laço aparece.
+
+> **Nota sobre a família RHEL.** Subshells e here-documents são do shell e idênticos nas duas famílias. Uma diferença de ambiente vale registrar: em serviços do systemd com `Type=oneshot` e `ExecStart=` apontando para um comando de shell, o RHEL e o Debian executam sem shell intermediário por padrão, então redirecionamentos e here-documents escritos direto no `ExecStart=` não funcionam em nenhuma das duas — o correto é apontar para um script, ou usar `ExecStart=/bin/bash -c '...'` explicitamente (@sec-cap040). E, no RHEL com SELinux `enforcing`, um script gerado em `/tmp` por here-document e executado dali costuma ser bloqueado por rótulo de contexto; gerar em `/usr/local/bin` com `restorecon` depois é o caminho.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-subshell`.
+
+1. **Reproduza o bug do `cd` vazado.**
+
+   ```bash
+   mkdir -p ~/lab-subshell/src/{rede,parser,interface} && cd ~/lab-subshell
+   for m in rede parser interface; do echo "modulo $m" > "src/$m/nome.txt"; done
+
+   compilar_errado() { cd "src/$1" && cat nome.txt; }
+   for m in rede parser interface; do compilar_errado "$m" || echo "  falhou em $m"; done
+   pwd
+   ```
+
+   Esperado: só o primeiro funciona; os dois seguintes falham, e o `pwd` final mostra que você foi parar dentro de `src/rede`.
+
+2. **Corrija com subshell.**
+
+   ```bash
+   cd ~/lab-subshell
+   compilar_certo() { ( cd "src/$1" && cat nome.txt ); }
+   for m in rede parser interface; do compilar_certo "$m"; done
+   pwd
+   ```
+
+   Esperado: os três imprimem, e o `pwd` continua em `~/lab-subshell`.
+
+3. **Atribuição e `exit` através da fronteira.**
+
+   ```bash
+   n=0; ( n=99; echo "dentro: $n" ); echo "fora:  $n"
+   n=0; { n=99; echo "dentro: $n"; }; echo "fora:  $n"
+   bash -c '( exit 3 ); echo "subshell nao derrubou; status foi $?"'
+   bash -c '{ exit 3; }; echo "esta linha nao aparece"'; echo "status: $?"
+   ```
+
+   Esperado: `fora: 0` no primeiro par, `fora: 99` no segundo; o `( exit 3 )` deixa o script vivo, o `{ exit 3; }` não.
+
+4. **Sintaxe do `{ }`.**
+
+   ```bash
+   bash -c '{ echo ok; }'        # correto
+   bash -c '{echo ok; }'  2>&1 | head -2
+   bash -c '{ echo ok }'  2>&1 | head -2
+   ```
+
+   Esperado: o primeiro imprime `ok`; os outros dois falham — falta espaço depois do `{` no segundo e `;` antes do `}` no terceiro.
+
+5. **Redirecionamento aplicado ao grupo.**
+
+   ```bash
+   {
+       echo "=== relatorio de $(date +%F) ==="
+       df -h --output=source,pcent / | tail -1
+       echo "=== fim ==="
+   } > relatorio.txt
+   cat relatorio.txt
+   ```
+
+   Esperado: as três linhas no arquivo, com um único redirecionamento.
+
+6. **Conte os subshells escondidos.**
+
+   ```bash
+   echo "shell principal: $$"
+   echo "em \$(...):  $(echo $BASHPID)"
+   echo "em pipeline: $(echo x | { cat > /dev/null; echo $BASHPID; })"
+   ( echo "em parenteses: $BASHPID" )
+   ```
+
+   Esperado: quatro PIDs, três deles diferentes do principal. Cada um foi um `fork`.
+
+7. **Meça o custo do subshell.**
+
+   ```bash
+   seq 1 3000 > numeros.txt
+   time (for i in $(seq 1 2000); do x=$(echo "$i"); done)
+   time (for i in $(seq 1 2000); do x="$i"; done)
+   time (for i in $(seq 1 300); do c=$(cat numeros.txt); done)
+   time (for i in $(seq 1 300); do c=$(<numeros.txt); done)
+   ```
+
+   Esperado: as versões sem subshell são ordens de grandeza mais rápidas. O `$(<arquivo)` vence o `$(cat arquivo)` com folga.
+
+8. **Here-document: expande ou não expande.**
+
+   ```bash
+   nome="mundo"
+   cat <<EOF
+   ola, $nome -- hoje e $(date +%A)
+   EOF
+   cat <<'EOF'
+   ola, $nome -- hoje e $(date +%A)
+   EOF
+   ```
+
+   Esperado: o primeiro resolve as duas expansões; o segundo imprime o texto literal.
+
+9. **O erro que o descuido com aspas grava no disco.**
+
+   ```bash
+   cat > gerado-errado.sh <<EOF
+   #!/usr/bin/env bash
+   for f in /var/tmp/*; do
+       echo "removeria \$f"
+   done
+   EOF
+   cat > gerado-certo.sh <<'EOF'
+   #!/usr/bin/env bash
+   for f in /var/tmp/*; do
+       echo "removeria $f"
+   done
+   EOF
+   echo "--- errado (repare no eco):"; cat gerado-errado.sh
+   echo "--- certo:";                  cat gerado-certo.sh
+   ```
+
+   Esperado: mesmo com o escape `\$f`, é fácil errar um deles. A versão com `'EOF'` sai correta sem exigir escape nenhum — por isso é o padrão.
+
+10. **`<<-` e a tabulação.**
+
+    ```bash
+    printf 'if true; then\n\tcat <<-FIM\n\tlinha indentada com TAB\n\tFIM\nfi\n' > comtab.sh
+    bash comtab.sh
+    printf 'if true; then\n    cat <<-FIM\n    linha indentada com espaco\n    FIM\nfi\n' > comespaco.sh
+    bash comespaco.sh 2>&1 | head -3
+    ```
+
+    Esperado: a versão com TAB funciona e imprime a linha sem indentação; a versão com espaços falha ou imprime a indentação, porque `<<-` só remove tabulação.
+
+11. **Here-string em vez de `echo | read`.**
+
+    ```bash
+    linha="kali:x:1000:1000"
+    echo "$linha" | IFS=: read -r usuario _ uid _; echo "com pipe:   [${usuario:-vazio}] [${uid:-vazio}]"
+    IFS=: read -r usuario _ uid _ <<< "$linha";     echo "com <<<:    [$usuario] [$uid]"
+    ```
+
+    Esperado: a versão com pipe imprime valores vazios (o `read` rodou num subshell); a versão com here-string imprime `kali` e `1000`.
+
+12. **Here-document para `sudo tee`.**
+
+    ```bash
+    sudo tee /etc/motd.d/00-lab > /dev/null <<'EOF'
+    Maquina de laboratorio -- uso autorizado apenas.
+    EOF
+    cat /etc/motd.d/00-lab
+    sudo rm -f /etc/motd.d/00-lab
+    ```
+
+    Esperado: o arquivo é criado com privilégio. Compare com `sudo echo texto > /etc/motd.d/teste`, que falha com "Permission denied" — porque quem redireciona é o seu shell, não o `sudo`.
+
+13. **"Aqui ou lá?" sem tocar em máquina remota.**
+
+    ```bash
+    PARTICAO="/dev/sda1"
+    echo "=== bloco que seria enviado, versao SEM aspas:"
+    cat <<EOF
+    echo "rodando em \$HOSTNAME"
+    df -h | grep "$PARTICAO"
+    EOF
+    echo "=== versao COM aspas:"
+    cat <<'EOF'
+    echo "rodando em $HOSTNAME"
+    df -h | grep "$PARTICAO"
+    EOF
+    ```
+
+    Esperado: na primeira, `$PARTICAO` já vem resolvido e `$HOSTNAME` ficou para o remoto; na segunda, nada foi resolvido. Trocar o `cat` por `ssh servidor` mandaria exatamente esses blocos — conferir com `cat` antes é a prática que evita surpresa.
+
+14. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-subshell
+    ```
+
+## Resumo
+
+- **`( )` cria processo, `{ }` não.** Dentro de `( )`, `cd`, atribuição e mudança de opção morrem na saída; só o código de retorno atravessa a fronteira.
+- **`{ }` exige espaço depois da chave e `;` antes do fechamento**, porque são palavras reservadas, não operadores.
+- **Subshells nascem sem parênteses**: em cada estágio de pipeline, em toda `$(...)`, em todo `&` e em `<(...)`. É a explicação do contador que continua zero depois do laço.
+- **`( cd dir && comando )` é o idioma para isolar mudança de diretório** dentro de uma função — o defeito da abertura, corrigido com dois caracteres.
+- **Cada subshell é um `fork`.** `$(<arquivo)`, `${var%sufixo}` e `wc -l < arquivo` fazem o mesmo trabalho sem criar processo.
+- **`<<'EOF'` é o padrão para gerar arquivos**, e `<<EOF` a exceção para quando o bloco precisa das variáveis do script. As aspas no delimitador são a única diferença visível, e a que decide se o `$` do texto é literal.
+- **`<<-` remove tabulação, nunca espaço.** Editor que converte TAB em espaço quebra o bloco de forma silenciosa.
+- **`<<<` substitui `echo x | comando`** e evita o subshell que faria as variáveis do `read` se perderem.
+- **`sudo echo x > /etc/arquivo` não funciona**; `sudo tee arquivo <<'EOF'` é a forma correta, porque o redirecionamento é sempre executado pelo shell que chama.

@@ -119,13 +119,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 12 — Scripting Avançado e Robusto
 
-- [ ] **cap 071** - Tratamento de erros: set -euo pipefail e traps - `vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.qmd`
-- [ ] **cap 072** - Depuração de scripts: set -x e ShellCheck - `vol12/cap072-depuracao-de-scripts-set-x-e-shellcheck.qmd`
-- [ ] **cap 073** - Manipulando arquivos, descritores e processos em scripts - `vol12/cap073-manipulando-arquivos-descritores-e-processos.qmd`
-- [ ] **cap 074** - Subshells, agrupamento e here-documents - `vol12/cap074-subshells-agrupamento-e-here-documents.qmd`
-- [ ] **cap 075** - Sinais, processos filhos e execução em paralelo - `vol12/cap075-sinais-processos-filhos-e-execucao-em-paralelo.qmd`
-- [ ] **cap 076** - Interação com o usuário: menus, cores e caixas de diálogo - `vol12/cap076-interacao-com-o-usuario-menus-cores-e-caixas.qmd`
-- [ ] **cap 077** - Estruturando scripts grandes e bibliotecas de funções - `vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.qmd`
+- [x] **cap 071** - Tratamento de erros: set -euo pipefail e traps - `vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.qmd`
+- [x] **cap 072** - Depuração de scripts: set -x e ShellCheck - `vol12/cap072-depuracao-de-scripts-set-x-e-shellcheck.qmd`
+- [x] **cap 073** - Manipulando arquivos, descritores e processos em scripts - `vol12/cap073-manipulando-arquivos-descritores-e-processos.qmd`
+- [x] **cap 074** - Subshells, agrupamento e here-documents - `vol12/cap074-subshells-agrupamento-e-here-documents.qmd`
+- [x] **cap 075** - Sinais, processos filhos e execução em paralelo - `vol12/cap075-sinais-processos-filhos-e-execucao-em-paralelo.qmd`
+- [x] **cap 076** - Interação com o usuário: menus, cores e caixas de diálogo - `vol12/cap076-interacao-com-o-usuario-menus-cores-e-caixas.qmd`
+- [x] **cap 077** - Estruturando scripts grandes e bibliotecas de funções - `vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.qmd`
 
 ## Fase 4 — Redes, Segurança e Automação
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (63 concluidos).
+**Total:** 103 capitulos em 16 volumes (70 concluidos).
 

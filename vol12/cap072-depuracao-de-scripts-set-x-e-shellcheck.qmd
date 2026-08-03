@@ -1,3 +1,544 @@
 # Depuração de scripts: set -x e ShellCheck {#sec-cap072}
 
-*(em elaboracao)*
+"Funciona quando eu rodo na mão."
+
+O script de rotação de logs foi testado dezenas de vezes no terminal e sempre terminou certo. Colocado no `cron` para rodar às 3h, falhou na primeira noite com uma mensagem que não ajudava em nada:
+
+```
+/usr/local/bin/rotacionar.sh: line 14: jq: command not found
+```
+
+O `jq` estava instalado. O `which jq` respondia `/usr/local/bin/jq`. E, no entanto, às 3h da manhã ele não existia.
+
+O que mudou não foi o script: foi o **ambiente**. O `cron` roda com um `PATH` mínimo — tipicamente `/usr/bin:/bin` — sem passar pelo `.bashrc`, sem TTY, com `HOME` possivelmente diferente e a localidade em `C`. O `/usr/local/bin` não estava no `PATH`, e o `jq` sumiu.
+
+Depurar shell é quase sempre isto: descobrir **qual das suposições silenciosas** deixou de valer. Este capítulo é sobre as ferramentas que tornam essas suposições visíveis — antes de rodar, com o ShellCheck, e durante a execução, com o `set -x`.
+
+## Antes de executar: checagem estática
+
+Três verificações custam segundos e pegam boa parte dos defeitos.
+
+**`bash -n`** analisa a sintaxe sem executar nada. É a primeira coisa a rodar depois de editar um script grande, e é obrigatória em qualquer script que apague, formate ou reinicie alguma coisa — um `fi` faltando num script de 300 linhas só aparece quando a execução chega lá, e aí metade do trabalho já foi feita.
+
+```bash
+bash -n rotacionar.sh && echo "sintaxe ok"
+```
+
+**`bash -v`** imprime cada linha do fonte enquanto lê. É útil para ver o que o shell realmente leu — em especial quando há `\r` do Windows no arquivo, o caso em que a mensagem de erro é sempre incompreensível:
+
+```
+$ bash script.sh
+script.sh: line 2: $'\r': command not found
+```
+
+O diagnóstico definitivo é `file script.sh` (que diz "with CRLF line terminators") ou `cat -A script.sh | head`, e a cura é `dos2unix` ou `sed -i 's/\r$//'`.
+
+**ShellCheck** é o terceiro, e o mais valioso. Merece seção própria.
+
+## ShellCheck: o revisor que não cansa
+
+O ShellCheck é um analisador estático que conhece as armadilhas do shell melhor do que quase todo mundo que escreve shell. Ele não executa o script; lê o código e aponta o que vai dar errado.
+
+```bash
+sudo apt install shellcheck
+shellcheck rotacionar.sh
+```
+
+A saída aponta linha, coluna, código do problema e sugestão:
+
+```
+In rotacionar.sh line 8:
+for arq in $(ls /var/log/*.log); do
+            ^-- SC2045: Iterating over ls output is fragile. Use globs.
+                ^-- SC2046: Quote this to prevent word splitting.
+```
+
+Os avisos mais frequentes, e o que cada um significa de verdade:
+
+| Código   | Diagnóstico                                                              |
+|----------|--------------------------------------------------------------------------|
+| `SC2086` | expansão sem aspas — quebra em espaços e sofre globbing                   |
+| `SC2046` | substituição de comando sem aspas — mesma coisa, forma mais perigosa      |
+| `SC2164` | `cd` sem tratamento de falha; use `cd x || exit`                          |
+| `SC2155` | `local x=$(cmd)` mascara o status de `cmd`; declare e atribua em separado |
+| `SC2181` | testar `$?` num `if` em vez de testar o comando diretamente               |
+| `SC2115` | `rm -rf "$VAR/"` sem garantia de que `VAR` não está vazia                 |
+| `SC2034` | variável atribuída e nunca usada — quase sempre erro de digitação         |
+| `SC2064` | aspas duplas no `trap`: a expansão acontece no registro, não no disparo   |
+| `SC1090` | `source "$arquivo"` com caminho variável não pode ser analisado           |
+
+: Avisos do ShellCheck que mais aparecem em scripts reais {#tbl-shellcheck}
+
+Três deles merecem detalhe porque a explicação curta não convence.
+
+**`SC2155`** é o mais subestimado. Isto parece correto e não é:
+
+```bash
+local versao=$(comando_que_falha)   # o status e o do `local`, sempre 0
+```
+
+O `local` (ou `declare`, ou `export`) é um comando por si só, e o status dele é o que o `set -e` observa. A falha do `comando_que_falha` some. A forma certa separa:
+
+```bash
+local versao
+versao=$(comando_que_falha)    # agora o status e do comando
+```
+
+**`SC2181`** aparece como estilo mas é correção:
+
+```bash
+grep -q padrao arquivo
+if [ $? -eq 0 ]; then ...      # fragil: qualquer coisa entre as duas linhas destroi o $?
+if grep -q padrao arquivo; then ...   # direto, e imune
+```
+
+**`SC2115`** é a que evita apagar o sistema:
+
+```bash
+rm -rf "$DIR/build"            # se DIR estiver vazia, isto e rm -rf "/build"
+rm -rf "${DIR:?DIR nao definida}/build"   # falha em vez de destruir
+```
+
+### Silenciar com responsabilidade
+
+Quando o aviso é falso positivo, a diretiva vai **na linha anterior** ao trecho, com justificativa:
+
+```bash
+# shellcheck disable=SC2086  # a expansao sem aspas e intencional: OPCOES e lista de flags
+comando $OPCOES
+```
+
+Colocada no topo do arquivo, logo após o shebang, a diretiva vale para o arquivo inteiro — o que raramente é o que se quer. Um `disable` sem comentário explicando o porquê é dívida: seis meses depois ninguém sabe se aquilo era intencional ou se alguém só queria calar o analisador.
+
+Outras diretivas úteis:
+
+```bash
+# shellcheck shell=bash            # quando o arquivo nao tem shebang (biblioteca)
+# shellcheck source=lib/comum.sh   # informa o caminho do source para o SC1090
+```
+
+### No fluxo de trabalho
+
+O ShellCheck só rende quando roda sozinho. Três lugares para plugá-lo:
+
+```bash
+# 1. em todo script do repositorio, de uma vez
+shellcheck -S warning $(find . -name '*.sh')
+
+# 2. formato para integracao continua
+shellcheck -f gcc script.sh     # arquivo:linha:coluna: nivel: mensagem
+
+# 3. gancho de pre-commit do Git
+git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' | xargs -r shellcheck
+```
+
+Companheiro natural é o `shfmt`, que formata Bash de forma canônica:
+
+```bash
+shfmt -d -i 4 -ci script.sh     # mostra o diff
+shfmt -w -i 4 -ci script.sh     # aplica
+```
+
+Formatação consistente não é preciosismo aqui: com indentação regular, um `fi` no lugar errado salta aos olhos.
+
+## Durante a execução: `set -x`
+
+O `set -x` (ou `set -o xtrace`) faz o Bash imprimir cada comando **depois de todas as expansões**, antes de executá-lo. É a diferença entre ver o que você escreveu e ver o que o shell entendeu.
+
+```bash
+$ bash -x -c 'arq="meu relatorio.txt"; rm -f $arq'
++ arq='meu relatorio.txt'
++ rm -f meu relatorio.txt
+```
+
+A segunda linha do rastro mostra o bug inteiro: sem aspas, `$arq` virou **dois** argumentos. Nenhuma leitura do código torna isso tão evidente quanto o rastro.
+
+Há três formas de ligar, com alcances diferentes:
+
+```bash
+bash -x script.sh          # o script inteiro, sem modifica-lo
+set -x                     # dentro do script, a partir dali
+set -x; trecho; set +x     # so o trecho suspeito -- o mais util em script longo
+```
+
+O `set -x` no script inteiro costuma produzir rastro demais para ler. Em script grande, a técnica que funciona é ligar e desligar em volta do bloco suspeito, ou usar uma variável de ambiente para controlar:
+
+```bash
+[[ -n "${DEBUG:-}" ]] && set -x
+```
+
+E aí `DEBUG=1 ./script.sh` liga o rastro sem editar nada.
+
+### `PS4`: o rastro que diz onde está
+
+O padrão do rastro é um `+` por nível de aninhamento — informação pobre. A variável `PS4` define esse prefixo, e ela aceita expansões:
+
+```bash
+export PS4='+ ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}(): '
+```
+
+Agora cada linha do rastro diz o arquivo, a linha e a função:
+
+```
++ backup.sh:23:validar(): [[ -d /mnt/backup ]]
++ backup.sh:24:validar(): mountpoint -q /mnt/backup
+```
+
+Para medir tempo entre comandos, `\D{%H:%M:%S}` ou `${EPOCHREALTIME}` no `PS4` transformam o rastro num medidor de desempenho rudimentar:
+
+```bash
+export PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE##*/}:${LINENO}: '
+```
+
+### Separar o rastro da saída
+
+Por padrão o rastro vai para o `stderr`, misturado com as mensagens de erro reais do script — e, se o script já redireciona `stderr`, o rastro polui o arquivo de log. O `BASH_XTRACEFD` resolve, mandando o rastro para um descritor próprio, assunto do @sec-cap073:
+
+```bash
+exec 9>> /tmp/rastro-$$.log
+export BASH_XTRACEFD=9
+set -x
+```
+
+Assim a saída do script continua limpa e o rastro fica num arquivo separado, pronto para ser lido com calma depois.
+
+::: {#fig-funil-de-depuracao}
+```{.tikz}
+%%| filename: funil-de-depuracao-de-scripts
+%%| alt: Quatro camadas de depuracao de um script shell, do mais barato ao mais caro, com a ferramenta e o tipo de defeito que cada uma pega
+\begin{tikzpicture}[
+    cmd/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.4cm,minimum height=1.5cm},
+    ferr/.style={font=\tiny\ttfamily,align=center,manualgray,text width=3.4cm},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cmd,draw=manualgreen,fill=manualgreen!12] (c1) at (1.9,6.0)
+        {\textbf{1. não executa}\\erro de sintaxe,\\aspas faltando,\\variável não usada};
+  \node[cmd,draw=manualblue,fill=manualblue!10] (c2) at (5.8,6.0)
+        {\textbf{2. executa e vê}\\expansão inesperada,\\argumento partido,\\caminho errado};
+  \node[cmd,draw=manualyellow,fill=manualyellow!25] (c3) at (9.7,6.0)
+        {\textbf{3. registra}\\falha intermitente,\\erro só em produção,\\ordem de eventos};
+  \node[cmd,draw=manualred,fill=manualred!10] (c4) at (13.6,6.0)
+        {\textbf{4. isola}\\bug que só aparece\\com dados reais\\ou sob concorrência};
+
+  \node[ferr] at (1.9,4.7) {shellcheck, bash -n,\\shfmt};
+  \node[ferr] at (5.8,4.7) {set -x, PS4,\\bash -x};
+  \node[ferr] at (9.7,4.7) {log em arquivo,\\BASH\_XTRACEFD};
+  \node[ferr] at (13.6,4.7) {bisseção, bats,\\trap DEBUG};
+
+  \draw[fl] (c1) -- (c2);
+  \draw[fl] (c2) -- (c3);
+  \draw[fl] (c3) -- (c4);
+
+  \node[font=\tiny,manualgreen] at (1.9,7.15) {segundos};
+  \node[font=\tiny,manualblue] at (5.8,7.15) {minutos};
+  \node[font=\tiny,manualyellow!70!black] at (9.7,7.15) {horas};
+  \node[font=\tiny,manualred] at (13.6,7.15) {dias};
+
+  \node[nt,text width=14.6cm,anchor=north] at (7.7,3.9) {A regra é subir de camada só quando a de baixo não resolveu. Pular direto para o rastro de um script de 400 linhas quando o ShellCheck acharia o defeito em dois segundos é o desperdício mais comum de tempo em depuração de shell. E a passagem da camada 2 para a 3 é a mais importante: um defeito que \textbf{não reproduz} no terminal não vai ser resolvido olhando mais forte para o terminal --- ele precisa de registro persistente do ambiente em que acontece.};
+\end{tikzpicture}
+```
+As quatro camadas de depuração, da mais barata à mais cara.
+:::
+
+## O ambiente: por que "funciona na minha máquina"
+
+De volta ao problema da abertura. A diferença entre o seu terminal e o ambiente onde o script falha é a causa mais frequente de defeito irreprodutível.
+
+::: {#fig-ambiente-interativo-vs-cron}
+```{.tikz}
+%%| filename: ambiente-interativo-versus-nao-interativo
+%%| alt: Comparacao entre o ambiente de um shell interativo e o de um script rodando sob cron, listando as diferencas em PATH, arquivos lidos, TTY e localidade
+\begin{tikzpicture}[
+    pnl/.style={rounded corners=4pt,draw,thick,align=left,font=\scriptsize,inner sep=7pt,text width=5.9cm},
+    ttl/.style={font=\scriptsize\bfseries,align=center},
+    fl/.style={-{Latex[length=1.8mm]},very thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ttl,manualgreen] at (3.6,6.7) {seu terminal (interativo, de login)};
+  \node[pnl,draw=manualgreen,fill=manualgreen!8] at (3.6,4.5)
+       {\texttt{PATH} completo, com \texttt{/usr/local/bin}\\[2pt]
+        lê \texttt{/etc/profile} e os arquivos de\\perfil do usuário: aliases e funções\\[2pt]
+        \texttt{TTY} presente: cores fazem sentido\\[2pt]
+        \texttt{LANG=pt\_BR.UTF-8}\\[2pt]
+        \texttt{HOME} e \texttt{USER} do seu usuário\\[2pt]
+        \texttt{stdin} é o teclado};
+
+  \node[ttl,manualred] at (11.3,6.7) {sob \texttt{cron} ou \texttt{systemd}};
+  \node[pnl,draw=manualred,fill=manualred!7] at (11.3,4.5)
+       {\texttt{PATH} mínimo: \texttt{/usr/bin:/bin}\\[2pt]
+        \textbf{não} lê nenhum arquivo de perfil;\\alias e função não existem\\[2pt]
+        sem \texttt{TTY}: nada de cor nem de prompt\\[2pt]
+        \texttt{LANG=C} ou vazio\\[2pt]
+        \texttt{HOME} pode ser \texttt{/} ou o do serviço\\[2pt]
+        \texttt{stdin} fechado ou \texttt{/dev/null}};
+
+  \draw[fl] (6.75,4.5) -- (8.15,4.5);
+
+  \node[nt,text width=14.4cm,anchor=north] at (7.4,2.7) {\textbf{As cinco defesas.} (1) Caminho absoluto, ou \texttt{PATH} declarado no topo do script. (2) Nada de alias --- eles não existem em script, e função só existe se o próprio script a definir ou carregar com \texttt{source}. (3) \texttt{[[ -t 1 ]]} antes de emitir cor, para não sujar o arquivo de log com sequências de escape. (4) \texttt{export LC\_ALL=C} quando a saída for comparada ou ordenada. (5) Reproduzir o ambiente antes de acusar o script: \texttt{env -i /bin/bash -{}-noprofile -{}-norc ./script.sh} roda com o ambiente vazio e mostra na hora o que estava sendo herdado sem você saber.};
+\end{tikzpicture}
+```
+O que muda entre o terminal interativo e a execução automatizada.
+:::
+
+O comando da defesa (5) é o mais útil deste capítulo:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin /bin/bash --noprofile --norc ./script.sh
+```
+
+Ele simula o ambiente pobre do `cron` sem esperar até as 3h da manhã. Se o script falha aí e funciona no seu terminal, o defeito é dependência de ambiente — e o rastro do `set -x` aponta qual.
+
+## Técnicas para o bug que resiste
+
+**Bisseção.** Quando o script é longo e o erro não tem localização óbvia, insira um `exit` no meio e rode. Funciona? O defeito está na segunda metade. Repita. Cinco iterações localizam o problema num script de 300 linhas — é mais rápido que ler.
+
+**`trap DEBUG` como passo a passo.** Dispara antes de cada comando simples, e serve para execução controlada:
+
+```bash
+trap 'read -rp "linha $LINENO: $BASH_COMMAND -- [Enter] " </dev/tty' DEBUG
+```
+
+Cada comando espera confirmação antes de rodar. É rudimentar, e é o que existe sem instalar nada. Para depuração séria com pontos de parada e inspeção de variáveis, o `bashdb` (`apt install bashdb`) oferece uma interface no estilo do `gdb`.
+
+**Registro estruturado em vez de `echo` espalhado.** Um `echo` de depuração esquecido no código é ruído permanente. Uma função de log com nível resolve os dois lados:
+
+```bash
+NIVEL_LOG="${NIVEL_LOG:-info}"
+
+log() {                       # log <nivel> <mensagem...>
+    local nivel=$1; shift
+    declare -A ordem=([debug]=0 [info]=1 [aviso]=2 [erro]=3)
+    (( ordem[$nivel] < ordem[$NIVEL_LOG] )) && return 0
+    printf '%s [%s] %s\n' "$(date +'%F %T')" "${nivel^^}" "$*" >&2
+}
+
+log debug "arquivo temporario em $TMP"
+log erro  "falha ao conectar em $host"
+```
+
+Com `NIVEL_LOG=debug ./script.sh` as linhas de depuração aparecem; em produção, somem — sem editar o código. Note o `>&2`: mensagem de diagnóstico vai para `stderr`, deixando o `stdout` livre para o resultado do script, que pode estar sendo consumido por um pipe (@sec-cap012).
+
+**Teste automatizado.** Para script que outras pessoas usam, o `bats-core` (`apt install bats`) traz o formato mínimo:
+
+```bash
+#!/usr/bin/env bats
+
+@test "sai com erro quando falta argumento" {
+    run ./triagem.sh
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"uso:"* ]]
+}
+
+@test "conta as linhas corretamente" {
+    run ./triagem.sh amostra.log
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "42" ]
+}
+```
+
+O `run` executa capturando `status`, `output` e o array `lines`, e o teste falha se qualquer comando fora do `run` devolver status diferente de zero.
+
+## Uma disciplina de depuração
+
+A ordem que economiza tempo, na prática:
+
+1. **Leia a mensagem de erro inteira**, incluindo o número da linha. Metade dos casos termina aqui.
+2. **`shellcheck`** no arquivo. Segundos, e frequentemente aponta a causa.
+3. **`bash -n`** se houver suspeita de sintaxe.
+4. **`set -x` no trecho suspeito**, com `PS4` informativo — nunca no script inteiro de saída.
+5. **Reproduza o ambiente** com `env -i` se o defeito só acontece automatizado.
+6. **Bisseção** se ainda não localizou.
+7. **Escreva um teste** que reproduza o defeito antes de corrigi-lo. É o que impede que ele volte.
+
+## 🐉 No Kali
+
+- **Ferramenta de segurança em script quase sempre roda sob `cron` ou temporizador do systemd.** Coleta periódica, varredura agendada, verificação de integridade — todas caem exatamente na armadilha da abertura. Declarar `PATH` no topo do script é obrigatório no Kali, onde muita ferramenta vive em `/usr/share/<ferramenta>` com um invólucro em `/usr/bin`, e algumas instaladas manualmente ficam em `/opt`.
+- **Rastro de `set -x` vaza segredo.** Se o script manipula senha, token ou chave, o `set -x` imprime o valor expandido no rastro — e, se o rastro vai para um log persistente, a credencial fica gravada em claro. Desligue em volta do trecho sensível (`set +x` antes, `set -x` depois) e nunca passe segredo por linha de comando, onde ele também apareceria no `ps` (@sec-cap028).
+- **`shellcheck` como parte da revisão de qualquer script que toque alvo externo.** Um `SC2086` num script que monta a lista de alvos é a diferença entre varrer `10.0.0.1` e varrer `10.0.0.1 10.0.0.2` porque a variável trazia dois valores. Estourar o escopo por falta de aspas não é atenuante nenhum diante da Lei 12.737/2012 — a conferência estática é barata e o erro não é.
+- **`[[ -t 1 ]]` antes de colorir.** Ferramentas do Kali produzem muita saída colorida. Um script que a captura com `$(...)` recebe as sequências de escape junto, e a comparação de string falha por um motivo invisível. Ou desligue a cor da ferramenta (`--no-color`, `NO_COLOR=1`) ou limpe com `sed -r 's/\x1b\[[0-9;]*m//g'` antes de processar.
+- **Log com marca de tempo é evidência.** Num teste autorizado, o registro de quando cada comando foi disparado é o que separa a sua atividade de uma atividade de terceiros no mesmo período. Um `PS4` com `\D{%F %T}` e o rastro num arquivo dedicado transformam o `set -x` num registro de auditoria da própria execução.
+
+> **Nota sobre a família RHEL.** O `shellcheck` está no EPEL, não no repositório base do RHEL — `dnf install epel-release` antes. Duas diferenças de comportamento importam. No RHEL, o `cron` do usuário roda com `SHELL=/bin/sh` em algumas configurações, o que faz construções de Bash como `[[ ]]` e arrays falharem com mensagens confusas; a correção é `SHELL=/bin/bash` no topo do `crontab`, ou shebang explícito com invocação direta. E o SELinux em modo `enforcing` pode bloquear um script agendado que escreve fora dos rótulos esperados, produzindo "Permission denied" onde as permissões POSIX estão corretas — nesse caso o diagnóstico está no `ausearch -m avc -ts recent`, e não no `set -x`; o confinamento é tema do Volume 14.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-depuracao`.
+
+1. **Prepare o terreno.**
+
+   ```bash
+   mkdir -p ~/lab-depuracao && cd ~/lab-depuracao
+   sudo apt install -y shellcheck shfmt
+   shellcheck --version
+   ```
+
+2. **Escreva um script com defeitos de propósito.**
+
+   ```bash
+   cat > defeituoso.sh <<'EOF'
+   #!/bin/bash
+   DIR=/tmp/lab-alvo
+   mkdir $DIR
+   cd $DIR
+   for arq in $(ls *.txt); do
+       echo "processando $arq"
+   done
+   grep -q erro relatorio.log
+   if [ $? -eq 0 ]; then
+       echo "houve erro"
+   fi
+   versao_local=$(cat /nao/existe)
+   rm -rf "$DIRETORIO/saida"
+   EOF
+   chmod +x defeituoso.sh
+   ```
+
+3. **Rode o ShellCheck antes de executar.**
+
+   ```bash
+   shellcheck defeituoso.sh
+   ```
+
+   Esperado: avisos `SC2086` (duas vezes), `SC2164`, `SC2045`, `SC2181`, `SC2034` e `SC2115`. Leia cada mensagem — todas descrevem um defeito real.
+
+4. **Compare com o formato de integração contínua.**
+
+   ```bash
+   shellcheck -f gcc defeituoso.sh
+   shellcheck -S error defeituoso.sh; echo "status: $?"
+   ```
+
+   Esperado: o primeiro imprime uma linha por problema no formato `arquivo:linha:coluna:`. O segundo filtra por severidade e mostra como se seleciona o que trava um build.
+
+5. **Veja o argumento partido pela falta de aspas.**
+
+   ```bash
+   mkdir -p /tmp/lab-alvo && cd /tmp/lab-alvo
+   touch "meu relatorio.txt" outro.txt
+   bash -x -c 'arq="meu relatorio.txt"; ls -l $arq'  2>&1 | head -5
+   bash -x -c 'arq="meu relatorio.txt"; ls -l "$arq"' 2>&1 | head -5
+   cd ~/lab-depuracao
+   ```
+
+   Esperado: no primeiro, o rastro mostra `ls -l meu relatorio.txt` e dois erros de "arquivo não encontrado". No segundo, um argumento só, e o arquivo aparece.
+
+6. **Ligue o rastro com `PS4` informativo.**
+
+   ```bash
+   cat > alvo.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   validar() {
+       local dir=$1
+       [[ -d "$dir" ]]
+   }
+   principal() {
+       local d=/tmp/lab-alvo
+       validar "$d" && echo "diretorio ok"
+       printf 'arquivos: %d\n' "$(find "$d" -type f | wc -l)"
+   }
+   principal
+   EOF
+   chmod +x alvo.sh
+   PS4='+ ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}(): ' bash -x alvo.sh
+   ```
+
+   Esperado: cada linha do rastro traz arquivo, número de linha e nome da função. Compare rodando `bash -x alvo.sh` sem o `PS4`: só `+` e o comando.
+
+7. **Separe o rastro da saída com `BASH_XTRACEFD`.**
+
+   ```bash
+   cat > separado.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   exec 9>> /tmp/rastro.log
+   export BASH_XTRACEFD=9
+   PS4='+ ${LINENO}: '
+   set -x
+   echo "esta e a saida de verdade"
+   n=$(find /etc -maxdepth 1 -type f | wc -l)
+   echo "arquivos em /etc: $n"
+   EOF
+   chmod +x separado.sh
+   ./separado.sh
+   echo "--- rastro:"; cat /tmp/rastro.log
+   ```
+
+   Esperado: a saída do terminal tem apenas as duas linhas úteis; o rastro completo está em `/tmp/rastro.log`.
+
+8. **O `SC2155` na prática.**
+
+   ```bash
+   bash -c 'set -e; f() { local v=$(cat /nao/existe); echo "sobrevivi"; }; f'
+   bash -c 'set -e; f() { local v; v=$(cat /nao/existe); echo "nao apareco"; }; f'
+   ```
+
+   Esperado: o primeiro imprime `sobrevivi` — a falha foi engolida pelo `local`. O segundo morre antes do `echo`.
+
+9. **Reproduza o ambiente do `cron`.**
+
+   ```bash
+   cat > ambiente.sh <<'EOF'
+   #!/usr/bin/env bash
+   echo "PATH=$PATH"
+   echo "LANG=${LANG:-<vazio>}"
+   echo "HOME=${HOME:-<vazio>}"
+   [[ -t 1 ]] && echo "tenho TTY" || echo "SEM TTY"
+   command -v shellcheck || echo "shellcheck NAO encontrado neste PATH"
+   EOF
+   chmod +x ambiente.sh
+   ./ambiente.sh
+   echo "=========="
+   env -i HOME="$HOME" PATH=/usr/bin:/bin /bin/bash --noprofile --norc ./ambiente.sh < /dev/null
+   ```
+
+   Esperado: as duas execuções diferem em `PATH`, `LANG` e presença de TTY. É exatamente a diferença que derrubou o script da abertura.
+
+10. **Confirme a armadilha do `\r`.**
+
+    ```bash
+    printf '#!/bin/bash\r\necho ola\r\n' > crlf.sh
+    chmod +x crlf.sh
+    ./crlf.sh; echo "status: $?"
+    file crlf.sh
+    cat -A crlf.sh
+    sed -i 's/\r$//' crlf.sh && ./crlf.sh
+    ```
+
+    Esperado: primeiro um erro mencionando `$'\r'`; o `file` confirma CRLF; o `cat -A` mostra `^M$` no fim das linhas; depois do `sed`, funciona.
+
+11. **Bisseção em ação.**
+
+    ```bash
+    sed -n '1,6p' alvo.sh > metade.sh && echo 'exit 0' >> metade.sh
+    bash -n metade.sh && echo "primeira metade tem sintaxe valida"
+    ```
+
+    Esperado: a checagem passa, indicando que o problema (se houvesse) estaria na segunda metade. É o mecanismo da bisseção reduzido ao essencial.
+
+12. **Formate e revise antes de fechar.**
+
+    ```bash
+    shfmt -d -i 4 -ci alvo.sh
+    shfmt -w -i 4 -ci alvo.sh && shellcheck alvo.sh && echo "limpo"
+    ```
+
+    Esperado: o `-d` mostra o diff proposto; depois do `-w`, o `shellcheck` não reclama e aparece `limpo`.
+
+13. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-depuracao /tmp/lab-alvo /tmp/rastro.log
+    ```
+
+## Resumo
+
+- **A causa mais comum de "funciona na minha máquina" é o ambiente**, não o código: `PATH` mínimo, nenhum arquivo de perfil lido, sem TTY e localidade `C` sob `cron` e systemd. Reproduza com `env -i ... --noprofile --norc` antes de acusar o script.
+- **O ShellCheck é a ferramenta de melhor retorno por segundo investido.** `SC2086`, `SC2155`, `SC2181` e `SC2115` descrevem defeitos reais, não estilo.
+- **`local x=$(cmd)` esconde a falha de `cmd`.** Declare numa linha e atribua na seguinte.
+- **`set -x` mostra o comando depois das expansões** — é assim que se enxerga o argumento partido pela falta de aspas. Use em torno do trecho suspeito, não no script inteiro.
+- **`PS4` transforma o rastro em diagnóstico**: `'+ ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}(): '` diz onde cada linha aconteceu.
+- **`BASH_XTRACEFD` separa o rastro da saída**, mantendo o `stdout` limpo para quem consome o resultado.
+- **Silenciar aviso do ShellCheck exige justificativa escrita**, na linha imediatamente anterior. `disable` sem comentário é dívida.
+- **Suba de camada só quando a de baixo não resolveu**: checagem estática, rastro, registro persistente, isolamento. E escreva um teste que reproduza o defeito antes de corrigi-lo.

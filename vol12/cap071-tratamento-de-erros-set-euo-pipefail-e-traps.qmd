@@ -1,3 +1,557 @@
 # Tratamento de erros: set -euo pipefail e traps {#sec-cap071}
 
-*(em elaboracao)*
+O script de backup rodava toda madrugada havia sete meses e nunca reclamou. O `cron` mandava a saída por e-mail, e o e-mail chegava vazio — sinal de sucesso. Até o dia em que o disco do servidor de aplicação morreu e alguém foi restaurar o backup.
+
+O arquivo do dia anterior tinha 20 bytes.
+
+O script era este:
+
+```bash
+#!/bin/bash
+DESTINO=/mnt/backup/$(date +%F)
+mkdir $DESTINO
+cd $DESTINO
+tar czf banco.tar.gz /var/lib/postgresql
+rm -rf /tmp/dump-*
+echo "backup concluido"
+```
+
+Três meses antes, o `/mnt/backup` tinha deixado de ser montado depois de uma manutenção. O `mkdir` continuou funcionando — criou o diretório no disco raiz, dentro do ponto de montagem vazio. O `cd` funcionou. O `tar` começou, encheu a partição raiz, morreu com erro de disco cheio e deixou um `banco.tar.gz` truncado. E o script, obediente, seguiu para a linha seguinte: apagou os dumps temporários, imprimiu "backup concluido" e saiu com status zero.
+
+Nada nesse script está sintaticamente errado. Ele faz exatamente o que o Bash faz por padrão: **executar a próxima linha, aconteça o que acontecer**. Este capítulo é sobre desligar esse padrão.
+
+## Os três pecados do Bash padrão
+
+O comportamento default do shell foi desenhado para uso interativo, onde há um humano lendo cada mensagem de erro. Num script não supervisionado, os mesmos padrões são três armadilhas.
+
+**1. Erro não interrompe.** Todo comando devolve um código de saída (@sec-cap056), e o Bash simplesmente segue em frente. Um `cd` que falha não impede o `rm -rf *` da linha seguinte de rodar — no diretório errado.
+
+**2. Variável não definida vira string vazia.** Erro de digitação em `$DESTINO` não gera erro nenhum: `rm -rf "$DESTNO/"` vira `rm -rf /`. Esta é literalmente a origem do bug que apagou o diretório de instalação do Steam em 2015.
+
+**3. O status de um pipeline é o do último comando.** Em `zcat corrompido.gz | wc -l`, se o `zcat` explodir, o `wc` ainda imprime `0` e sai com zero. O pipeline inteiro reporta sucesso.
+
+As três correções cabem numa linha, logo depois do shebang:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+```
+
+É a linha mais importante de qualquer script de produção. Vale entender exatamente o que cada letra faz — e, mais importante, o que **não** faz.
+
+## `set -e`: sair no primeiro erro
+
+Também escrito `set -o errexit`. Com ele ligado, um comando que devolve status diferente de zero encerra o script na hora.
+
+```bash
+#!/usr/bin/env bash
+set -e
+cd /diretorio/que/nao/existe
+echo "esta linha nunca roda"
+```
+
+Simples — e cheio de exceções. O `set -e` tem uma lista de contextos em que ele deliberadamente não age, e desconhecer essa lista é a fonte mais comum de script que "tem `set -e`" e mesmo assim continua depois de um erro.
+
+::: {#fig-onde-errexit-nao-age}
+```{.tikz}
+%%| filename: onde-errexit-nao-age
+%%| alt: Fluxograma das condicoes em que set -e interrompe ou nao interrompe um script apos um comando falhar
+\begin{tikzpicture}[
+    dcs/.style={rounded corners=8pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=4.6cm,minimum height=1.0cm,draw=manualblue,fill=manualblue!8},
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.9cm,minimum height=0.8cm},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bx,draw=manualgray,fill=manualgray!8] (ini) at (6.6,8.3) {um comando devolve status $\neq$ 0};
+
+  \node[dcs] (d1) at (6.6,7.0) {está numa condição?\\\tiny\ttfamily if / while / until};
+  \node[dcs] (d2) at (6.6,5.4) {está à esquerda de\\\tiny\ttfamily \&\& ou ||\ ?};
+  \node[dcs] (d3) at (6.6,3.8) {está negado por\\\tiny\ttfamily !\ ?};
+  \node[dcs] (d4) at (6.6,2.2) {é o último comando\\de um pipeline?};
+
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (fim) at (6.6,0.75) {\textbf{o script morre}\\aqui, e só aqui};
+
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=3.6cm] (s1) at (12.0,7.0) {segue em frente};
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=3.6cm] (s2) at (12.0,5.4) {segue em frente};
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=3.6cm] (s3) at (12.0,3.8) {segue em frente};
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=3.6cm] (s4) at (12.0,2.2) {sem \texttt{pipefail},\\segue em frente};
+
+  \draw[fl] (ini) -- (d1);
+  \draw[fl] (d1) -- node[lb,left]{não} (d2);
+  \draw[fl] (d2) -- node[lb,left]{não} (d3);
+  \draw[fl] (d3) -- node[lb,left]{não} (d4);
+  \draw[fl] (d4) -- node[lb,left]{sim} (fim);
+
+  \draw[fl] (d1) -- node[lb,above]{sim} (s1);
+  \draw[fl] (d2) -- node[lb,above]{sim} (s2);
+  \draw[fl] (d3) -- node[lb,above]{sim} (s3);
+  \draw[fl] (d4) -- node[lb,above]{não} (s4);
+
+  \node[nt,text width=13.2cm] at (6.6,-0.9) {As quatro saídas vermelhas são \textbf{intencionais}, não defeitos: sem elas, todo \texttt{if} com condição falsa mataria o script. O problema é que a mesma regra se aplica a uma \emph{função} chamada em contexto de condição --- e aí o \texttt{set -e} fica desligado \textbf{dentro} da função inteira, recursivamente. Uma função de 40 linhas chamada como \texttt{if verificar; then} roda até o fim mesmo que a terceira linha falhe.};
+\end{tikzpicture}
+```
+Os quatro contextos em que `set -e` deliberadamente não interrompe o script.
+:::
+
+A exceção da função merece um exemplo, porque é a que mais engana:
+
+```bash
+#!/usr/bin/env bash
+set -e
+
+preparar() {
+    cd /nao/existe        # falha
+    echo "AINDA RODEI"    # e isto ainda assim aparece
+    return 0
+}
+
+if preparar; then echo "tudo certo"; fi
+```
+
+A saída é `AINDA RODEI` seguido de `tudo certo`. O `set -e` foi suspenso dentro de `preparar` porque ela foi chamada em contexto de condição. Chamada diretamente (`preparar`), a mesma função morreria na primeira linha.
+
+Duas consequências práticas. Primeira: **não chame funções longas em contexto de condição** — separe a checagem do trabalho. Segunda: dentro de funções que precisam de garantia, verifique explicitamente em vez de confiar no `set -e`:
+
+```bash
+cd /alvo || return 1
+```
+
+Outra armadilha frequente é o incremento aritmético:
+
+```bash
+set -e
+i=0
+((i++))          # devolve 1, porque o VALOR de i antes do incremento era 0
+echo "nunca chega aqui"
+```
+
+`(( ))` devolve status 1 quando o resultado da expressão é zero. Com `set -e`, `((i++))` num contador que começa em zero mata o script. As formas seguras são `((i++)) || true`, `((++i))` (pré-incremento, resultado 1) ou `i=$((i + 1))`.
+
+## `set -u`: variável não definida é erro
+
+Também `set -o nounset`. Referenciar uma variável que nunca recebeu valor passa a ser erro fatal.
+
+```bash
+set -u
+echo "destino: $DESTNO"     # bash: DESTNO: unbound variable, e o script morre
+```
+
+É a proteção mais barata contra a classe inteira de bugs de `rm -rf "$VAZIO/"`. O custo é que agora todo acesso a variável possivelmente ausente precisa ser explícito, com a expansão de valor padrão do @sec-cap062:
+
+```bash
+NIVEL="${NIVEL:-info}"          # padrão se ausente ou vazia
+ARQ="${1:?uso: $0 <arquivo>}"   # erro com mensagem própria se ausente
+[[ -n "${DEBUG:-}" ]] && echo "modo debug"   # teste seguro de variável opcional
+```
+
+O `${VAR:-}` é o idioma a memorizar: é como se testa uma variável que pode não existir sob `set -u`.
+
+Um detalhe de compatibilidade: em Bash anterior à versão 4.4, `"$@"` com nenhum argumento posicional dispara `unbound variable` sob `set -u`. Em scripts que precisam rodar em sistemas antigos, escreve-se `"${@:-}"`. No Kali atual (Bash 5.x) o problema não existe.
+
+## `set -o pipefail`: o status honesto do pipeline
+
+Sem ele, o status de um pipeline é o do **último** comando. Com ele, é o do **último comando que falhou** — ou zero, se nenhum falhou.
+
+```bash
+set -o pipefail
+zcat corrompido.gz | wc -l    # agora o pipeline falha, como deveria
+```
+
+Aqui reaparece a armadilha do `SIGPIPE` já vista no @sec-cap070: `comando | head -5` mata o produtor com sinal 13, o pipeline devolve 141 e, sob `pipefail`, o script morre fazendo exatamente o certo. Quando isso for intencional, isole:
+
+```bash
+primeiras=$(zcat enorme.gz | head -5) || true
+```
+
+Para saber **qual** estágio falhou, o array `PIPESTATUS` guarda o status de cada um — mas é volátil: ele é sobrescrito pelo comando seguinte, inclusive por um `echo`. Copie antes de usar:
+
+```bash
+zcat a.gz | grep ERRO | sort > saida.txt
+estados=("${PIPESTATUS[@]}")
+printf 'zcat=%s grep=%s sort=%s\n' "${estados[0]}" "${estados[1]}" "${estados[2]}"
+```
+
+## O quarto ajuste: `inherit_errexit`
+
+Uma opção pouco conhecida e que fecha um buraco real. Substituição de comando cria um subshell, e o subshell **não** herda o `set -e`:
+
+```bash
+set -e
+conteudo=$(cat /nao/existe; echo "sobrevivi")
+echo "$conteudo"     # imprime "sobrevivi"
+```
+
+Com `shopt -s inherit_errexit`, o subshell herda o `errexit` e o `cat` falho encerra tudo. O prólogo completo de um script sério fica:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s inherit_errexit    # Bash >= 4.4
+IFS=$'\n\t'                 # opcional, ver observação abaixo
+```
+
+Sobre o `IFS=$'\n\t'`: a ideia é remover o espaço do separador de campos para que expansões não citadas não se quebrem em espaços. É popular, mas trata o sintoma. A cura real é **sempre citar as expansões** e usar arrays (@sec-cap060). Se você cita corretamente, o `IFS` restrito não faz falta; se não cita, ele esconde metade dos casos e deixa a outra metade.
+
+## `trap`: código que roda quando algo acontece
+
+O `set -e` interrompe. Ele não **limpa**. Um script que morre no meio deixa arquivo temporário, `lock` preso, serviço parado, montagem pendurada. O `trap` é o mecanismo que resolve isso: registra um comando para ser executado quando um sinal chegar ou quando uma condição interna ocorrer.
+
+```bash
+trap 'comando ou função' CONDIÇÃO [CONDIÇÃO...]
+```
+
+Além dos sinais do @sec-cap029, o Bash oferece quatro pseudo-sinais:
+
+| Pseudo-sinal | Dispara quando                                                     |
+|--------------|--------------------------------------------------------------------|
+| `EXIT`       | o shell vai terminar, por qualquer motivo (inclusive `exit` normal)  |
+| `ERR`        | um comando falha, sob as mesmas regras de contexto do `set -e`       |
+| `DEBUG`      | antes de **cada** comando simples                                    |
+| `RETURN`     | ao retornar de uma função ou de um arquivo lido com `source`         |
+
+: Pseudo-sinais do `trap` no Bash {#tbl-pseudo-sinais}
+
+O `EXIT` é o cavalo de batalha. Ele roda **sempre**: fim normal, `exit 1`, morte por `set -e`, `SIGTERM`, `SIGINT`. Só não roda em `SIGKILL` — que ninguém consegue interceptar — e em `kill -9` do próprio processo.
+
+### O idioma da limpeza garantida
+
+Este é o padrão a decorar:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+TMP="$(mktemp -d)"
+limpar() {
+    local status=$?                 # PRESERVAR o status ANTES de qualquer coisa
+    rm -rf -- "$TMP"
+    return "$status"
+}
+trap limpar EXIT
+
+# daqui pra baixo, use $TMP à vontade: ele some aconteça o que acontecer
+curl -sSfo "$TMP/pacote.tar.gz" https://exemplo.invalido/pacote.tar.gz
+tar xzf "$TMP/pacote.tar.gz" -C "$TMP"
+```
+
+Três detalhes que fazem diferença:
+
+- **`mktemp -d` em vez de `/tmp/meuscript-$$`.** Nome previsível em diretório mundialmente gravável é vulnerabilidade clássica de link simbólico (@sec-cap023): um atacante cria antes o link `/tmp/meuscript-1234` apontando para `/etc/shadow` e o seu script escreve lá com o privilégio que tiver.
+- **`local status=$?` na primeira linha da função.** O `$?` dentro do trap `EXIT` é o status com que o script estava saindo. Qualquer comando antes dessa linha o destrói.
+- **`rm -rf -- "$TMP"`.** As aspas e o `--` importam: se `$TMP` estivesse vazio por algum acidente, `rm -rf -- ""` falha em vez de apagar o diretório atual.
+
+### Registrar linha e comando do erro
+
+Com `trap ... ERR` e as variáveis internas do Bash dá para produzir um diagnóstico que economiza muito tempo:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+erro() {
+    local status=$?
+    local linha=${BASH_LINENO[0]}
+    printf '%s: erro (status %d) na linha %d: %s\n' \
+           "${BASH_SOURCE[1]##*/}" "$status" "$linha" "$BASH_COMMAND" >&2
+    exit "$status"
+}
+trap erro ERR
+```
+
+`BASH_COMMAND` guarda o comando que estava executando; `BASH_LINENO` e `BASH_SOURCE` são arrays com a pilha de chamadas. Percorrendo-os dá para imprimir um *stack trace* completo:
+
+```bash
+rastro() {
+    local i
+    for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+        printf '  em %s (%s:%s)\n' "${FUNCNAME[i]}" \
+               "${BASH_SOURCE[i]}" "${BASH_LINENO[i-1]}" >&2
+    done
+}
+```
+
+Atenção a uma peculiaridade: por padrão, um trap `ERR` **não é herdado** por funções, subshells e substituições de comando. Para que seja, use `set -E` (`errtrace`). O mesmo vale para o trap `DEBUG` e `RETURN`, herdados com `set -T` (`functrace`). Um script com tratamento de erro sério normalmente começa com `set -Eeuo pipefail`.
+
+### Aspas no `trap`: simples ou duplas
+
+O argumento do `trap` é uma string avaliada **na hora em que o trap dispara**, não na hora do registro:
+
+```bash
+trap "rm -f $ARQUIVO" EXIT     # $ARQUIVO expande AGORA, no registro
+trap 'rm -f "$ARQUIVO"' EXIT   # $ARQUIVO expande DEPOIS, quando o trap roda
+```
+
+Qual está certo depende da intenção, e é justamente a ambiguidade que o ShellCheck sinaliza com o aviso `SC2064` (@sec-cap072). A regra prática: **aspas simples e uma função nomeada**. O corpo do trap deve ser curto o bastante para caber num nome.
+
+## Sinais, ordem e reenvio correto
+
+Um script de longa duração deve tratar interrupção. O erro comum é sair com status zero depois de um `Ctrl-C`, o que faz o chamador acreditar em sucesso.
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+interromper() {
+    printf '\ninterrompido pelo usuário, limpando...\n' >&2
+    rm -rf -- "${TMP:-}"
+    trap - INT              # remove o próprio trap
+    kill -INT "$$"          # e morre de verdade pelo mesmo sinal
+}
+trap interromper INT
+```
+
+O par `trap - INT; kill -INT $$` é a forma correta de "morrer como se não houvesse trap": ela faz o processo pai enxergar `130` (128 + 2) e saber que houve interrupção, o que um `exit 1` não comunica.
+
+::: {#fig-ordem-dos-traps}
+```{.tikz}
+%%| filename: ordem-de-disparo-dos-traps
+%%| alt: Linha do tempo comparando um script sem trap e um com trap EXIT e ERR quando um comando falha no meio da execucao
+\begin{tikzpicture}[
+    stg/.style={rounded corners=2.5pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,text width=2.15cm,minimum height=0.9cm},
+    fl/.style={-{Latex[length=1.5mm]},semithick,manualgray},
+    hdr/.style={font=\scriptsize\bfseries,align=left,anchor=west},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---------- sem trap
+  \node[hdr,manualred] at (0.3,8.05) {sem \texttt{set -e}, sem \texttt{trap}};
+  \node[stg,draw=manualgray,fill=manualgray!8]  (a1) at (1.3,7.1) {\texttt{mktemp -d}};
+  \node[stg,draw=manualred,fill=manualred!12]   (a2) at (4.1,7.1) {\texttt{tar} \textbf{falha}};
+  \node[stg,draw=manualgray,fill=manualgray!8]  (a3) at (6.9,7.1) {\texttt{rm dumps}};
+  \node[stg,draw=manualgray,fill=manualgray!8]  (a4) at (9.7,7.1) {\texttt{echo ok}};
+  \node[stg,draw=manualred,fill=manualred!12]   (a5) at (12.5,7.1) {sai com \textbf{0}};
+  \foreach \sr/\ds in {a1/a2, a2/a3, a3/a4, a4/a5} { \draw[fl] (\sr) -- (\ds); }
+  \node[lb,manualred,text width=3.6cm,anchor=north] at (12.5,6.4) {temporário fica no disco\\e o chamador vê sucesso};
+
+  % ---------- com trap
+  \node[hdr,manualgreen] at (0.3,4.9) {com \texttt{set -Eeuo pipefail} e \texttt{trap}};
+  \node[stg,draw=manualgray,fill=manualgray!8]     (b1) at (1.3,3.85) {\texttt{mktemp -d}};
+  \node[stg,draw=manualgray,fill=manualgray!8]     (b2) at (4.1,3.85) {\texttt{trap} de saída\\registrado};
+  \node[stg,draw=manualred,fill=manualred!12]      (b3) at (6.9,3.85) {\texttt{tar} \textbf{falha}};
+  \node[stg,draw=manualyellow,fill=manualyellow!25] (b4) at (9.7,3.85) {\texttt{trap ERR}\\registra a linha};
+  \node[stg,draw=manualblue,fill=manualblue!12]    (b5) at (12.5,3.85) {\texttt{trap EXIT}\\apaga o \texttt{TMP}};
+  \foreach \sr/\ds in {b1/b2, b2/b3, b3/b4, b4/b5} { \draw[fl] (\sr) -- (\ds); }
+  \node[stg,draw=manualgreen,fill=manualgreen!14] (b6) at (12.5,2.35) {sai com \textbf{2}};
+  \draw[fl] (b5) -- (b6);
+  \node[lb,manualgreen,text width=4.0cm,anchor=north] at (6.9,2.9) {\texttt{rm dumps} e \texttt{echo ok}\\nunca chegam a rodar};
+
+  \node[nt,text width=13.6cm,anchor=north] at (6.9,1.55) {A ordem é fixa: o \texttt{ERR} dispara \textbf{antes} do \texttt{EXIT}, e o \texttt{EXIT} é o último código do processo a rodar. Se o handler de \texttt{ERR} chamar \texttt{exit}, o \texttt{EXIT} ainda roda --- por isso a limpeza mora no \texttt{EXIT} e só o diagnóstico mora no \texttt{ERR}. E o status final que o chamador enxerga é o que o handler de \texttt{EXIT} devolve: preservar \texttt{\$?} na primeira linha dele é o que impede que um \texttt{rm} bem-sucedido transforme uma falha em sucesso.};
+\end{tikzpicture}
+```
+Ordem de disparo dos traps quando um comando falha no meio do script.
+:::
+
+## Códigos de saída com significado
+
+Sair com `1` para tudo desperdiça informação. Convenções úteis, além das do @sec-cap056:
+
+```bash
+readonly EX_OK=0
+readonly EX_USO=64          # argumentos inválidos   (sysexits.h)
+readonly EX_DADOS=65        # entrada malformada
+readonly EX_INDISP=69       # dependência ausente
+readonly EX_CONFIG=78       # erro de configuração
+
+die() {                     # die <status> <mensagem...>
+    local st=$1; shift
+    printf '%s: %s\n' "${0##*/}" "$*" >&2
+    exit "$st"
+}
+
+command -v jq >/dev/null || die "$EX_INDISP" "jq não encontrado; instale com apt install jq"
+```
+
+A faixa 1–63 é livre para significados do próprio script; 64–78 seguem o `sysexits.h` do BSD; 126 e 127 são do shell ("não executável" e "não encontrado"); 128+N indica morte pelo sinal N. Reservar 1 para "falha genérica" e documentar os demais no cabeçalho do script é o suficiente.
+
+## O que `set -euo pipefail` não faz
+
+Uma advertência necessária, porque a linha virou amuleto. Ela **não** transforma um script frágil em robusto:
+
+- Não detecta o erro que não devolve status. `grep` não achar nada devolve 1 — que sob `set -e` mata o script sem que haja erro algum. `find` sem resultado devolve 0. Cada ferramenta tem sua convenção.
+- Não valida entrada. Argumento com o formato errado passa liso.
+- Não garante atomicidade. Um script morto no meio deixa o sistema num estado intermediário; só um `trap` bem escrito, ou escrita em arquivo temporário seguida de `mv`, resolve.
+- Não substitui verificação explícita nos pontos críticos. Antes de `tar` para `/mnt/backup`, o certo é `mountpoint -q /mnt/backup || die ...` — exatamente o que teria salvado o script da abertura.
+
+O `set -euo pipefail` é o piso, não o teto. Ele converte falha silenciosa em falha ruidosa, e é isso que se pede dele.
+
+## 🐉 No Kali
+
+- **Script de coleta que morre no meio deixa evidência pela metade.** Numa varredura ou coleta de artefatos, o `trap EXIT` não deve apenas apagar temporários: deve fechar o arquivo de resultado de forma consistente e registrar no log que a execução foi interrompida. Um relatório truncado sem marca de interrupção é pior que nenhum relatório, porque parece completo.
+- **`set -e` e ferramentas cujo status 1 significa "não achei".** `nmap` com host fora do ar, `grep` sem casamento, `nikto` sem achado — todos devolvem status diferente de zero em situações normais de um teste. Sob `set -e`, o script morre no primeiro alvo silencioso. O idioma é isolar: `resultado=$(nmap -Pn "$alvo") || true` e depois decidir olhando o conteúdo, não o status.
+- **Temporários com credencial pedem limpeza garantida e `umask`.** Se o script manipula hash, token ou arquivo de senha, o `mktemp -d` deve vir precedido de `umask 077`, e o trap de limpeza deve usar `shred -u` quando o sistema de arquivos permitir. Deixar `/tmp/tokens-1234.txt` legível por todos numa máquina compartilhada é vazamento, mesmo em laboratório.
+- **`trap` sobre `INT` em ferramenta que toca alvo externo.** Um script que dispara requisições contra um alvo autorizado tem de parar de verdade no `Ctrl-C` — e parar também os filhos (@sec-cap075). Continuar gerando tráfego depois que o operador mandou parar é, na prática, exceder o escopo combinado, com as consequências legais da Lei 12.737/2012.
+- **Verificação de escopo é `die`, não aviso.** O ponto do capítulo aplicado ao pior caso: a checagem de que o alvo está na lista autorizada tem de encerrar o script com status distinto (`EX_USO`, por exemplo), nunca imprimir um alerta e prosseguir. Aviso em `stderr` num script de `cron` não é lido por ninguém.
+
+> **Nota sobre a família RHEL.** Nada aqui é específico de distribuição — `set` e `trap` são do Bash. Duas diferenças de ambiente aparecem na prática. Primeira: no RHEL, `/bin/sh` é ligado ao Bash em modo POSIX, onde `shopt -s inherit_errexit` não existe e `set -o pipefail` só passou a ser exigido pelo POSIX recentemente; script com shebang `#!/bin/sh` perde as duas proteções em ambas as famílias, e o `#!/usr/bin/env bash` é a forma portátil de garanti-las. Segunda: em serviços do systemd, o status de saída aparece no `systemctl status` e é o que dispara `Restart=on-failure` — sair com zero depois de falhar impede o serviço de reiniciar, no RHEL como no Kali (@sec-cap041).
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-erros`.
+
+1. **Reproduza o desastre da abertura, em escala segura.**
+
+   ```bash
+   mkdir -p ~/lab-erros && cd ~/lab-erros
+   cat > frágil.sh <<'EOF'
+   #!/bin/bash
+   DESTINO=/mnt/inexistente/$(date +%F)
+   mkdir "$DESTINO"
+   cd "$DESTINO"
+   echo "conteudo" > dados.txt
+   echo "backup concluido"
+   EOF
+   chmod +x frágil.sh
+   ./frágil.sh; echo "status final: $?"
+   ```
+
+   Esperado: duas mensagens de erro do `mkdir` e do `cd`, seguidas de `backup concluido` e `status final: 0`. O script informou sucesso após falhar duas vezes.
+
+2. **Ligue as três opções e rode de novo.**
+
+   ```bash
+   sed -i '1a set -euo pipefail' frágil.sh
+   ./frágil.sh; echo "status final: $?"
+   ```
+
+   Esperado: o script para no `mkdir` e o status final é diferente de zero. Nenhum `backup concluido`.
+
+3. **Veja as quatro exceções do `set -e` ao vivo.**
+
+   ```bash
+   bash -c 'set -e; if false; then :; fi;      echo "1. if: sobrevivi"'
+   bash -c 'set -e; false || true;             echo "2. ||: sobrevivi"'
+   bash -c 'set -e; ! false;                   echo "3. !:  sobrevivi"'
+   bash -c 'set -e; false | true;              echo "4. pipe: sobrevivi"'
+   bash -c 'set -e; false;                     echo "nao aparece"'
+   ```
+
+   Esperado: as quatro primeiras linhas imprimem "sobrevivi"; a quinta não imprime nada.
+
+4. **A exceção que engana: função em contexto de condição.**
+
+   ```bash
+   bash -c 'set -e
+   preparar() { cd /nao/existe; echo "AINDA RODEI"; }
+   if preparar; then echo "tudo certo"; fi' 2>&1
+   ```
+
+   Esperado: aparecem `AINDA RODEI` e `tudo certo`. Troque a última linha por `preparar` sozinha e compare: o script morre no `cd`.
+
+5. **O contador que mata o script.**
+
+   ```bash
+   bash -c 'set -e; i=0; ((i++)); echo "i=$i"'; echo "status: $?"
+   bash -c 'set -e; i=0; ((++i)); echo "i=$i"'; echo "status: $?"
+   ```
+
+   Esperado: o primeiro não imprime `i=1` e sai com status 1; o segundo imprime `i=1` e sai com 0.
+
+6. **`pipefail` e `PIPESTATUS`.**
+
+   ```bash
+   bash -c 'ls /nao/existe | wc -l; echo "sem pipefail: $?"'
+   bash -c 'set -o pipefail; ls /nao/existe | wc -l; echo "com pipefail: $?"'
+   bash -c 'false | true | false | true; echo "${PIPESTATUS[@]}"'
+   ```
+
+   Esperado: `0` no primeiro, `2` no segundo, e `1 0 1 0` no terceiro — o mapa exato de quem falhou.
+
+7. **`inherit_errexit`.**
+
+   ```bash
+   bash -c 'set -e;                        x=$(cat /nao/existe; echo sobrevivi); echo "[$x]"'
+   bash -c 'set -e; shopt -s inherit_errexit; x=$(cat /nao/existe; echo sobrevivi); echo "[$x]"'
+   ```
+
+   Esperado: o primeiro imprime `[sobrevivi]`; o segundo não imprime nada e morre.
+
+8. **Limpeza garantida com `trap EXIT`.**
+
+   ```bash
+   cat > limpeza.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -Eeuo pipefail
+   TMP="$(mktemp -d)"
+   limpar() { local st=$?; echo "limpando $TMP (status $st)"; rm -rf -- "$TMP"; return "$st"; }
+   trap limpar EXIT
+   echo "trabalhando em $TMP"
+   dd if=/dev/urandom of="$TMP/dados.bin" bs=1M count=1 status=none
+   ls -l "$TMP"
+   [[ "${1:-}" == "--falhar" ]] && false
+   echo "terminei bem"
+   EOF
+   chmod +x limpeza.sh
+   ./limpeza.sh;           echo "status: $?"
+   ./limpeza.sh --falhar;  echo "status: $?"
+   ls -d /tmp/tmp.* 2>/dev/null | wc -l
+   ```
+
+   Esperado: nas duas execuções aparece a mensagem de limpeza; a segunda sai com status 1. A contagem final mostra que nenhum diretório temporário ficou para trás.
+
+9. **Diagnóstico com número de linha.**
+
+   ```bash
+   cat > diagnostico.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -Eeuo pipefail
+   erro() {
+       local st=$?
+       printf '%s: erro %d na linha %d: %s\n' \
+              "${BASH_SOURCE[1]##*/}" "$st" "${BASH_LINENO[0]}" "$BASH_COMMAND" >&2
+       exit "$st"
+   }
+   trap erro ERR
+   echo "passo 1"
+   echo "passo 2"
+   grep --opcao-que-nao-existe padrao /etc/hostname
+   echo "passo 4"
+   EOF
+   chmod +x diagnostico.sh
+   ./diagnostico.sh; echo "status: $?"
+   ```
+
+   Esperado: a mensagem aponta a linha do `grep` e mostra o comando exato que falhou. `passo 4` não aparece.
+
+10. **Interrupção que se comunica corretamente.**
+
+    ```bash
+    cat > longo.sh <<'EOF'
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    interromper() { echo; echo "parando a pedido do usuário" >&2; trap - INT; kill -INT "$$"; }
+    trap interromper INT
+    echo "rodando; pressione Ctrl-C"
+    sleep 60
+    EOF
+    chmod +x longo.sh
+    ./longo.sh   # pressione Ctrl-C depois de um ou dois segundos
+    echo "status: $?"
+    ```
+
+    Esperado: a mensagem de parada e `status: 130` — o `128 + 2` que identifica morte por `SIGINT`. Um `exit 1` no lugar do `kill -INT` daria `1` e perderia essa informação.
+
+11. **A verificação que teria evitado tudo.**
+
+    ```bash
+    mountpoint -q /mnt/backup && echo "montado" || echo "NAO montado -- abortaria aqui"
+    ```
+
+    Esperado: `NAO montado`. É a checagem explícita que nenhuma opção do `set` faria por você.
+
+12. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-erros
+    ```
+
+## Resumo
+
+- **O padrão do Bash é continuar depois do erro**, tratar variável ausente como string vazia e reportar só o último comando do pipeline. Os três juntos produzem o script que falha e diz que deu certo.
+- **`set -euo pipefail` é o piso de qualquer script de produção**, e `shopt -s inherit_errexit` com `set -E` fecham os dois buracos restantes (subshell de substituição e herança do trap `ERR`).
+- **`set -e` tem quatro exceções intencionais**: condição de `if`/`while`, lado esquerdo de `&&`/`||`, negação com `!` e comando não final de pipeline. A pior delas é a função chamada em contexto de condição, que roda inteira sem proteção.
+- **`((i++))` com `i=0` devolve 1** e mata o script sob `set -e`. Use `((++i))` ou `i=$((i + 1))`.
+- **`${VAR:-}` é o idioma de acesso seguro sob `set -u`**, e `${1:?mensagem}` documenta o argumento obrigatório na própria expansão.
+- **`trap ... EXIT` é onde mora a limpeza**, sempre com `local status=$?` na primeira linha do handler e `mktemp -d` em vez de nome previsível. O `ERR` cuida só do diagnóstico.
+- **`trap - INT; kill -INT "$$"` é a forma correta de morrer por interrupção**, porque devolve 130 ao chamador em vez de um `1` mudo.
+- **Nenhuma opção do `set` substitui verificação explícita.** `mountpoint -q`, `command -v` e validação de argumento com `die` e código de saída significativo continuam sendo trabalho seu.

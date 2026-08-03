@@ -1,3 +1,513 @@
 # Interação com o usuário: menus, cores e caixas de diálogo {#sec-cap076}
 
-*(em elaboracao)*
+O script de limpeza pedia confirmação antes de apagar. Era cuidadoso:
+
+```bash
+echo "Isto vai apagar $(du -sh "$DIR" | cut -f1) de $DIR."
+read -p "Confirma? [s/N] " resposta
+[[ "$resposta" == "s" ]] && rm -rf "$DIR"
+```
+
+Funcionou perfeitamente por meses — até o dia em que alguém o encadeou:
+
+```bash
+gerar_lista.sh | limpar.sh
+```
+
+O `read` leu a **primeira linha da lista** em vez de esperar o teclado. A linha era `srv-web-01`, que não é `s`, então o `rm` não rodou. Sorte. Se a lista começasse com uma linha contendo apenas `s`, os dados teriam ido embora sem ninguém digitar nada.
+
+O defeito não é o `read`. É a suposição de que existe alguém do outro lado. Um script bem escrito **verifica** se há interação disponível, e se comporta de forma segura quando não há. Este capítulo é sobre interagir com o usuário quando ele existe, e sobre não fingir que existe quando não existe.
+
+## `read`: a interação mínima
+
+O `read` do @sec-cap054, agora com as opções que importam num script de verdade:
+
+| Opção        | Efeito                                                        |
+|--------------|---------------------------------------------------------------|
+| `-p 'texto'` | escreve o prompt antes de ler (sem quebra de linha)            |
+| `-r`         | não interpreta a barra invertida — **sempre** use              |
+| `-s`         | não ecoa o que é digitado (senha)                              |
+| `-n N`       | retorna após N caracteres, sem esperar Enter                   |
+| `-t N`       | desiste após N segundos, devolvendo status maior que 128       |
+| `-e`         | habilita edição de linha do readline (setas, histórico)        |
+| `-i 'valor'` | preenche a linha com um valor inicial editável (exige `-e`)    |
+| `-a array`   | lê os campos direto para um array                              |
+| `-u N`       | lê do descritor N em vez do `stdin`                            |
+
+: Opções do `read` úteis em scripts {#tbl-opcoes-read}
+
+O prompt do `-p` vai para o `stderr` do terminal, o que é correto: ele não deve poluir o `stdout` que outro programa pode estar consumindo.
+
+Para senha, `-s` é obrigatório, e vale a nota de segurança: mesmo assim o valor fica numa variável do processo, visível em `/proc/PID/environ` se for exportada. Nunca passe segredo por argumento de linha de comando, que aparece no `ps` para qualquer usuário da máquina (@sec-cap028).
+
+```bash
+read -rsp 'Senha: ' senha; echo
+read -rp 'Usuário [kali]: ' -e -i 'kali' usuario
+read -rt 10 -n 1 -p 'Continuar em 10s? [s/N] ' r || r='n'
+```
+
+### Ler do terminal quando o `stdin` é um pipe
+
+A correção do problema da abertura tem duas partes. A primeira é **ler do terminal explicitamente**, e não do `stdin`:
+
+```bash
+read -rp 'Confirma? [s/N] ' resposta < /dev/tty
+```
+
+O `/dev/tty` é sempre o terminal de controle do processo, independentemente de para onde o `stdin` aponta. Se não houver terminal — sob `cron`, num contêiner, num `pipeline` sem TTY —, o redirecionamento **falha**, o que é exatamente o comportamento desejado: melhor erro alto que confirmação fantasma.
+
+A segunda parte é detectar a situação antes:
+
+```bash
+interativo() { [[ -t 0 && -t 1 ]]; }
+
+confirmar() {                          # confirmar <pergunta>
+    if ! interativo; then
+        [[ -n "${ASSUMIR_SIM:-}" ]] && return 0
+        printf 'erro: %s exige confirmação; use --sim para modo não interativo\n' \
+               "${0##*/}" >&2
+        return 1
+    fi
+    local r
+    read -rp "$1 [s/N] " r < /dev/tty
+    [[ "${r,,}" == s || "${r,,}" == sim ]]
+}
+```
+
+Três decisões embutidas nessa função, e todas importam:
+
+- **O padrão é "não".** A resposta vazia (só Enter) não confirma. Em operação destrutiva, o padrão nunca é o destrutivo.
+- **Sem terminal, ela recusa** em vez de assumir. O `--sim` explícito é o que libera o modo automatizado — e quem escreve `--sim` sabe o que está fazendo.
+- **`${r,,}` normaliza para minúsculas** (@sec-cap062), aceitando `S`, `s`, `SIM` e `sim`.
+
+Para o que é realmente irreversível — formatar disco, apagar volume, remover chave —, a confirmação por letra única é fraca demais. Exija que a pessoa digite algo que não se digita por engano:
+
+```bash
+printf 'Isto vai APAGAR PERMANENTEMENTE %s.\n' "$ALVO" >&2
+read -rp "Digite o nome do alvo para confirmar: " conf < /dev/tty
+[[ "$conf" == "$ALVO" ]] || { echo 'cancelado.' >&2; exit 1; }
+```
+
+## `select`: menus sem esforço
+
+O Bash tem um comando dedicado a menus numerados:
+
+```bash
+PS3='Escolha uma opção: '
+select opcao in "Listar serviços" "Reiniciar rede" "Ver logs" "Sair"; do
+    case "$REPLY" in
+        1) systemctl list-units --type=service --state=running ;;
+        2) sudo systemctl restart NetworkManager ;;
+        3) journalctl -n 50 --no-pager ;;
+        4) break ;;
+        *) echo 'opção inválida' >&2 ;;
+    esac
+done
+```
+
+Três detalhes: `PS3` é o prompt (o padrão, `#?`, é feio); `REPLY` guarda o que foi digitado e `opcao` guarda o texto correspondente; e o menu **se repete** até um `break`, redesenhando com `Ctrl-D` ou entrada vazia.
+
+O `case` sobre `$REPLY` (o número) é mais robusto que sobre `$opcao` (o texto), porque não quebra quando alguém corrige uma palavra do menu.
+
+O `select` é limitado — não rola, não tem descrição por item, não valida — mas resolve o menu simples sem dependência nenhuma, e isso vale muito num script que precisa rodar em máquina alheia.
+
+## Cores: úteis quando há quem veja
+
+Cor em terminal é uma sequência de escape ANSI interpretada pelo emulador.
+
+::: {#fig-anatomia-escape-ansi}
+```{.tikz}
+%%| filename: anatomia-de-uma-sequencia-de-escape-ansi
+%%| alt: Decomposicao de uma sequencia de escape ANSI de cor, com o caractere ESC, o colchete, o codigo do atributo e a letra final
+\begin{tikzpicture}[
+    pc/.style={rounded corners=2pt,draw,thick,align=center,font=\small\ttfamily,inner sep=5pt,minimum height=0.85cm},
+    et/.style={font=\tiny,align=center,manualgray},
+    fl/.style={-{Latex[length=1.3mm]},semithick,manualgray},
+    tb/.style={font=\scriptsize,align=left},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[pc,draw=manualred,fill=manualred!10,minimum width=1.5cm]    (p1) at (2.2,6.9) {\textbackslash e};
+  \node[pc,draw=manualblue,fill=manualblue!10,minimum width=1.0cm]  (p2) at (3.65,6.9) {[};
+  \node[pc,draw=manualgreen,fill=manualgreen!12,minimum width=1.6cm](p3) at (5.4,6.9) {1;31};
+  \node[pc,draw=manualyellow,fill=manualyellow!22,minimum width=1.0cm](p4) at (7.5,6.9) {m};
+
+  \node[et,text width=2.2cm] at (2.2,5.85) {ESC (0x1b)\\inicia a sequência};
+  \node[et,text width=1.7cm] at (3.65,5.85) {CSI\\abre os\\parâmetros};
+  \node[et,text width=2.4cm] at (5.4,5.55) {atributos separados\\por ponto e vírgula:\\1 = negrito, 31 = vermelho};
+  \node[et,text width=1.6cm] at (7.5,5.85) {SGR\\aplica os\\atributos};
+
+  \draw[fl] (2.2,6.42) -- (2.2,6.15);
+  \draw[fl] (3.65,6.42) -- (3.65,6.15);
+  \draw[fl] (5.4,6.42) -- (5.4,6.15);
+  \draw[fl] (7.5,6.42) -- (7.5,6.15);
+
+  \node[tb,text width=6.0cm,anchor=north west] at (9.0,7.6)
+       {\textbf{Códigos mais usados}\\[3pt]
+        \texttt{0} normal \quad \texttt{1} negrito \quad \texttt{4} sublinhado\\
+        \texttt{31} vermelho \quad \texttt{32} verde \quad \texttt{33} amarelo\\
+        \texttt{34} azul \quad \texttt{36} ciano \quad \texttt{37} branco\\
+        \texttt{41}--\texttt{47} as mesmas cores, no fundo\\[3pt]
+        \texttt{\textbackslash e[0m} \textbf{sempre} no fim: sem ele a cor\\vaza para o resto do terminal};
+
+  \node[nt,text width=14.4cm,anchor=north] at (7.4,4.35) {\textbf{Prefira \texttt{tput} a escrever a sequência à mão.} \texttt{tput setaf 1}, \texttt{tput bold} e \texttt{tput sgr0} consultam o terminfo do terminal em uso e produzem a sequência correta mesmo onde ela é diferente --- e devolvem string \emph{vazia} quando o terminal não suporta cor, o que faz a proteção acontecer sozinha. Escrever \texttt{\textbackslash e[1;31m} direto funciona em quase todo lugar, mas ``quase'' inclui o arquivo de log, o \texttt{cron} e o terminal de quem usa leitor de tela.\\[3pt]
+  \textbf{Três guardas antes de emitir cor:} o destino é um terminal (\texttt{[[ -t 1 ]]}), a variável \texttt{NO\_COLOR} não está definida, e o \texttt{TERM} não é \texttt{dumb}. Se qualquer uma falhar, as variáveis de cor viram string vazia e o resto do script não muda em nada.};
+\end{tikzpicture}
+```
+Anatomia de uma sequência de escape ANSI, e por que `tput` é preferível.
+:::
+
+A inicialização defensiva, para colar no topo de qualquer script:
+
+```bash
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+    C_RESET=$(tput sgr0)  ; C_NEG=$(tput bold)
+    C_VERM=$(tput setaf 1); C_VERDE=$(tput setaf 2)
+    C_AMAR=$(tput setaf 3); C_AZUL=$(tput setaf 4)
+else
+    C_RESET='' C_NEG='' C_VERM='' C_VERDE='' C_AMAR='' C_AZUL=''
+fi
+
+erro()   { printf '%s%s[ERRO ]%s %s\n' "$C_VERM"  "$C_NEG" "$C_RESET" "$*" >&2; }
+aviso()  { printf '%s[AVISO]%s %s\n'  "$C_AMAR"  "$C_RESET" "$*" >&2; }
+ok()     { printf '%s[  OK ]%s %s\n'  "$C_VERDE" "$C_RESET" "$*" >&2; }
+```
+
+Quando não há terminal, as variáveis ficam vazias e as funções continuam funcionando — imprimindo texto puro no log. Esse é o ponto: **a cor é opcional em tempo de execução, não em tempo de escrita**.
+
+A convenção `NO_COLOR` (a simples existência da variável desliga a cor) é respeitada por um número crescente de ferramentas e custa uma condição.
+
+### Progresso: barra e indicador
+
+Para operação demorada, mostrar avanço evita que a pessoa mate o script achando que travou. O `\r` volta ao início da linha sem descer:
+
+```bash
+barra() {                      # barra <atual> <total>
+    local atual=$1 total=$2 largura=40
+    local preenchido=$(( atual * largura / total ))
+    printf '\r[%-*s] %3d%%' "$largura" \
+           "$(printf '#%.0s' $(seq 1 "$preenchido"))" \
+           $(( atual * 100 / total ))
+}
+
+total=${#itens[@]}
+for i in "${!itens[@]}"; do
+    processar "${itens[i]}"
+    [[ -t 1 ]] && barra $(( i + 1 )) "$total"
+done
+[[ -t 1 ]] && echo
+```
+
+O `[[ -t 1 ]]` de novo: sem ele, um log de `cron` acumula milhares de linhas de barra de progresso. E, para progresso de um fluxo de dados, o `pv` (@sec-cap070) já faz tudo isso sem código.
+
+## `whiptail` e `dialog`: interface em modo texto
+
+Quando a interação é mais que uma pergunta, as caixas de diálogo em `ncurses` dão uma interface navegável que funciona por SSH. O `whiptail` vem instalado na maioria dos sistemas Debian (é o que o `dpkg-reconfigure` usa); o `dialog` é mais completo e precisa de `apt install dialog`.
+
+O detalhe que derruba todo mundo na primeira vez: **essas ferramentas desenham na saída padrão e devolvem o resultado pelo `stderr`**. Para capturar a escolha, é preciso trocar os dois descritores (@sec-cap073):
+
+```bash
+escolha=$(whiptail --title "Manutenção" \
+                   --menu "Escolha a tarefa:" 15 60 4 \
+                   "1" "Atualizar o sistema" \
+                   "2" "Limpar pacotes órfãos" \
+                   "3" "Verificar integridade" \
+                   "4" "Sair" \
+          3>&1 1>&2 2>&3)
+status=$?
+```
+
+O `3>&1 1>&2 2>&3` é a troca em três tempos: o 3 recebe o destino original do 1, o 1 passa a apontar para o terminal (onde o 2 apontava) e o 2 vai para o 3, que é a captura. Alternativamente, o `dialog` aceita `--stdout`, que dispensa a ginástica; o `whiptail` também, em versões recentes.
+
+Os tipos de caixa mais úteis:
+
+```bash
+whiptail --yesno "Reiniciar agora?" 8 45                        # status 0 = sim, 1 = nao
+whiptail --msgbox "Concluído com sucesso." 8 45
+whiptail --inputbox "Nome do host:" 8 50 "kali" 3>&1 1>&2 2>&3
+whiptail --passwordbox "Senha do repositório:" 8 50 3>&1 1>&2 2>&3
+whiptail --checklist "Componentes:" 15 60 4 \
+         "rede"  "Ferramentas de rede"  ON \
+         "web"   "Ferramentas web"      OFF \
+         "sem"   "Sem fio"              OFF 3>&1 1>&2 2>&3
+whiptail --gauge "Instalando..." 8 50 0 < <(for i in $(seq 0 10 100); do echo "$i"; sleep 0.3; done)
+```
+
+O código de saída distingue os casos: **0** confirmou, **1** cancelou, **255** pressionou `Esc`. Tratar os três é o que evita que um `Esc` seja interpretado como confirmação.
+
+E a regra que fecha o assunto: **a caixa de diálogo é a interface, não o programa**. O script deve funcionar por opções de linha de comando (@sec-cap061), com o modo interativo apenas preenchendo os mesmos valores. Um script que **só** funciona com `whiptail` não pode ser automatizado, não pode ser testado e não roda por SSH sem TTY.
+
+::: {#fig-escolha-da-interface}
+```{.tikz}
+%%| filename: escolha-da-interface-de-interacao
+%%| alt: Arvore de decisao para escolher entre argumentos de linha de comando, read, select e whiptail conforme o contexto de execucao do script
+\begin{tikzpicture}[
+    qst/.style={rounded corners=7pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,text width=4.7cm,minimum height=1.0cm,draw=manualblue,fill=manualblue!8},
+    res/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,text width=3.9cm,minimum height=1.05cm},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[qst] (q1) at (4.6,7.4) {vai rodar sob \texttt{cron},\\CI ou dentro de um pipe?};
+  \node[qst] (q2) at (4.6,5.5) {a decisão é irreversível?};
+  \node[qst] (q3) at (4.6,3.6) {são mais de\\três ou quatro escolhas?};
+
+  \node[res,draw=manualred,fill=manualred!10]      (r1) at (11.3,7.4) {\textbf{só argumentos}\\\texttt{--sim}, \texttt{--alvo}, \texttt{--saida}\\nada de \texttt{read}};
+  \node[res,draw=manualyellow,fill=manualyellow!22](r2) at (11.3,5.5) {\textbf{confirmação forte}\\digitar o nome do alvo,\\lido de \texttt{/dev/tty}};
+  \node[res,draw=manualgreen,fill=manualgreen!13]  (r3) at (11.3,3.6) {\textbf{\texttt{whiptail}}\\menu, lista, formulário\\--- sempre com equivalente\\em linha de comando};
+  \node[res,draw=manualblue,fill=manualblue!11]    (r4) at (4.6,1.7) {\textbf{\texttt{read} ou \texttt{select}}\\uma pergunta, um menu curto,\\zero dependências};
+
+  \draw[fl] (q1) -- node[lb,above]{sim} (r1);
+  \draw[fl] (q1) -- node[lb,left]{não} (q2);
+  \draw[fl] (q2) -- node[lb,above]{sim} (r2);
+  \draw[fl] (q2) -- node[lb,left]{não} (q3);
+  \draw[fl] (q3) -- node[lb,above]{sim} (r3);
+  \draw[fl] (q3) -- node[lb,left]{não} (r4);
+
+  \node[nt,text width=14.4cm,anchor=north] at (7.4,0.75) {A pergunta de cima é a que mais economiza retrabalho: se o script pode acabar num pipe ou num agendador --- e quase todo script acaba ---, a interatividade tem de ser \textbf{opcional}. O caminho seguro é escrever primeiro a versão com argumentos, e só depois acrescentar o modo interativo que preenche os mesmos valores. O contrário, começar pelo menu e tentar automatizar depois, custa uma reescrita.};
+\end{tikzpicture}
+```
+Como escolher a forma de interação conforme o contexto de execução.
+:::
+
+Para ambiente gráfico, o `zenity` oferece as mesmas caixas em GTK (`zenity --question`, `--entry`, `--file-selection`, `--progress`), com a mesma ressalva: exige sessão gráfica e falha em SSH sem `X11Forwarding`.
+
+## O checklist da interação bem feita
+
+- **Prompt e mensagem de diagnóstico em `stderr`**, resultado em `stdout`. É o que permite `resultado=$(meuscript.sh)` funcionar.
+- **Confirmação lida de `/dev/tty`**, nunca do `stdin`.
+- **Padrão seguro**: Enter vazio nunca confirma operação destrutiva.
+- **Modo não interativo explícito**: `--sim`, `--force`, `--batch`, e a recusa clara quando não há terminal e a opção não foi dada.
+- **Cor condicionada** a `[[ -t 1 ]]`, `NO_COLOR` e `TERM`.
+- **Tempo limite** em prompt que possa travar um script automatizado: `read -t 30 ... || padrao`.
+- **Toda pergunta tem equivalente em opção de linha de comando.**
+
+## 🐉 No Kali
+
+- **Confirmação forte em tudo que é irreversível.** `cryptsetup luksFormat`, `mkfs`, `dd if=... of=/dev/sdX` e a limpeza de resultados de teste apagam o que não volta. Exigir que a pessoa digite o nome do dispositivo, e não `s`, é a diferença entre um erro de digitação e um disco perdido — e o alvo deve ser mostrado por extenso na pergunta, incluindo tamanho e modelo, para que dê para conferir.
+- **`whiptail` é o que o `kali-tweaks` usa.** Se você escreve utilitário para a sua equipe, seguir a mesma convenção deixa a experiência coerente com o resto do sistema. E é o mesmo motor do `dpkg-reconfigure`, então já está instalado em qualquer Debian ou Kali, sem acrescentar dependência.
+- **Nunca peça senha com eco ligado, e nunca a receba por argumento.** `read -rs` para digitar, ou leitura de arquivo com permissão `0600`, ou variável de ambiente — nessa ordem de preferência. Senha em `argv` aparece no `ps` para todos os usuários da máquina e no histórico do shell; num teste autorizado, isso é vazamento de credencial do cliente.
+- **Cor no relatório é armadilha.** Saída de ferramenta capturada com `$(...)` traz as sequências de escape junto, e a comparação de string falha por um motivo invisível. Ao gerar relatório ou alimentar outro processo, desligue a cor da ferramenta (`--no-color`, `NO_COLOR=1`) ou limpe com `sed -r 's/\x1b\[[0-9;]*m//g'`.
+- **Script de ataque tem de ser automatizável.** Um menu bonito que exige teclado impede que a ação seja repetida de forma idêntica — e a reprodutibilidade é o que sustenta o relatório de um teste autorizado. Se não dá para rodar o mesmo comando outra vez e obter o mesmo resultado, não dá para provar o que foi feito nem para o cliente verificar a correção depois.
+
+> **Nota sobre a família RHEL.** O `whiptail` (pacote `newt`) costuma estar presente nas duas famílias, mas no RHEL o utilitário de referência para caixas de texto é o `dialog`, e algumas opções não são intercambiáveis — `--gauge` e `--checklist` têm diferenças de sintaxe. Escrever para o menor denominador comum, ou detectar qual existe (`command -v whiptail || command -v dialog`), evita a surpresa. O `tput` e as sequências ANSI funcionam igual, com a ressalva de que o `TERM` padrão do console do RHEL em modo texto pode oferecer menos cores; consultar `tput colors` antes de assumir 256 é a checagem correta.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-interacao`.
+
+1. **Reproduza a confirmação fantasma.**
+
+   ```bash
+   mkdir -p ~/lab-interacao && cd ~/lab-interacao
+   cat > frágil.sh <<'EOF'
+   #!/usr/bin/env bash
+   read -rp "Confirma? [s/N] " r
+   echo "li: [$r]"
+   [[ "$r" == "s" ]] && echo ">>> EXECUTARIA A ACAO DESTRUTIVA <<<"
+   EOF
+   chmod +x frágil.sh
+   printf 's\noutra coisa\n' | ./frágil.sh
+   ```
+
+   Esperado: o script **não** espera o teclado, lê `s` do pipe e anuncia a ação destrutiva. É o defeito da abertura, isolado.
+
+2. **Corrija lendo do terminal.**
+
+   ```bash
+   cat > seguro.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -uo pipefail
+   interativo() { [[ -t 0 && -t 1 ]]; }
+   confirmar() {
+       if ! interativo; then
+           [[ -n "${ASSUMIR_SIM:-}" ]] && return 0
+           echo "erro: exige confirmacao; defina ASSUMIR_SIM=1 para modo automatico" >&2
+           return 1
+       fi
+       local r
+       read -rp "$1 [s/N] " r < /dev/tty
+       [[ "${r,,}" == s || "${r,,}" == sim ]]
+   }
+   if confirmar "Apagar os temporarios?"; then
+       echo ">>> executaria a acao <<<"
+   else
+       echo "cancelado."
+   fi
+   EOF
+   chmod +x seguro.sh
+   printf 's\n' | ./seguro.sh; echo "status: $?"
+   printf 's\n' | ASSUMIR_SIM=1 ./seguro.sh
+   ./seguro.sh      # agora responda no teclado: teste Enter vazio, depois "s"
+   ```
+
+   Esperado: no pipe sem `ASSUMIR_SIM`, recusa com mensagem clara; com a variável, executa; interativamente, Enter vazio cancela e `s` confirma.
+
+3. **Confirmação forte para o irreversível.**
+
+   ```bash
+   cat > forte.sh <<'EOF'
+   #!/usr/bin/env bash
+   ALVO="${1:?uso: $0 <nome-do-alvo>}"
+   printf 'Isto vai APAGAR PERMANENTEMENTE: %s\n' "$ALVO" >&2
+   read -rp "Digite o nome do alvo para confirmar: " c < /dev/tty
+   [[ "$c" == "$ALVO" ]] || { echo "cancelado." >&2; exit 1; }
+   echo ">>> confirmado para $ALVO <<<"
+   EOF
+   chmod +x forte.sh
+   ./forte.sh /dev/sdz-falso
+   ```
+
+   Esperado: só prossegue se você digitar `/dev/sdz-falso` por inteiro. Teste também digitando `s` e Enter vazio.
+
+4. **Opções do `read`.**
+
+   ```bash
+   read -rsp 'Senha (nao aparece): ' s; echo; echo "recebi ${#s} caracteres"
+   read -rep 'Usuario: ' -i 'kali' u; echo "usuario: $u"
+   read -rt 5 -n 1 -p 'Tem 5 segundos para uma tecla: ' k || k='<esgotou>'; echo; echo "tecla: $k"
+   read -ra campos <<< "alfa bravo charlie"; echo "campos: ${#campos[@]} -> ${campos[1]}"
+   ```
+
+   Esperado: a senha não aparece na tela; o usuário vem pré-preenchido e editável; o tempo limite dispara se você não teclar; o array tem três elementos.
+
+5. **Menu com `select`.**
+
+   ```bash
+   cat > menu.sh <<'EOF'
+   #!/usr/bin/env bash
+   PS3='Escolha uma opcao: '
+   select opcao in "Uso de disco" "Memoria livre" "Tempo ligado" "Sair"; do
+       case "$REPLY" in
+           1) df -h --output=source,pcent / | tail -1 ;;
+           2) free -h | awk 'NR==2 {print "livre: " $7}' ;;
+           3) uptime -p ;;
+           4) echo "ate logo."; break ;;
+           *) echo "opcao invalida" >&2 ;;
+       esac
+   done
+   EOF
+   chmod +x menu.sh
+   ./menu.sh
+   ```
+
+   Esperado: menu numerado com o prompt do `PS3`, repetição após cada escolha e saída pela opção 4.
+
+6. **Cores com `tput`, e o desligamento automático.**
+
+   ```bash
+   cat > cores.sh <<'EOF'
+   #!/usr/bin/env bash
+   if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+       R=$(tput sgr0); N=$(tput bold); V=$(tput setaf 1); G=$(tput setaf 2); A=$(tput setaf 3)
+   else
+       R='' N='' V='' G='' A=''
+   fi
+   printf '%s%sERRO%s   mensagem de erro\n'  "$V" "$N" "$R"
+   printf '%sAVISO%s  mensagem de aviso\n'   "$A" "$R"
+   printf '%sOK%s     tudo certo\n'          "$G" "$R"
+   EOF
+   chmod +x cores.sh
+   ./cores.sh
+   echo "--- capturado num pipe:"; ./cores.sh | cat -A | head -3
+   echo "--- com NO_COLOR:";       NO_COLOR=1 ./cores.sh | cat -A | head -3
+   ```
+
+   Esperado: colorido no terminal; no pipe e com `NO_COLOR`, o `cat -A` mostra texto puro, sem nenhuma sequência `^[[`.
+
+7. **Quantas cores este terminal tem.**
+
+   ```bash
+   tput colors
+   for i in 0 1 2 3 4 5 6 7; do printf '%scor %d%s  ' "$(tput setaf $i)" "$i" "$(tput sgr0)"; done; echo
+   TERM=dumb tput setaf 1 | xxd | head -1 || echo "TERM=dumb: nenhuma sequencia emitida"
+   ```
+
+   Esperado: um número (8 ou 256), a amostra colorida e, com `TERM=dumb`, saída vazia — a proteção acontecendo sozinha.
+
+8. **Barra de progresso.**
+
+   ```bash
+   cat > progresso.sh <<'EOF'
+   #!/usr/bin/env bash
+   barra() {
+       local atual=$1 total=$2 larg=40 p
+       p=$(( atual * larg / total ))
+       printf '\r[%-*s] %3d%%' "$larg" "$(printf '#%.0s' $(seq 1 "$p"))" $(( atual * 100 / total ))
+   }
+   total=25
+   for i in $(seq 1 "$total"); do
+       sleep 0.08
+       [[ -t 1 ]] && barra "$i" "$total"
+   done
+   [[ -t 1 ]] && echo
+   echo "concluido"
+   EOF
+   chmod +x progresso.sh
+   ./progresso.sh
+   echo "--- redirecionado:"; ./progresso.sh > /tmp/prog.log; wc -l /tmp/prog.log
+   ```
+
+   Esperado: barra animada no terminal; no arquivo, apenas a linha `concluido` — uma linha, não milhares.
+
+9. **`whiptail`: menu e captura da escolha.**
+
+   ```bash
+   cat > caixa.sh <<'EOF'
+   #!/usr/bin/env bash
+   escolha=$(whiptail --title "Laboratorio" --menu "Escolha a tarefa:" 15 60 4 \
+       "1" "Ver uso de disco" \
+       "2" "Ver memoria" \
+       "3" "Ver tempo ligado" \
+       "4" "Sair" 3>&1 1>&2 2>&3)
+   st=$?
+   case "$st" in
+       0) echo "escolheu: $escolha" ;;
+       1) echo "cancelou no botao"; exit 1 ;;
+       255) echo "pressionou Esc"; exit 255 ;;
+   esac
+   EOF
+   chmod +x caixa.sh
+   ./caixa.sh; echo "status: $?"
+   ```
+
+   Esperado: a caixa aparece; a escolha é capturada. Rode de novo e teste o botão Cancel e a tecla `Esc` — os três códigos de saída são diferentes.
+
+10. **Por que a troca de descritores é necessária.**
+
+    ```bash
+    whiptail --inputbox "Nome do host:" 8 50 "kali" 2>/tmp/resposta.txt
+    echo "sem a troca, a resposta foi para o stderr: [$(cat /tmp/resposta.txt)]"
+    r=$(whiptail --inputbox "Nome do host:" 8 50 "kali" 3>&1 1>&2 2>&3)
+    echo "com a troca: [$r]"
+    ```
+
+    Esperado: as duas formas capturam o valor; a segunda o coloca numa variável, que é o que se quer num script.
+
+11. **`yesno` e o código de saída.**
+
+    ```bash
+    if whiptail --yesno "Prosseguir com a operacao?" 8 45; then
+        echo "confirmou"
+    else
+        echo "recusou ou cancelou (status $?)"
+    fi
+    ```
+
+    Esperado: `0` no Yes, `1` no No, `255` no `Esc` — e o `if` trata os três de forma segura por padrão.
+
+12. **Limpe o laboratório.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-interacao /tmp/prog.log /tmp/resposta.txt
+    ```
+
+## Resumo
+
+- **`read` sem terminal lê do pipe, não do teclado.** Confirmação sempre com `< /dev/tty`, que falha alto quando não há terminal em vez de aceitar uma linha de dados como resposta.
+- **`[[ -t 0 ]]` e `[[ -t 1 ]]` detectam interatividade.** Sem ela, recuse e exija uma opção explícita (`--sim`, `ASSUMIR_SIM=1`) em vez de assumir.
+- **O padrão nunca é o destrutivo.** Enter vazio cancela; para o irreversível, exija que a pessoa digite o nome do alvo por extenso.
+- **Prompt e diagnóstico em `stderr`**, resultado em `stdout` — é o que permite capturar a saída do script com `$(...)`.
+- **`select` resolve o menu simples sem dependência**, com `PS3` como prompt e `case` sobre `$REPLY`, não sobre o texto.
+- **Cor é opcional em tempo de execução**: `tput` em vez de escape à mão, sob a guarda de `[[ -t 1 ]]`, `NO_COLOR` e `TERM != dumb`. Quando desligada, as variáveis viram vazias e nada mais muda.
+- **`whiptail` e `dialog` escrevem a interface no `stdout` e o resultado no `stderr`.** A troca `3>&1 1>&2 2>&3` (ou `--stdout`) é o que captura a escolha; os status 0, 1 e 255 distinguem confirmar, cancelar e `Esc`.
+- **Toda pergunta precisa de equivalente em opção de linha de comando.** Script que só funciona com menu não pode ser agendado, testado nem reproduzido.
