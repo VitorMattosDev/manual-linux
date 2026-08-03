@@ -100,12 +100,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 10 — Scripting Intermediário
 
-- [ ] **cap 058** - Laços: for, while e until - `vol10/cap058-lacos-for-while-e-until.qmd`
-- [ ] **cap 059** - Funções, retorno e escopo de variáveis - `vol10/cap059-funcoes-retorno-e-escopo-de-variaveis.qmd`
-- [ ] **cap 060** - Arrays indexados e associativos - `vol10/cap060-arrays-indexados-e-associativos.qmd`
-- [ ] **cap 061** - Parâmetros posicionais e getopts - `vol10/cap061-parametros-posicionais-e-getopts.qmd`
-- [ ] **cap 062** - Expansão de parâmetros avançada - `vol10/cap062-expansao-de-parametros-avancada.qmd`
-- [ ] **cap 063** - Aritmética e manipulação de números no shell - `vol10/cap063-aritmetica-e-manipulacao-de-numeros-no-shell.qmd`
+- [x] **cap 058** - Laços: for, while e until - `vol10/cap058-lacos-for-while-e-until.qmd`
+- [x] **cap 059** - Funções, retorno e escopo de variáveis - `vol10/cap059-funcoes-retorno-e-escopo-de-variaveis.qmd`
+- [x] **cap 060** - Arrays indexados e associativos - `vol10/cap060-arrays-indexados-e-associativos.qmd`
+- [x] **cap 061** - Parâmetros posicionais e getopts - `vol10/cap061-parametros-posicionais-e-getopts.qmd`
+- [x] **cap 062** - Expansão de parâmetros avançada - `vol10/cap062-expansao-de-parametros-avancada.qmd`
+- [x] **cap 063** - Aritmética e manipulação de números no shell - `vol10/cap063-aritmetica-e-manipulacao-de-numeros-no-shell.qmd`
 
 ### Volume 11 — Processamento de Texto
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (57 concluidos).
+**Total:** 103 capitulos em 16 volumes (63 concluidos).
 

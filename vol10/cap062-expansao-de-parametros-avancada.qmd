@@ -1,3 +1,510 @@
 # Expansão de parâmetros avançada {#sec-cap062}
 
-*(em elaboracao)*
+O script de organização da coleta processava um diretório com 12 mil arquivos e levava mais de meia hora. O corpo do laço era este:
+
+```bash
+for caminho in /dados/coleta/*; do
+    dir=$(dirname "$caminho")
+    arq=$(basename "$caminho")
+    base=$(echo "$arq" | sed 's/\.[^.]*$//')
+    ext=$(echo "$arq" | cut -d. -f2-)
+    mv "$caminho" "$dir/${base}_processado.$ext"
+done
+```
+
+Ninguém suspeitou do `mv`, que é uma única chamada de sistema. O problema eram as outras cinco linhas: `dirname`, `basename`, `echo | sed` e `echo | cut` somam **seis processos novos por arquivo**. Cada `fork` mais `exec` custa em torno de um a dois milissegundos numa VM comum. Seis vezes doze mil dá 72 mil processos, e dois milissegundos cada dá quase dois minutos só de criação de processo — mais o custo dos *pipes*, do carregamento de bibliotecas e do escalonamento. Na prática, a máquina passou 34 minutos criando e destruindo programas para recortar texto.
+
+O shell recorta texto sozinho, sem sair do processo. O mesmo laço, com expansão de parâmetros:
+
+```bash
+for caminho in /dados/coleta/*; do
+    arq=${caminho##*/}          # basename
+    dir=${caminho%/*}           # dirname
+    base=${arq%.*}              # sem a extensao
+    ext=${arq##*.}              # so a extensao
+    mv -- "$caminho" "$dir/${base}_processado.$ext"
+done
+```
+
+Seis segundos. A diferença não é micro-otimização: é a diferença entre um script que roda na janela de manutenção e um que não roda. E a expansão de parâmetros faz muito mais do que recortar caminhos — ela é o mecanismo que o shell usa para valores padrão, validação de variável obrigatória e substituição de texto.
+
+## Por que as chaves existem
+
+`$var` e `${var}` são a mesma coisa até o momento em que o nome precisa de fronteira:
+
+```bash
+nome=relatorio
+echo "$nome_final"     # variavel "nome_final", que nao existe -> vazio
+echo "${nome}_final"   # relatorio_final
+```
+
+As chaves delimitam o nome. E são elas que abrem espaço para tudo que vem a seguir: todo operador deste capítulo mora **dentro** das chaves, entre o nome e o fecha-chaves.
+
+## Valores padrão e variável obrigatória
+
+Quatro operadores, cada um com uma variante sem o dois-pontos:
+
+```bash
+${var:-padrao}    # se var estiver vazia ou nao definida, USA "padrao" (nao atribui)
+${var:=padrao}    # idem, e ATRIBUI "padrao" a var
+${var:+alt}       # se var TIVER valor, usa "alt"; senao, vazio
+${var:?mensagem}  # se var estiver vazia ou nao definida, ABORTA com a mensagem
+```
+
+O dois-pontos é o que decide se "vazia" conta como "ausente":
+
+```bash
+unset a; b=""; c="valor"
+
+echo "${a:-padrao}"  # padrao   (nao definida)
+echo "${a-padrao}"   # padrao   (nao definida)
+echo "${b:-padrao}"  # padrao   (definida, mas vazia)
+echo "${b-padrao}"   #          (definida: o operador nao dispara)
+```
+
+::: {#fig-operadores-padrao}
+```{.tikz}
+%%| filename: operadores-de-valor-padrao
+%%| alt: Matriz cruzando os quatro operadores de valor padrao com os tres estados possiveis de uma variavel: nao definida, definida e vazia, e definida com valor
+\begin{tikzpicture}[
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    cl/.style={font=\scriptsize\ttfamily,align=center},
+    rw/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    dis/.style={font=\scriptsize\bfseries,manualgreen,align=center},
+    nao/.style={font=\scriptsize,manualgray,align=center},
+    err/.style={font=\scriptsize\bfseries,manualred,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,manualblue] at (6.6,6.7)  {\texttt{unset var}};
+  \node[hd,manualblue] at (9.6,6.7)  {\texttt{var=""}};
+  \node[hd,manualblue] at (12.6,6.7) {\texttt{var="x"}};
+  \node[font=\tiny,manualgray] at (6.6,6.35)  {não definida};
+  \node[font=\tiny,manualgray] at (9.6,6.35)  {definida, vazia};
+  \node[font=\tiny,manualgray] at (12.6,6.35) {definida, com valor};
+  \draw[semithick,manualgray] (0.3,6.05) -- (14.0,6.05);
+
+  \node[rw] at (0.4,5.5) {\$\{var:-p\}};
+  \node[dis] at (6.6,5.5) {p}; \node[dis] at (9.6,5.5) {p}; \node[nao] at (12.6,5.5) {x};
+  \node[rw] at (0.4,4.9) {\$\{var-p\}};
+  \node[dis] at (6.6,4.9) {p}; \node[nao] at (9.6,4.9) {(vazio)}; \node[nao] at (12.6,4.9) {x};
+
+  \node[rw] at (0.4,4.2) {\$\{var:=p\}};
+  \node[dis] at (6.6,4.2) {p, e var=p}; \node[dis] at (9.6,4.2) {p, e var=p}; \node[nao] at (12.6,4.2) {x};
+  \node[rw] at (0.4,3.6) {\$\{var=p\}};
+  \node[dis] at (6.6,3.6) {p, e var=p}; \node[nao] at (9.6,3.6) {(vazio)}; \node[nao] at (12.6,3.6) {x};
+
+  \node[rw] at (0.4,2.9) {\$\{var:+a\}};
+  \node[nao] at (6.6,2.9) {(vazio)}; \node[nao] at (9.6,2.9) {(vazio)}; \node[dis] at (12.6,2.9) {a};
+  \node[rw] at (0.4,2.3) {\$\{var+a\}};
+  \node[nao] at (6.6,2.3) {(vazio)}; \node[dis] at (9.6,2.3) {a}; \node[dis] at (12.6,2.3) {a};
+
+  \node[rw] at (0.4,1.6) {\$\{var:?msg\}};
+  \node[err] at (6.6,1.6) {aborta}; \node[err] at (9.6,1.6) {aborta}; \node[nao] at (12.6,1.6) {x};
+  \node[rw] at (0.4,1.0) {\$\{var?msg\}};
+  \node[err] at (6.6,1.0) {aborta}; \node[nao] at (9.6,1.0) {(vazio)}; \node[nao] at (12.6,1.0) {x};
+
+  \draw[semithick,manualgray] (0.3,0.7) -- (14.0,0.7);
+  \node[nt,text width=14.4cm] at (7.1,-0.1) {A coluna do meio é a única em que o dois-pontos muda alguma coisa: \textbf{com} ele, uma variável definida como vazia conta como ausente; \textbf{sem} ele, só a variável nunca definida dispara o operador. Na dúvida, use a forma com dois-pontos --- na maioria dos scripts, uma variável vazia é tão inútil quanto uma inexistente. O \texttt{:?} é o único que interrompe a execução, e por isso é o operador certo para exigir configuração obrigatória no topo de um script.};
+\end{tikzpicture}
+```
+Os quatro operadores de valor padrão contra os três estados possíveis de uma variável.
+:::
+
+O `:?` merece uma seção própria pelo tipo de acidente que ele previne:
+
+```bash
+: "${DESTINO:?variavel DESTINO nao definida}"
+rm -rf -- "${DESTINO}/cache"
+```
+
+Sem a primeira linha, um `DESTINO` vazio por erro de digitação transforma o comando em `rm -rf -- /cache`. O `:` inicial é o comando nulo do @sec-cap056 — ele não faz nada além de forçar a avaliação da expansão, e é o idioma padrão para essa checagem. A mensagem vai para `stderr` e o shell sai com código 1; num script não interativo, isso encerra a execução ali.
+
+O `:+` é menos óbvio e resolve um problema recorrente: acrescentar um trecho **somente se** a variável existir.
+
+```bash
+comando="ssh"
+comando+="${PORTA:+ -p $PORTA}"     # so acrescenta " -p 2222" se PORTA tiver valor
+```
+
+Sem ele, seria preciso um `if`. Com arrays (@sec-cap060), o mesmo padrão fica ainda mais limpo, e é a forma preferida quando o resultado vai virar linha de comando.
+
+## Remoção de prefixo e sufixo: o substituto de `basename` e `dirname`
+
+Quatro operadores, todos usando **padrões de glob** (@sec-cap013), não expressões regulares:
+
+```bash
+${var#padrao}    # remove o MENOR prefixo que casa
+${var##padrao}   # remove o MAIOR prefixo que casa
+${var%padrao}    # remove o MENOR sufixo que casa
+${var%%padrao}   # remove o MAIOR sufixo que casa
+```
+
+A mnemônica que funciona: no teclado, `#` fica **antes** do `%`, e o `#` corta do **começo**. Dobrar o símbolo torna o corte **guloso**.
+
+::: {#fig-cortes-em-caminho}
+```{.tikz}
+%%| filename: cortes-de-prefixo-e-sufixo
+%%| alt: Um caminho de arquivo com marcacoes mostrando onde cada operador de remocao de prefixo e sufixo corta e o que sobra em cada caso
+\begin{tikzpicture}[
+    seg/.style={font=\small\ttfamily,anchor=west,inner sep=0pt,outer sep=0pt,
+                text height=1.6ex,text depth=0.6ex},
+    res/.style={font=\scriptsize\ttfamily,anchor=west},
+    op/.style={font=\scriptsize\ttfamily,anchor=east},
+    ex/.style={font=\scriptsize,anchor=west,manualgray},
+    corte/.style={manualred,thick,dashed},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (0.3,7.0) {p=/var/log/apt/history.log};
+
+  % a cadeia montada segmento a segmento, para que os cortes ancorem no texto
+  \node[seg,manualblue] (s0) at (3.0,6.2) {/};
+  \node[seg,manualblue] (s1) at (s0.east) {var};
+  \node[seg,manualblue] (s2) at (s1.east) {/};
+  \node[seg,manualblue] (s3) at (s2.east) {log};
+  \node[seg,manualblue] (s4) at (s3.east) {/};
+  \node[seg,manualblue] (s5) at (s4.east) {apt};
+  \node[seg,manualblue] (s6) at (s5.east) {/};
+  \node[seg,manualblue] (s7) at (s6.east) {history};
+  \node[seg,manualblue] (s8) at (s7.east) {.};
+  \node[seg,manualblue] (s9) at (s8.east) {log};
+
+  % rotulos em duas alturas: A/B e C/D sao adjacentes e colidiriam numa linha so
+  \foreach \nd/\rot/\yy in {s0/A/5.62, s1/B/5.30, s6/C/5.62, s7/D/5.30, s8/E/5.62} {
+    \draw[corte] (\nd.west |- 0,5.78) -- (\nd.west |- 0,6.6);
+    \node[font=\tiny,manualred] at (\nd.west |- 0,\yy) {\rot};
+  }
+
+  \node[op,manualgreen] at (2.9,4.9) {\$\{p\#*/\}};
+  \node[res] at (3.1,4.9) {var/log/apt/history.log};
+  \node[ex] at (9.6,4.9) {menor prefixo até a 1ª barra (corte B)};
+
+  \node[op,manualgreen] at (2.9,4.3) {\$\{p\#\#*/\}};
+  \node[res] at (3.1,4.3) {history.log};
+  \node[ex] at (9.6,4.3) {maior prefixo até a ÚLTIMA barra (corte D) --- é o \texttt{basename}};
+
+  \node[op,manualgreen] at (2.9,3.7) {\$\{p\%/*\}};
+  \node[res] at (3.1,3.7) {/var/log/apt};
+  \node[ex] at (9.6,3.7) {menor sufixo a partir da última barra (corte C) --- é o \texttt{dirname}};
+
+  \node[op,manualgreen] at (2.9,3.1) {\$\{p\%\%/*\}};
+  \node[res,manualgray] at (3.1,3.1) {(vazio)};
+  \node[ex] at (9.6,3.1) {maior sufixo a partir da PRIMEIRA barra (corte A)};
+
+  \draw[semithick,manualgray] (0.0,2.7) -- (14.4,2.7);
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (0.3,2.35) {arq=history.log};
+
+  \node[op,manualgreen] at (2.9,1.8) {\$\{arq\%.*\}};
+  \node[res] at (3.1,1.8) {history};
+  \node[ex] at (9.6,1.8) {tira a extensão (corte E)};
+
+  \node[op,manualgreen] at (2.9,1.2) {\$\{arq\#\#*.\}};
+  \node[res] at (3.1,1.2) {log};
+  \node[ex] at (9.6,1.2) {só a extensão};
+
+  \node[nt,text width=14.4cm] at (7.1,0.3) {O padrão é \emph{glob}, não expressão regular: \texttt{*} casa qualquer coisa, \texttt{?} casa um caractere, \texttt{[abc]} casa um do conjunto. Escrever \texttt{\$\{p\%\textbackslash.[a-z]+\}} não funciona, porque \texttt{+} não é quantificador de glob. Cuidado com o caso limite: se o caminho não contiver barra alguma, \texttt{\$\{p\%/*\}} devolve o próprio caminho inteiro --- e não \texttt{.}, como faria o \texttt{dirname}.};
+\end{tikzpicture}
+```
+Onde cada operador de remoção corta um caminho, e o que sobra.
+:::
+
+Os casos limite valem conhecer, porque é onde a expansão diverge dos comandos externos:
+
+```bash
+p="arquivo.txt"          # sem barra
+echo "${p%/*}"           # arquivo.txt  -- o dirname diria "."
+echo "${p##*/}"          # arquivo.txt  -- coincide com o basename
+
+p="arquivo"              # sem ponto
+echo "${p##*.}"          # arquivo      -- nao ha extensao, devolve tudo
+echo "${p%.*}"           # arquivo      -- idem
+
+p="/var/log/"            # com barra no fim
+echo "${p##*/}"          # (vazio)      -- o basename diria "log"
+```
+
+Quando o caminho pode não ter barra ou pode terminar em barra, ou o script trata esses casos explicitamente, ou usa `basename` e `dirname` — o custo do processo extra se justifica quando ele é pago uma vez, não doze mil.
+
+## Substituição de texto
+
+```bash
+${var/padrao/troca}     # troca a PRIMEIRA ocorrencia
+${var//padrao/troca}    # troca TODAS
+${var/#padrao/troca}    # so se casar no INICIO
+${var/%padrao/troca}    # so se casar no FIM
+${var//padrao}          # remove todas (troca por nada)
+```
+
+Exemplos que aparecem o tempo todo:
+
+```bash
+caminho="/home/kali/meus documentos/relatorio final.txt"
+echo "${caminho// /_}"          # troca todo espaco por sublinhado
+echo "${caminho//\//-}"         # troca barra por hifen (a barra precisa de escape)
+
+ip="10.0.0.1"
+echo "${ip//./-}"               # 10-0-0-1  -- o ponto e literal em glob
+
+linha="  texto com sobras   "
+echo "[${linha##*( )}]"         # exige extglob; ver adiante
+```
+
+O padrão continua sendo glob. Um erro comum é esperar `${texto//[0-9]+/N}` funcionar — `+` não existe em glob. Para isso, ou se usa `extglob`, ou se aceita que o trabalho é do `sed` (Volume 11):
+
+```bash
+shopt -s extglob
+texto="abc123def45"
+echo "${texto//+([0-9])/N}"     # abcNdefN
+```
+
+O `extglob` acrescenta `?(x)`, `*(x)`, `+(x)`, `@(x|y)` e `!(x)` aos padrões, e vale para globbing, `case` e `[[ ]]` também. Ligue no topo do script, não no meio: o Bash analisa a sintaxe antes de executar, e um padrão `extglob` numa função lida antes do `shopt` pode dar erro.
+
+## Fatias, comprimento e caixa
+
+```bash
+s="administrador"
+echo "${#s}"          # 13 -- comprimento
+echo "${s:0:5}"       # admin
+echo "${s:5}"         # istrador
+echo "${s: -5}"       # rador -- espaco antes do menos, como nos arrays
+echo "${s:0:-4}"      # administ -- comprimento negativo corta do fim
+```
+
+Mudança de caixa exige Bash 4:
+
+```bash
+n="kali linux"
+echo "${n^}"    # Kali linux   -- primeira letra
+echo "${n^^}"   # KALI LINUX   -- tudo
+echo "${N,}"    # primeira em minuscula
+echo "${n,,}"   # tudo em minuscula
+```
+
+O `,,` é a forma correta de normalizar entrada do usuário antes de comparar, e substitui o `tr '[:upper:]' '[:lower:]'` com seu processo extra:
+
+```bash
+read -r -p "continuar? [s/N] " resposta
+case "${resposta,,}" in
+    s|sim) ;;
+    *) echo "cancelado"; exit 0 ;;
+esac
+```
+
+## Indireção e transformações
+
+`${!nome}` usa o **valor** de `nome` como nome de outra variável:
+
+```bash
+alvo="HOME"
+echo "${!alvo}"        # imprime o conteudo de $HOME
+```
+
+É útil em tabelas de configuração e perigoso com entrada do usuário — o nome resolvido vem de dado externo. Na maioria dos casos, um array associativo (@sec-cap060) é mais claro e mais seguro. A forma `${!prefixo*}` lista os nomes de variáveis que começam com um prefixo, o que é a maneira de descobrir configuração declarada por convenção:
+
+```bash
+COLETA_HOST=alvo.lab
+COLETA_PORTA=8080
+for v in "${!COLETA_@}"; do printf '%s = %s\n' "$v" "${!v}"; done
+```
+
+A partir do Bash 4.4 há também os operadores de transformação, e um deles é genuinamente útil no dia a dia:
+
+```bash
+${var@Q}    # o valor citado, pronto para ser reusado como entrada do shell
+${var@U}    # tudo em maiuscula
+${var@A}    # a instrucao declare que recriaria a variavel
+```
+
+O `@Q` é a forma de registrar em log o que exatamente uma variável continha, com as fronteiras visíveis:
+
+```bash
+arq="meu arquivo.txt"
+echo "processando ${arq@Q}"    # processando 'meu arquivo.txt'
+```
+
+## Onde a expansão para e o `awk` começa
+
+A expansão de parâmetros opera sobre **uma variável, com padrões de glob**. Ela é imbatível para recortar caminho, aplicar padrão e normalizar caixa — coisas que acontecem por item dentro de um laço. Ela é a ferramenta errada para:
+
+- texto de várias linhas com estrutura de campos e registros;
+- qualquer coisa que precise de expressão regular de verdade — grupos de captura, quantificadores, alternância complexa;
+- transformação que dependa de contexto entre linhas.
+
+Esses três casos são do `grep`, do `sed` e do `awk`, tema do Volume 11. A regra prática: se a manipulação cabe numa linha de expansão, ela pertence ao shell; se pede um programa, chame o programa **uma vez** sobre o conjunto inteiro, não uma vez por item.
+
+## 🐉 No Kali
+
+- **`: "${ALVO:?informe o alvo}"` no topo do script é a defesa mais barata contra varredura acidental.** Um `ALVO` vazio por erro de digitação faz `nmap $ALVO` virar `nmap` sem argumento — inofensivo — mas faz `nmap "$REDE/24"` virar `nmap /24` e, dependendo do wrapper, faz uma faixa padrão ser usada no lugar. O `:?` transforma configuração ausente em parada imediata, com mensagem, em vez de comportamento inventado. Varredura fora do escopo autorizado é crime pela Lei 12.737/2012, e o caso mais comum não é malícia: é variável vazia.
+- **Nome de saída de ferramenta se monta com expansão, não com `sed`.** `nmap -oA "${ALVO//[^a-zA-Z0-9._-]/_}-$(date +%F)"` normaliza o alvo para um nome de arquivo seguro numa linha só, sem processo extra, e sem deixar `/`, `:` ou espaço no nome. É a mesma técnica que sanitiza URL vinda de `gobuster`.
+- **Laço sobre wordlist ou sobre saída de varredura é onde o custo do `fork` explode.** Cem mil linhas com dois `$(basename ...)` cada dão duzentos mil processos. Em varredura, esse tempo compete com a janela contratada de teste. Prefira `${v##*/}` e `${v%.*}`; quando a transformação for mesmo complexa, passe o conjunto inteiro por um `awk` só.
+- **`${var@Q}` no log de um script ofensivo evita ambiguidade em relatório.** Registrar `alvo: 10.10.10.5` não distingue um alvo com espaço no fim de um sem; `alvo: '10.10.10.5 '` distingue. Em relatório de teste autorizado, onde o registro do que foi tocado é parte da entrega, essa diferença importa.
+- **Cuidado com `${!var}` sobre dado que vem de arquivo de alvos.** A indireção resolve um nome de variável a partir de conteúdo, e conteúdo controlado por terceiro escolhendo qual variável do seu script será lida é uma primitiva de leitura arbitrária dentro do processo. Se a intenção é uma tabela, use `declare -A`.
+
+> **Nota sobre a família RHEL.** Os operadores `:-`, `:=`, `:+`, `:?`, `#`, `##`, `%`, `%%` e `${#var}` são **POSIX** e funcionam em qualquer shell, inclusive o `dash` do Debian e do Kali. Já a substituição `${v/a/b}`, as fatias `${v:0:5}`, a mudança de caixa `${v^^}`, a indireção `${!v}` e as transformações `${v@Q}` são extensões do Bash — a fatia e a substituição existem desde o Bash 2, a caixa desde o 4.0, e o `@Q` desde o 4.4 (RHEL 8 e Kali atual). Um script `#!/bin/sh` que use `${v,,}` falha no `dash` com erro de substituição inválida. A divergência não é entre distribuições, é entre shells: escolha o shebang e fique nele, como no @sec-cap057.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-expansao`.
+
+1. **Meça o custo do `fork`.**
+
+   ```bash
+   mkdir -p ~/lab-expansao/dados && cd ~/lab-expansao
+   for i in $(seq 1 2000); do touch "dados/arquivo_$i.log"; done
+
+   time { for c in dados/*; do a=$(basename "$c"); b=$(dirname "$c"); done; }
+   time { for c in dados/*; do a=${c##*/};        b=${c%/*};        done; }
+   ```
+
+   Esperado: o primeiro laço leva alguns segundos; o segundo, uma fração de segundo. A razão entre os dois costuma passar de cinquenta vezes — e cresce com o número de arquivos.
+
+2. **Percorra a matriz dos operadores de valor padrão.**
+
+   ```bash
+   unset a; b=""; c="x"
+   for v in a b c; do
+       printf '%-4s :-p=[%s]  -p=[%s]  :+q=[%s]  +q=[%s]\n' \
+           "$v" "${!v:-p}" "${!v-p}" "${!v:+q}" "${!v+q}"
+   done
+   ```
+
+   Esperado: as linhas reproduzem a @fig-operadores-padrao. A linha de `b` — definida e vazia — é a única em que o dois-pontos muda o resultado.
+
+3. **Veja o `:=` atribuir de verdade.**
+
+   ```bash
+   unset porta
+   echo "usando ${porta:=8080}"
+   echo "porta agora vale: [$porta]"
+   unset porta
+   echo "usando ${porta:-8080}"
+   echo "porta agora vale: [${porta:-<nao definida>}]"
+   ```
+
+   Esperado: com `:=` a variável fica valendo `8080`; com `:-` ela continua indefinida.
+
+4. **Prove o valor do `:?`.**
+
+   ```bash
+   cat > perigoso.sh <<'EOF'
+   #!/usr/bin/env bash
+   : "${DESTINO:?variavel DESTINO nao definida}"
+   echo "apagaria: ${DESTINO}/cache"
+   EOF
+   chmod +x perigoso.sh
+   DESTINO=/tmp/seguro ./perigoso.sh
+   ./perigoso.sh; echo "codigo: $?"
+   DESTINO="" ./perigoso.sh; echo "codigo: $?"
+   ```
+
+   Esperado: a primeira imprime o caminho; as outras duas param com a mensagem em `stderr` e código 1. Sem o `:?`, a última imprimiria `apagaria: /cache`.
+
+5. **Disseque um caminho.**
+
+   ```bash
+   p=/var/log/apt/history.log
+   printf '%-14s %s\n' '${p#*/}'   "${p#*/}"
+   printf '%-14s %s\n' '${p##*/}'  "${p##*/}"
+   printf '%-14s %s\n' '${p%/*}'   "${p%/*}"
+   printf '%-14s [%s]\n' '${p%%/*}' "${p%%/*}"
+   arq=${p##*/}
+   printf '%-14s %s\n' '${arq%.*}'  "${arq%.*}"
+   printf '%-14s %s\n' '${arq##*.}' "${arq##*.}"
+   ```
+
+   Esperado: exatamente os seis resultados da @fig-cortes-em-caminho.
+
+6. **Encontre os casos limite.**
+
+   ```bash
+   for p in "arquivo.txt" "/var/log/" "semponto" "/unico"; do
+       printf '%-14s  ##*/ =[%-12s]  %%/* =[%-12s]  basename=%s  dirname=%s\n' \
+           "$p" "${p##*/}" "${p%/*}" "$(basename "$p")" "$(dirname "$p")"
+   done
+   ```
+
+   Esperado: divergências em `arquivo.txt` (o `%/*` devolve o próprio nome, o `dirname` devolve `.`) e em `/var/log/` (o `##*/` devolve vazio, o `basename` devolve `log`).
+
+7. **Substitua texto.**
+
+   ```bash
+   c="/home/kali/meus documentos/relatorio final.txt"
+   echo "${c// /_}"
+   echo "${c//\//-}"
+   echo "${c/#\/home/~}"
+   echo "${c/%.txt/.md}"
+   echo "${c// }"
+   ```
+
+   Esperado: espaços viram sublinhado; barras viram hífen; o prefixo `/home` é trocado só no início; a extensão só no fim; e a última remove todos os espaços.
+
+8. **Veja o padrão ser glob, não regex.**
+
+   ```bash
+   t="abc123def45"
+   echo "sem extglob: ${t//[0-9]+/N}"
+   shopt -s extglob
+   echo "com extglob: ${t//+([0-9])/N}"
+   shopt -u extglob
+   ```
+
+   Esperado: sem `extglob`, nada muda (o `+` é literal e não há `9+` na cadeia). Com ele, `abcNdefN`.
+
+9. **Fatie e conte.**
+
+   ```bash
+   s="administrador"
+   printf '%-12s %s\n' 'len'      "${#s}"
+   printf '%-12s %s\n' '0:5'      "${s:0:5}"
+   printf '%-12s %s\n' '5:'       "${s:5}"
+   printf '%-12s %s\n' ': -5'     "${s: -5}"
+   printf '%-12s %s\n' '0:-4'     "${s:0:-4}"
+   ```
+
+   Esperado: `13`, `admin`, `istrador`, `rador` e `administ`.
+
+10. **Normalize caixa numa confirmação.**
+
+    ```bash
+    for r in S s SIM Sim n ""; do
+        case "${r,,}" in
+            s|sim) echo "[$r] -> confirmado" ;;
+            *)     echo "[$r] -> cancelado" ;;
+        esac
+    done
+    ```
+
+    Esperado: as quatro primeiras confirmam, as duas últimas cancelam. Sem o `,,`, só `s` e `sim` funcionariam.
+
+11. **Use indireção e listagem por prefixo.**
+
+    ```bash
+    COLETA_HOST=alvo.lab
+    COLETA_PORTA=8080
+    COLETA_TIMEOUT=30
+    for v in "${!COLETA_@}"; do printf '%-16s = %s\n' "$v" "${!v}"; done
+    ```
+
+    Esperado: as três variáveis listadas com seus valores, descobertas por convenção de nome.
+
+12. **Sanitize um alvo para virar nome de arquivo, e limpe.**
+
+    ```bash
+    for alvo in "10.10.10.5" "https://alvo.lab/admin?x=1" "servidor de teste"; do
+        seguro="${alvo//[^a-zA-Z0-9._-]/_}"
+        printf 'origem: %-32s arquivo: %s-%s.txt\n' "${alvo@Q}" "$seguro" "$(date +%F)"
+    done
+    cd ~ && rm -rf ~/lab-expansao
+    ```
+
+    Esperado: os três nomes sem barra, sem dois-pontos, sem interrogação e sem espaço — seguros como nome de arquivo. Repare no `@Q` mostrando as fronteiras do valor de origem.
+
+## Resumo
+
+- **Expansão de parâmetros roda dentro do processo do shell.** Substituir `basename`, `dirname`, `sed` e `cut` por `${v##*/}` e companhia elimina um `fork` por chamada — a diferença entre segundos e dezenas de minutos num laço grande.
+- **`${v:-p}`, `${v:=p}`, `${v:+a}` e `${v:?msg}` cobrem valor padrão, atribuição, valor condicional e variável obrigatória.** O dois-pontos decide se "definida mas vazia" conta como ausente; sem ele, só a variável nunca definida dispara.
+- **`: "${DESTINO:?...}"` no topo do script transforma configuração ausente em parada imediata**, em vez de deixar um `rm -rf "$DESTINO/x"` virar `rm -rf /x`.
+- **`#` corta do começo, `%` corta do fim; dobrado, o corte é guloso.** `${p##*/}` é o `basename` e `${p%/*}` é o `dirname` — com casos limite diferentes quando não há barra ou quando o caminho termina em barra.
+- **Os padrões são glob, não expressão regular.** `+`, `{n,m}` e grupos de captura não existem; `shopt -s extglob` acrescenta `+(...)`, `@(...)` e `!(...)`, e o resto é trabalho do `sed` e do `awk`.
+- **`${v/a/b}` troca a primeira ocorrência, `${v//a/b}` troca todas**, com `/#` e `/%` ancorando no início e no fim.
+- **`${v,,}` e `${v^^}` normalizam caixa sem chamar `tr`**, o que é o jeito certo de comparar resposta do usuário.
+- **A regra de fronteira: se cabe numa expansão, é do shell; se pede um programa, chame o programa uma vez sobre o conjunto inteiro** — nunca uma vez por item dentro do laço.

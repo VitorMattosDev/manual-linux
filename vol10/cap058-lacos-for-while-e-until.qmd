@@ -1,3 +1,567 @@
 # Laços: for, while e until {#sec-cap058}
 
-*(em elaboracao)*
+O script de expurgo rodava toda madrugada e nunca tinha dado problema. A linha central era esta:
+
+```bash
+for arquivo in $(ls /var/log/coleta/*.log); do
+    gzip "$arquivo"
+done
+```
+
+Até a semana em que a ferramenta de coleta passou a gravar `relatorio de marco.log` — com espaços. Naquela noite o `gzip` foi chamado três vezes, com `relatorio`, `de` e `marco.log`, reclamou três vezes que o arquivo não existia, e o log real ficou onde estava, crescendo. Um mês depois a partição encheu.
+
+O erro não está no `for`, nem no `gzip`. Está em ter usado como **fonte da lista** a saída de texto de um comando, quando o shell já tinha uma forma de gerar a lista sem nunca converter nomes em texto. Um laço no shell não itera sobre "os arquivos": ele itera sobre **as palavras que sobraram depois das expansões do @sec-cap053**. Quem escolhe como aquelas palavras são formadas escolhe se o laço vai funcionar.
+
+## `for`: o laço que percorre uma lista já pronta
+
+A forma canônica é simples e não tem contador nenhum:
+
+```bash
+for variavel in item1 item2 item3; do
+    echo "$variavel"
+done
+```
+
+O `for` recebe uma lista de palavras e executa o corpo uma vez para cada. A lista pode vir de qualquer expansão:
+
+```bash
+for f in *.log; do ... done                 # globbing (@sec-cap013)
+for n in {1..10}; do ... done               # expansao de chaves
+for u in alice bob carol; do ... done       # literal
+for p in "${caminhos[@]}"; do ... done      # array (@sec-cap060)
+for x in $(cat lista.txt); do ... done      # substituicao de comando -- CUIDADO
+```
+
+A última linha é a que quebrou o script de abertura, e a diferença entre ela e as outras é decisiva. Nas quatro primeiras, o shell produz **itens estruturados** — cada nome de arquivo, cada número, cada elemento de array é uma palavra inteira, com espaços preservados. Na quinta, o shell produz **um texto**, e esse texto é depois picado pela divisão em palavras usando o `IFS` — espaço, tabulação e quebra de linha. Um nome com espaço vira dois itens; um nome com `*` vira um glob que se expande outra vez.
+
+::: {#fig-fonte-da-lista}
+```{.tikz}
+%%| filename: de-onde-vem-a-lista-do-for
+%%| alt: Tres formas de gerar a lista de um laco for sobre arquivos, mostrando quantos itens cada uma produz para um nome de arquivo com espacos
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm},
+    ru/.style={bx,draw=manualred,fill=manualred!12},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=5.2cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (-0.4,6.3) {arquivo no disco:\quad relatorio de marco.log};
+
+  \node[cd,manualred] at (-0.4,5.4) {for f in \$(ls *.log)};
+  \node[ru,minimum width=1.5cm] at (5.0,5.4) {relatorio};
+  \node[ru,minimum width=0.8cm] at (6.2,5.4) {de};
+  \node[ru,minimum width=1.6cm] at (7.6,5.4) {marco.log};
+  \node[ex,manualred] at (8.7,5.4) {\textbf{3 iterações.} A saída virou texto e o \texttt{IFS} cortou nos espaços. O \texttt{gzip} é chamado com nomes que não existem.};
+
+  \node[cd,manualgreen] at (-0.4,3.55) {for f in *.log};
+  \node[ok,minimum width=3.4cm] at (6.0,3.55) {relatorio de marco.log};
+  \node[ex,manualgreen] at (8.7,3.55) {\textbf{1 iteração.} O globbing entrega o nome como uma palavra só. Espaços sobrevivem; quebras de linha também.};
+
+  \node[cd,manualgreen] at (-0.4,1.7) {find ... -print0 | while};
+  \node[cd,manualgreen] at (-0.4,1.3) {\quad IFS= read -r -d '' f};
+  \node[ok,minimum width=3.4cm] at (6.0,1.5) {relatorio de marco.log};
+  \node[ex,manualgreen] at (8.7,1.5) {\textbf{1 iteração,} e funciona também em subdiretórios e com nome contendo \texttt{\textbackslash n}. O separador é o byte nulo, que um nome de arquivo não pode conter.};
+
+  \node[nt,text width=14.9cm] at (7.0,0.15) {A regra que resolve quase todos os casos: \textbf{não transforme uma lista de arquivos em texto}. O \emph{globbing} e o \texttt{-print0} entregam itens; \texttt{\$(ls)} entrega uma cadeia de caracteres que o shell precisa adivinhar como recortar. O único caractere que não pode aparecer num nome de arquivo é o byte nulo --- por isso ele é o separador correto quando o laço precisa atravessar um \emph{pipe}.};
+\end{tikzpicture}
+```
+As três origens possíveis para a lista de um `for`, e o que cada uma faz com um nome que contém espaços.
+:::
+
+Duas consequências práticas dessa figura:
+
+**Nunca itere sobre `ls`.** Não existe caso em que `for f in $(ls ...)` seja melhor do que `for f in ...`. O `ls` só sabe imprimir texto, e converter nome de arquivo em texto é uma perda de informação irreversível.
+
+**Glob que não casa com nada não vira lista vazia.** Por padrão, quando `*.log` não encontra arquivo algum, o Bash deixa o próprio texto `*.log` passar, e o laço executa uma vez com a variável valendo literalmente `*.log`:
+
+```bash
+cd /tmp/vazio
+for f in *.log; do echo "processando: $f"; done   # imprime: processando: *.log
+```
+
+As duas soluções, ambas legítimas:
+
+```bash
+shopt -s nullglob            # glob sem correspondencia vira lista vazia
+for f in *.log; do ... done  # agora o laco simplesmente nao roda
+
+# ou, sem alterar opcao global:
+for f in *.log; do
+    [[ -e $f ]] || continue  # pula o caso do glob literal
+    ...
+done
+```
+
+## O `for` aritmético, quando o que importa é o contador
+
+Quando o laço precisa de um índice numérico, o Bash tem a forma de três partes, com a sintaxe do C:
+
+```bash
+for (( i = 0; i < 10; i++ )); do
+    echo "iteracao $i"
+done
+
+for (( i = 10; i > 0; i-- )); do echo "$i"; done
+for (( i = 0, j = 100; i < j; i++, j-- )); do ... done
+```
+
+Tudo dentro dos parênteses duplos está em **contexto aritmético** — as variáveis dispensam o `$`, e os operadores são os do @sec-cap055. Esse é o formato certo quando o limite é uma variável:
+
+```bash
+n=5
+for (( i = 1; i <= n; i++ )); do ... done      # funciona
+for i in {1..$n}; do ... done                  # NAO funciona
+```
+
+A segunda linha é uma armadilha frequente: a expansão de chaves acontece **antes** da expansão de variáveis, então o shell tenta expandir literalmente `{1..$n}` e produz uma única palavra com esse texto. Quando o intervalo é variável, use `for (( ))` ou `seq`.
+
+O `for (( ))` também é a forma correta de percorrer índices de array com passo diferente de um, e de escrever laços que dependem de duas variáveis ao mesmo tempo.
+
+## `while` e `until`: repetir enquanto um comando responde
+
+Assim como o `if` do @sec-cap055, o `while` **executa um comando e olha o código de saída**. Enquanto for zero, repete:
+
+```bash
+while comando; do ... done      # repete ENQUANTO o comando tiver sucesso
+until comando; do ... done      # repete ATE que o comando tenha sucesso
+```
+
+O `until` é exatamente `while !`, e existe porque algumas condições ficam mais legíveis expressas pela negação:
+
+```bash
+# espera o serviço subir
+until systemctl is-active --quiet postgresql; do
+    echo "aguardando o banco..."
+    sleep 2
+done
+
+# equivalente, e menos legivel
+while ! systemctl is-active --quiet postgresql; do sleep 2; done
+```
+
+::: {#fig-tres-lacos}
+```{.tikz}
+%%| filename: fluxo-dos-tres-lacos
+%%| alt: Fluxogramas comparando for-in, for aritmetico, while e until, mostrando onde cada um testa a condicao
+\begin{tikzpicture}[
+    nd/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.2cm,minimum height=0.55cm},
+    dc/.style={draw,thick,align=center,font=\scriptsize,inner sep=2pt,minimum width=2.3cm,minimum height=0.6cm},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,inner sep=1pt}
+  ]
+  % --- coluna 1: for-in
+  \node[hd,manualblue] at (2.0,6.6) {\texttt{for x in lista}};
+  \node[nd,draw=manualblue,fill=manualblue!10] (a1) at (2.0,5.8) {expande a lista\\\emph{uma única vez}};
+  \node[dc,draw=manualgray,fill=manualgray!8] (a2) at (2.0,4.7) {sobrou item?};
+  \node[nd,draw=manualgreen,fill=manualgreen!12] (a3) at (2.0,3.5) {\texttt{x} = próximo item\\executa o corpo};
+  \node[nd,draw=manualgray,fill=manualgray!8] (a4) at (2.0,1.9) {segue o script};
+  \draw[fl] (a1) -- (a2);
+  \draw[fl] (a2) -- node[lb,right] {sim} (a3);
+  \draw[fl] (a3.west) -- ++(-1.5,0) |- (a2.west);
+  \draw[fl] (a2.east) -- node[lb,above,pos=0.3] {não} ++(1.6,0) |- (a4.east);
+
+  % --- coluna 2: while
+  \node[hd,manualblue] at (7.5,6.6) {\texttt{while comando}};
+  \node[dc,draw=manualgray,fill=manualgray!8] (b2) at (7.5,5.3) {o comando\\saiu com 0?};
+  \node[nd,draw=manualgreen,fill=manualgreen!12] (b3) at (7.5,3.5) {executa o corpo};
+  \node[nd,draw=manualgray,fill=manualgray!8] (b4) at (7.5,1.9) {segue o script};
+  \draw[fl] (7.5,6.35) -- (b2);
+  \draw[fl] (b2) -- node[lb,right] {sim} (b3);
+  \draw[fl] (b3.west) -- ++(-1.5,0) |- (b2.west);
+  \draw[fl] (b2.east) -- node[lb,above,pos=0.3] {não} ++(1.6,0) |- (b4.east);
+
+  % --- coluna 3: until
+  \node[hd,manualblue] at (13.0,6.6) {\texttt{until comando}};
+  \node[dc,draw=manualgray,fill=manualgray!8] (c2) at (13.0,5.3) {o comando\\saiu com 0?};
+  \node[nd,draw=manualgreen,fill=manualgreen!12] (c3) at (13.0,3.5) {executa o corpo};
+  \node[nd,draw=manualgray,fill=manualgray!8] (c4) at (13.0,1.9) {segue o script};
+  \draw[fl] (13.0,6.35) -- (c2);
+  \draw[fl] (c2) -- node[lb,right] {\textbf{não}} (c3);
+  \draw[fl] (c3.west) -- ++(-1.5,0) |- (c2.west);
+  \draw[fl] (c2.east) -- node[lb,above,pos=0.3] {\textbf{sim}} ++(1.6,0) |- (c4.east);
+
+  \node[font=\scriptsize,manualgray,align=left,text width=14.9cm] at (7.5,0.7) {O \texttt{for} avalia a lista \textbf{antes} da primeira iteração: acrescentar arquivos ao diretório no meio de um \texttt{for f in *} não muda o que já foi expandido. O \texttt{while} e o \texttt{until} reavaliam o comando a cada volta --- por isso servem para esperar por um estado externo, e por isso um erro na condição produz laço infinito em vez de mensagem de erro.};
+\end{tikzpicture}
+```
+Onde cada laço testa: o `for` decide a lista uma vez, o `while` e o `until` decidem a cada volta.
+:::
+
+## `while read`: o jeito certo de ler um arquivo linha a linha
+
+Este é o idioma mais usado do shell inteiro, e ele tem três detalhes que não são decorativos:
+
+```bash
+while IFS= read -r linha; do
+    echo "[$linha]"
+done < arquivo.txt
+```
+
+- **`IFS=`** antes do `read` esvazia o separador **apenas para esse comando**, impedindo que espaços do início e do fim da linha sejam removidos.
+- **`-r`** desliga a interpretação de barras invertidas. Sem ele, um `C:\novo` no arquivo perde a barra e o `n` vira quebra de linha. É o mesmo `-r` do @sec-cap054.
+- **`< arquivo.txt` depois do `done`** redireciona a entrada do laço inteiro. O `read` lê do descritor 0 do laço, e não há subshell envolvido.
+
+Para dividir cada linha em campos, o `IFS` volta a ser útil — agora com valor:
+
+```bash
+while IFS=: read -r usuario _ uid gid comentario home shell; do
+    (( uid >= 1000 && uid < 65534 )) && printf '%-12s uid=%-6s %s\n' "$usuario" "$uid" "$shell"
+done < /etc/passwd
+```
+
+O `read` com vários nomes distribui os campos e joga **todo o resto** na última variável, o que é exatamente o comportamento desejado num arquivo cujo último campo pode conter o separador.
+
+## A armadilha do subshell: variáveis que somem no fim do laço
+
+Este script conta linhas e imprime zero:
+
+```bash
+total=0
+cat /etc/passwd | while IFS= read -r linha; do
+    (( total++ ))
+done
+echo "total: $total"        # imprime 0
+```
+
+Cada elemento de um *pipe* roda no seu **próprio processo**, como visto no @sec-cap012. O `while` está do lado direito do `|`, portanto roda num subshell: ele recebe uma cópia de `total`, incrementa a cópia, e o processo termina levando o resultado junto. O shell pai nunca soube de nada. Nenhuma mensagem de erro é emitida — o laço funcionou perfeitamente, num universo que deixou de existir.
+
+::: {#fig-subshell-do-pipe}
+```{.tikz}
+%%| filename: variavel-perdida-no-subshell
+%%| alt: Diagrama do pipe criando um subshell que perde a variavel do laco, e das tres formas de evitar isso
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt},
+    pai/.style={bx,draw=manualblue,fill=manualblue!10,minimum width=4.4cm,minimum height=1.5cm},
+    sub/.style={bx,draw=manualred,fill=manualred!10,minimum width=4.4cm,minimum height=1.5cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!12,minimum width=4.4cm,minimum height=1.5cm},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cd,manualred] at (0.0,6.9) {cat arq | while read linha; do (( total++ )); done};
+
+  \node[pai] (p) at (2.6,5.5) {\textbf{shell pai}\\[2pt] \texttt{total=0}\\ continua valendo \texttt{0}};
+  \node[sub] (s) at (9.4,5.5) {\textbf{subshell do \emph{pipe}}\\[2pt] cópia de \texttt{total} vai a \texttt{4}\\ e morre com o processo};
+  \draw[fl] (p) -- node[font=\tiny,manualgray,above] {fork} (s);
+  \draw[fl,manualred,dashed] (s.south) -- ++(0,-0.6) node[font=\tiny,manualred,below] {nada volta};
+
+  \node[cd,manualgreen] at (0.0,3.2) {while read linha; do (( total++ )); done < arq};
+  \node[ok,minimum height=0.8cm] (r1) at (11.0,3.2) {redirecionamento: sem \emph{pipe}, sem \emph{fork}};
+
+  \node[cd,manualgreen] at (0.0,2.1) {while read linha; do ...; done < <(comando)};
+  \node[ok,minimum height=0.8cm] (r2) at (11.0,2.1) {substituição de processo: o laço fica no pai};
+
+  \node[cd,manualgreen] at (0.0,1.0) {shopt -s lastpipe\quad \# + set +m em script};
+  \node[ok,minimum height=0.8cm] (r3) at (11.0,1.0) {o último estágio passa a rodar no pai};
+
+  \node[nt,text width=14.9cm] at (7.4,-0.2) {O sintoma é sempre o mesmo: a variável tem o valor certo \emph{dentro} do laço e o valor antigo depois do \texttt{done}. Se o script usa \texttt{echo} para depurar e o valor aparece correto na última iteração, o problema está no subshell, não na lógica. A forma preferida é a primeira quando a origem é um arquivo, e a segunda quando a origem é um comando.};
+\end{tikzpicture}
+```
+Por que um contador incrementado dentro de `cmd | while` volta a zero depois do `done`.
+:::
+
+Na prática, a substituição de processo `< <(comando)` é a solução mais usada, porque preserva o comando que gera os dados sem criar o subshell no lado errado:
+
+```bash
+total=0
+while IFS= read -r linha; do
+    (( ++total ))
+done < <(grep -c . /etc/passwd; grep '^root' /etc/passwd)
+echo "total: $total"        # agora conta certo
+```
+
+O espaço entre os dois sinais `<` é obrigatório: `< <(...)` é um redirecionamento cuja origem é a substituição de processo, enquanto `<<(` seria interpretado como o início de um *here-document*.
+
+## Percorrer resultados de `find` sem quebrar em nomes estranhos
+
+Quando a lista não cabe num glob simples — busca recursiva, filtro por data, por tamanho —, a combinação segura é `-print0` com `read -d ''`:
+
+```bash
+while IFS= read -r -d '' arquivo; do
+    echo "achei: $arquivo"
+done < <(find /var/log -type f -name '*.log' -mtime +30 -print0)
+```
+
+O `-print0` termina cada nome com um byte nulo em vez de quebra de linha, e o `-d ''` diz ao `read` para usar esse byte como delimitador. Como o byte nulo é o único caractere que o kernel proíbe num nome de arquivo, esse par é à prova de qualquer nome.
+
+Para casos simples, o `find` resolve sozinho, sem laço nenhum:
+
+```bash
+find /var/log -name '*.log' -mtime +30 -exec gzip {} +     # + agrupa varios por chamada
+find /var/log -name '*.log' -mtime +30 -delete
+```
+
+A regra prática: se o corpo do laço é uma chamada única a um comando, prefira `-exec ... +` ou `xargs -0`; se o corpo tem lógica — testes, contadores, mensagens —, use o laço com `-print0`.
+
+## `break`, `continue` e o controle de fluxo dentro do laço
+
+```bash
+for arq in *.conf; do
+    [[ -r $arq ]] || { echo "sem permissao: $arq" >&2; continue; }
+    grep -q '^ATIVO=1' "$arq" || continue
+    echo "primeiro ativo encontrado: $arq"
+    break
+done
+```
+
+Os dois aceitam um número que indica **quantos níveis** afetar, o que evita variáveis de controle em laços aninhados:
+
+```bash
+for rede in 10.0.0 10.0.1; do
+    for host in {1..254}; do
+        if [[ "$rede.$host" == "$ALVO" ]]; then
+            echo "achei em $rede.$host"
+            break 2               # sai dos DOIS lacos
+        fi
+    done
+done
+```
+
+Um `continue` sem `n` sempre volta ao laço mais interno. O `break 2` é bem mais legível do que a alternativa com uma variável `encontrado=1` testada nos dois níveis.
+
+## Redirecionar e canalizar o laço inteiro
+
+O laço é um comando composto, e como qualquer comando aceita redirecionamento e pode alimentar um *pipe*:
+
+```bash
+# toda a saida do laco vai para um arquivo, aberto uma unica vez
+for i in {1..1000}; do
+    echo "linha $i"
+done > saida.txt
+
+# o laco alimenta um pipe
+for u in $(cut -d: -f1 /etc/passwd); do
+    echo "$u"
+done | sort | column -c 80
+```
+
+A primeira forma é mais eficiente do que `echo ... >> saida.txt` dentro do laço: o arquivo é aberto uma vez, não mil. Em laço com muitas iterações a diferença é mensurável.
+
+## Laço infinito, com saída controlada
+
+```bash
+while true; do
+    verificar_estado
+    sleep 60
+done
+```
+
+Um laço que roda para sempre precisa de duas coisas: um `sleep`, para não consumir uma CPU inteira, e um caminho de saída. As formas mais comuns de sair são um `break` sob condição, um limite de tentativas, e o `trap` para sinais — este último tema do Volume 12.
+
+O padrão de espera com limite, que evita travar um script para sempre esperando algo que não vai acontecer:
+
+```bash
+tentativas=0
+until curl -sf http://localhost:8080/health >/dev/null; do
+    (( ++tentativas ))
+    if (( tentativas >= 30 )); then
+        echo "servico nao subiu em 60s" >&2
+        exit 1
+    fi
+    sleep 2
+done
+echo "servico no ar apos $(( tentativas * 2 ))s"
+```
+
+::: {.callout-warning}
+## Laço que executa comando destrutivo merece um ensaio antes
+
+Um erro de lógica num `if` produz uma decisão errada. Um erro de lógica num laço produz a mesma decisão errada **em todos os arquivos que casaram**. A diferença de custo entre os dois é a razão de existir esta regra:
+
+```bash
+# 1. PRIMEIRO, imprima o que seria feito
+for arq in /var/log/**/*.log; do
+    echo "APAGARIA: $arq"
+done
+
+# 2. leia a lista inteira. so entao troque o echo pela acao
+for arq in /var/log/**/*.log; do
+    rm -f -- "$arq"
+done
+```
+
+O `--` antes do nome impede que um arquivo chamado `-rf` ou `--no-preserve-root` seja lido como opção. Vale para `rm`, `cp`, `mv`, `chown` e praticamente todo utilitário do coreutils.
+
+Três precauções que se acumulam bem: testar o laço num diretório descartável criado com `mktemp -d`; usar `rm -i` na primeira execução real; e nunca rodar um laço destrutivo cuja lista venha de variável não validada — um `$DIR` vazio transforma `rm -rf "$DIR"/*` em `rm -rf /*`.
+:::
+
+## 🐉 No Kali
+
+- **Laço sobre lista de alvos é o momento de aplicar o filtro de escopo, não depois.** O padrão correto num laboratório autorizado é validar cada alvo contra a faixa contratada **dentro** do laço, com o `continue` recusando o que não pertence ao escopo: `[[ $alvo =~ ^10\.10\.10\. ]] || { echo "fora do escopo: $alvo" >&2; continue; }`. Um erro de digitação numa lista de 254 endereços não é um alvo errado, são 254 — e varrer host fora do escopo autorizado é crime pela Lei 12.737/2012. O laço amplifica tanto o acerto quanto o engano.
+- **`for host in {1..254}` é conveniente e quase sempre a ferramenta errada.** O `nmap`, o `masscan` e o `fping` já fazem varredura paralela, com controle de temporização e de taxa; um laço em Bash chamando `ping` uma vez por endereço é serial, leva minutos onde o `nmap -sn 10.0.0.0/24` leva segundos, e não tem nenhum controle de intensidade. Use o laço para orquestrar — iterar sobre arquivos de saída, sobre perfis de varredura, sobre alvos já confirmados —, não para substituir a ferramenta.
+- **`sleep` dentro do laço é controle de intensidade, não enfeite.** Um laço sem pausa contra um serviço de laboratório é indistinguível de uma negação de serviço acidental, e derruba justamente o alvo que você precisava analisar. Em qualquer laço que faça requisição de rede, inclua uma pausa explícita e considere `--max-rate` ou equivalente na própria ferramenta.
+- **Arquivos de resultado do Kali têm nomes traiçoeiros.** Saída de `gobuster`, `nikto` e afins com URL no nome pode conter `%20`, `&`, `?` e espaço. É exatamente a família de nomes que quebra `for f in $(ls)`. Percorra com glob ou com `find -print0`, e cite toda expansão.
+- **No rolling, verifique a ferramenta antes de entrar no laço, não a cada iteração.** `command -v nmap >/dev/null || { echo "instale: sudo apt install nmap" >&2; exit 1; }` no topo do script custa uma chamada; dentro de um laço de 254 voltas, custa 254 e ainda produz 254 mensagens de erro idênticas antes de o script desistir.
+
+> **Nota sobre a família RHEL.** A sintaxe dos laços é idêntica — vem do Bash. Duas divergências valem registro. A primeira é a de sempre: `for (( ))`, `< <(...)`, `break n` com aninhamento e `shopt -s nullglob` são recursos de Bash, e um script com `#!/bin/sh` que funciona em RHEL (onde `/bin/sh` é o Bash em modo POSIX) falha sob o `dash` do Debian e do Kali. A segunda é o `globstar`: o `**` recursivo usado acima exige `shopt -s globstar` em qualquer distribuição, e não está ligado por padrão em lugar nenhum — sem ele, `**/*.log` se comporta como `*/*.log`, e o laço percorre em silêncio um subconjunto do que você esperava.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-lacos`.
+
+1. **Prepare um diretório com nomes hostis.**
+
+   ```bash
+   mkdir -p ~/lab-lacos && cd ~/lab-lacos
+   touch simples.log "relatorio de marco.log" "com'aspa.log" 'a*b.log'
+   mkdir -p sub && touch sub/aninhado.log
+   ls -1
+   ```
+
+   Esperado: cinco arquivos, três deles com caracteres que o shell trata de forma especial.
+
+2. **Reproduza o bug de abertura.**
+
+   ```bash
+   echo "--- com \$(ls) ---"
+   for f in $(ls *.log); do echo "[$f]"; done
+   echo "--- com glob ---"
+   for f in *.log; do echo "[$f]"; done
+   ```
+
+   Esperado: o primeiro laço produz mais iterações do que existem arquivos e mostra fragmentos como `[relatorio]` e `[de]`. O segundo produz exatamente quatro linhas, cada uma com o nome inteiro entre colchetes.
+
+3. **Veja o glob vazio passar como texto literal.**
+
+   ```bash
+   mkdir -p vazio && cd vazio
+   for f in *.txt; do echo "processando: [$f]"; done
+   shopt -s nullglob
+   for f in *.txt; do echo "processando: [$f]"; done
+   echo "com nullglob o laco nao rodou nenhuma vez"
+   shopt -u nullglob; cd ..
+   ```
+
+   Esperado: sem `nullglob`, uma iteração com o valor literal `*.txt`. Com ele, nenhuma iteração.
+
+4. **Compare `for in` e `for (( ))` com limite variável.**
+
+   ```bash
+   n=4
+   echo "--- expansao de chaves com variavel ---"
+   for i in {1..$n}; do echo "[$i]"; done
+   echo "--- for aritmetico ---"
+   for (( i = 1; i <= n; i++ )); do echo "[$i]"; done
+   ```
+
+   Esperado: o primeiro imprime uma única linha com o texto literal `{1..4}` não expandido — a expansão de chaves ocorre antes da de variáveis. O segundo imprime 1 a 4.
+
+5. **Leia um arquivo linha a linha, do jeito certo e do errado.**
+
+   ```bash
+   printf '  espaco nas pontas  \nC:\\novo\\teste\nultima sem newline' > dados.txt
+   echo "--- read cru ---"
+   while read linha; do echo "[$linha]"; done < dados.txt
+   echo "--- IFS= read -r ---"
+   while IFS= read -r linha; do echo "[$linha]"; done < dados.txt
+   ```
+
+   Esperado: sem `IFS=`, os espaços das pontas desaparecem; sem `-r`, a sequência `\n` do caminho do Windows é interpretada. Note que **as duas versões perdem a última linha** — ela não termina em quebra de linha, e o `read` devolve código de saída diferente de zero ao encontrar o fim do arquivo.
+
+6. **Resolva o problema da última linha sem quebra final.**
+
+   ```bash
+   while IFS= read -r linha || [[ -n $linha ]]; do
+       echo "[$linha]"
+   done < dados.txt
+   ```
+
+   Esperado: agora as três linhas aparecem. O `|| [[ -n $linha ]]` entra em ação apenas na última volta: o `read` falhou, mas deixou conteúdo na variável.
+
+7. **Divida em campos com `IFS`.**
+
+   ```bash
+   while IFS=: read -r usuario _ uid _ _ _ shell; do
+       (( uid >= 1000 && uid < 65534 )) && printf '%-14s uid=%-6s %s\n' "$usuario" "$uid" "$shell"
+   done < /etc/passwd
+   ```
+
+   Esperado: apenas as contas humanas, com o UID e o shell alinhados. No Kali, o usuário `kali` deve aparecer com UID 1000.
+
+8. **Comprove a perda de variável no subshell.**
+
+   ```bash
+   total=0
+   cat /etc/passwd | while IFS= read -r _; do (( ++total )); done
+   echo "com pipe:              total=$total"
+
+   total=0
+   while IFS= read -r _; do (( ++total )); done < /etc/passwd
+   echo "com redirecionamento:  total=$total"
+
+   total=0
+   while IFS= read -r _; do (( ++total )); done < <(cat /etc/passwd)
+   echo "com substituicao proc: total=$total"
+   ```
+
+   Esperado: a primeira linha imprime `total=0`, as outras duas imprimem o número real de linhas do arquivo. É a @fig-subshell-do-pipe em execução.
+
+9. **Percorra `find` com segurança.**
+
+   ```bash
+   echo "--- inseguro: quebra em nome com espaco ---"
+   for f in $(find . -name '*.log'); do echo "[$f]"; done
+   echo "--- seguro: -print0 ---"
+   while IFS= read -r -d '' f; do echo "[$f]"; done < <(find . -name '*.log' -print0)
+   ```
+
+   Esperado: o primeiro laço fragmenta `relatorio de marco.log`; o segundo lista os cinco arquivos íntegros, incluindo o de dentro de `sub/`.
+
+10. **Use `break` com nível.**
+
+    ```bash
+    alvo="10.0.1.7"
+    for rede in 10.0.0 10.0.1 10.0.2; do
+        for host in 1 7 42; do
+            if [[ "$rede.$host" == "$alvo" ]]; then
+                echo "encontrado: $rede.$host"
+                break 2
+            fi
+            echo "  testado: $rede.$host"
+        done
+    done
+    echo "saiu dos dois lacos"
+    ```
+
+    Esperado: a varredura para assim que encontra `10.0.1.7`, sem testar `10.0.2`. Sem o `2`, o laço externo continuaria.
+
+11. **Meça a diferença do redirecionamento do laço inteiro.**
+
+    ```bash
+    time { for i in $(seq 1 5000); do echo "$i" >> lento.txt; done; }
+    time { for i in $(seq 1 5000); do echo "$i"; done > rapido.txt; }
+    cmp lento.txt rapido.txt && echo "conteudo identico"
+    ```
+
+    Esperado: conteúdo idêntico, com o segundo notavelmente mais rápido — o arquivo foi aberto uma vez em vez de cinco mil.
+
+12. **Escreva uma espera com limite e limpe.**
+
+    ```bash
+    tentativas=0
+    until [[ -f pronto.flag ]]; do
+        (( ++tentativas ))
+        (( tentativas == 3 )) && touch pronto.flag     # simula o evento externo
+        if (( tentativas > 10 )); then echo "desistiu" >&2; break; fi
+        echo "tentativa $tentativas..."
+        sleep 1
+    done
+    echo "concluido apos $tentativas tentativas"
+    cd ~ && rm -rf ~/lab-lacos
+    ```
+
+    Esperado: três tentativas e a saída do laço. O contador com limite é o que impede que um `until` espere para sempre por uma condição que nunca vai ocorrer.
+
+## Resumo
+
+- **O `for` itera sobre palavras, não sobre arquivos.** Quem decide como as palavras são formadas é a expansão que gera a lista — e `$(ls)` converte nomes em texto, que o `IFS` depois recorta nos espaços. Use `for f in *.log`, nunca `for f in $(ls *.log)`.
+- **Glob sem correspondência passa literalmente.** Ligue `shopt -s nullglob` ou teste `[[ -e $f ]] || continue` na primeira linha do corpo.
+- **`for (( i=0; i<n; i++ ))` é a forma certa quando o limite é variável.** A expansão de chaves acontece antes da de variáveis, então `{1..$n}` não funciona.
+- **`while` e `until` reavaliam a condição a cada volta**, o que os torna a ferramenta para esperar por estado externo — sempre com `sleep` e com um limite de tentativas.
+- **O idioma de leitura é `while IFS= read -r linha; do ... done < arquivo`.** O `IFS=` preserva espaços nas pontas, o `-r` preserva barras invertidas, e o redirecionamento depois do `done` evita o subshell. Acrescente `|| [[ -n $linha ]]` quando o arquivo puder não terminar em quebra de linha.
+- **`comando | while read` perde as variáveis no fim do laço**, porque o lado direito do *pipe* é um subshell. A correção é `< arquivo` ou `< <(comando)` — com o espaço obrigatório entre os dois sinais.
+- **Para `find`, o par seguro é `-print0` com `read -r -d ''`.** O byte nulo é o único caractere impossível num nome de arquivo. Quando o corpo do laço é uma chamada única, prefira `-exec ... +` ou `xargs -0`.
+- **`break n` e `continue n` saem de vários níveis de uma vez**, dispensando variáveis de controle em laços aninhados.
+- **Redirecione o laço inteiro (`done > saida.txt`)** em vez de usar `>>` em cada iteração: o arquivo é aberto uma vez só.
+- **Laço com comando destrutivo se testa com `echo` antes.** O erro que num `if` atinge um arquivo, num `for` atinge todos eles.

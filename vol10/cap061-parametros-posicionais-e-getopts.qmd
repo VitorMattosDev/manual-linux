@@ -1,3 +1,513 @@
 # Parâmetros posicionais e getopts {#sec-cap061}
 
-*(em elaboracao)*
+O script de coleta aceitava três opções e a análise dos argumentos tinha crescido assim, uma condição por vez:
+
+```bash
+if [ "$1" = "-v" ]; then
+    VERBOSE=1
+    shift
+fi
+if [ "$1" = "-n" ]; then
+    SIMULAR=1
+    shift
+fi
+if [ "$1" = "-o" ]; then
+    SAIDA="$2"
+    shift 2
+fi
+ARQUIVO="$1"
+```
+
+Funcionava. Funcionava exatamente enquanto as opções fossem escritas na ordem em que os `if` apareciam, uma por vez, e nunca depois do nome do arquivo. Todas estas invocações — todas razoáveis, todas aceitas por qualquer utilitário do sistema — produziam comportamento errado sem uma única mensagem de erro:
+
+```bash
+coletar -n -v dados.txt        # o -v e testado primeiro: nao e reconhecido
+coletar -vn dados.txt          # "-vn" nao e igual a "-v"
+coletar dados.txt -v           # opcao depois do operando: ignorada
+coletar -o dados.txt           # SAIDA vira "dados.txt" e ARQUIVO fica vazio
+coletar -- -arquivo-estranho   # o "--" vira o nome do arquivo
+```
+
+O último caso é o mais desconfortável: o script tratou `--` como um nome de arquivo. Quando o argumento seguinte era `-rf`, o comando que o script montava internamente recebia isso como opção. Uma análise de argumentos frouxa não é só inconveniente — é a fronteira entre o que o usuário digitou e o que o script executa, e ela precisa de uma estrutura.
+
+## Os posicionais são um array com nome curto
+
+Tudo que o script recebeu está nos parâmetros posicionais, que seguem exatamente a semântica do @sec-cap060:
+
+```bash
+"$0"          # o nome do script, como foi invocado
+"$1" .. "$9"  # os argumentos, um a um
+"${10}"       # do decimo em diante, as CHAVES sao obrigatorias
+"$#"          # quantos argumentos ha
+"$@"          # todos, como palavras separadas   <- use esta
+"$*"          # todos, unidos numa palavra so    <- so para exibir
+```
+
+`$10` sem chaves é lido como `$1` seguido do caractere `0` — um erro silencioso e clássico em scripts que recebem muitos argumentos.
+
+Sobre `$0`: ele contém o caminho **como o script foi chamado**, que pode ser relativo, pode ser um link simbólico, e não é o caminho do arquivo quando o script é carregado com `source`. Para descobrir onde o script realmente está, o Bash oferece `BASH_SOURCE`:
+
+```bash
+programa=${0##*/}                                       # so o nome, para mensagens
+diretorio=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+```
+
+O `set` permite reescrever os posicionais, o que é útil para aplicar valores padrão ou reconstruir a lista depois de uma análise:
+
+```bash
+set -- alfa beta "com espaco"    # agora $1=alfa, $2=beta, $3="com espaco", $#=3
+set --                           # limpa todos
+```
+
+O `--` inicial não é decorativo: sem ele, um primeiro argumento começando com hífen seria interpretado como opção do próprio `set`.
+
+## `shift`: consumir o que já foi tratado
+
+```bash
+shift        # descarta $1; $2 vira $1, e $# diminui em um
+shift 2      # descarta os dois primeiros
+```
+
+Um detalhe que vira laço infinito quando ignorado: **`shift` falha, com código 1, se pedir mais do que existe**, e não altera nada nesse caso. Sob `set -e`, isso aborta o script; sem `set -e`, um laço que dependa do `shift` para progredir simplesmente nunca termina. Teste `$#` antes.
+
+## A análise manual com `while` e `case`
+
+Esta é a estrutura que resolve todos os casos da abertura e ainda aceita opções longas. Ela combina o laço do @sec-cap058 com o `case` do @sec-cap055:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+programa=${0##*/}
+VERBOSE=0
+SIMULAR=0
+SAIDA=""
+
+uso() {
+    cat <<EOF
+Uso: $programa [-v] [-n] [-o ARQUIVO] ALVO...
+
+  -v, --verbose        detalha o que esta sendo feito
+  -n, --dry-run        mostra o que seria feito, sem fazer
+  -o, --saida ARQUIVO  grava o relatorio em ARQUIVO
+  -h, --help           mostra esta ajuda
+EOF
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        -v|--verbose)  VERBOSE=1; shift ;;
+        -n|--dry-run)  SIMULAR=1; shift ;;
+        -o|--saida)
+            [[ $# -ge 2 ]] || { echo "$programa: $1 exige um argumento" >&2; exit 2; }
+            SAIDA="$2"; shift 2 ;;
+        --saida=*)     SAIDA="${1#*=}"; shift ;;
+        -h|--help)     uso; exit 0 ;;
+        --)            shift; break ;;        # fim das opcoes
+        -*)            echo "$programa: opcao desconhecida: $1" >&2; uso >&2; exit 2 ;;
+        *)             break ;;               # primeiro operando
+    esac
+done
+
+(( $# > 0 )) || { echo "$programa: nenhum alvo informado" >&2; exit 2; }
+
+for alvo in "$@"; do
+    echo "processando: $alvo"
+done
+```
+
+Vale reparar em cinco decisões desse trecho, porque cada uma corresponde a um dos bugs da abertura:
+
+- O `case` testa **padrões**, então `-v|--verbose` cobre as duas grafias numa linha.
+- O ramo `--saida=*` usa a remoção de prefixo do @sec-cap062 para aceitar `--saida=/tmp/r.txt`.
+- O ramo `--` interrompe a análise: tudo depois disso é operando, mesmo começando com hífen.
+- O ramo `-*` **rejeita** opção desconhecida em vez de tratá-la como nome de arquivo. Silêncio aqui é o que faz um erro de digitação virar comportamento inesperado.
+- O código de saída da falha de uso é `2`, seguindo a convenção do @sec-cap056; `0` fica reservado para `--help`, que é um uso bem-sucedido.
+
+## `getopts`: o builtin que já sabe as regras
+
+Para opções curtas, o Bash traz um analisador pronto que implementa a convenção POSIX inteira — agrupamento, argumento colado ou separado, `--`:
+
+```bash
+while getopts ':vno:h' opcao; do
+    case "$opcao" in
+        v)  VERBOSE=1 ;;
+        n)  SIMULAR=1 ;;
+        o)  SAIDA="$OPTARG" ;;
+        h)  uso; exit 0 ;;
+        :)  echo "$programa: a opcao -$OPTARG exige um argumento" >&2; exit 2 ;;
+        \?) echo "$programa: opcao invalida: -$OPTARG" >&2; exit 2 ;;
+    esac
+done
+shift $(( OPTIND - 1 ))       # <- a linha que todo mundo esquece
+```
+
+A cadeia de opções `':vno:h'` se lê da esquerda para a direita:
+
+- **O `:` inicial** liga o *modo silencioso*. Sem ele, o `getopts` imprime as próprias mensagens de erro, em inglês, sem o nome do seu script, e os casos `:` e `\?` ficam indistinguíveis. Ligue sempre.
+- **`v`, `n`, `h`** são opções sem argumento.
+- **`o:`** — o dois-pontos **depois** da letra diz que aquela opção exige um argumento, que chega em `OPTARG`.
+
+O `getopts` não é uma função mágica: ele é chamado uma vez por volta do `while` e usa a variável `OPTIND` para lembrar onde parou. Quando não há mais opções, devolve código diferente de zero e o laço termina.
+
+::: {#fig-getopts-caminhando}
+```{.tikz}
+%%| filename: getopts-caminhando-pelos-argumentos
+%%| alt: Diagrama do getopts percorrendo a linha de comando iteracao por iteracao, mostrando o valor de OPTIND, da opcao e de OPTARG em cada volta e o efeito do shift final
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm},
+    op/.style={bx,draw=manualblue,fill=manualblue!12,minimum width=1.5cm},
+    ar/.style={bx,draw=manualyellow,fill=manualyellow!25,minimum width=1.9cm},
+    od/.style={bx,draw=manualgreen,fill=manualgreen!13,minimum width=1.5cm},
+    it/.style={font=\scriptsize,align=left,anchor=west},
+    hd/.style={font=\scriptsize\bfseries,anchor=west},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % vetor de argumentos
+  \node[hd,manualblue] at (-0.5,7.2) {linha de comando};
+  \node[op] (a1) at (1.4,6.5) {-vn};
+  \node[op] (a2) at (3.1,6.5) {-o};
+  \node[ar] (a3) at (5.1,6.5) {saida.txt};
+  \node[od] (a4) at (7.0,6.5) {alvo1};
+  \node[od] (a5) at (8.7,6.5) {alvo2};
+  \node[font=\tiny,manualgray] at (1.4,5.95) {\$1};
+  \node[font=\tiny,manualgray] at (3.1,5.95) {\$2};
+  \node[font=\tiny,manualgray] at (5.1,5.95) {\$3};
+  \node[font=\tiny,manualgray] at (7.0,5.95) {\$4};
+  \node[font=\tiny,manualgray] at (8.7,5.95) {\$5};
+
+  % iteracoes
+  \node[hd,manualblue] at (-0.5,5.2) {voltas do \texttt{while getopts ':vno:h' opcao}};
+  \node[it] at (-0.3,4.6) {\textbf{1ª} \quad \texttt{opcao=v} \quad \texttt{OPTARG} vazio \quad \texttt{OPTIND=1}};
+  \node[it,manualgray] at (5.9,4.6) {ainda dentro de \texttt{-vn}: opções agrupadas};
+  \node[it] at (-0.3,4.0) {\textbf{2ª} \quad \texttt{opcao=n} \quad \texttt{OPTARG} vazio \quad \texttt{OPTIND=2}};
+  \node[it,manualgray] at (5.9,4.0) {terminou o \texttt{-vn}, aponta para \texttt{\$2}};
+  \node[it] at (-0.3,3.4) {\textbf{3ª} \quad \texttt{opcao=o} \quad \texttt{OPTARG=saida.txt} \quad \texttt{OPTIND=4}};
+  \node[it,manualgray] at (7.9,3.4) {consumiu \emph{dois} argumentos};
+  \node[it] at (-0.3,2.8) {\textbf{4ª} \quad devolve código $\neq$ 0 \quad \texttt{OPTIND=4}};
+  \node[it,manualgray] at (5.9,2.8) {\texttt{\$4} não começa com hífen: acabaram as opções};
+
+  % shift
+  \node[hd,manualgreen] at (-0.5,2.0) {\texttt{shift \$(( OPTIND - 1 ))} \quad descarta três argumentos};
+  \node[od] (b1) at (1.4,1.3) {alvo1};
+  \node[od] (b2) at (3.1,1.3) {alvo2};
+  \node[font=\tiny,manualgray] at (1.4,0.75) {\$1};
+  \node[font=\tiny,manualgray] at (3.1,0.75) {\$2};
+  \node[it,manualgreen] at (4.4,1.3) {Agora \texttt{"\$@"} contém \emph{só} os operandos, e \texttt{\$\#} vale 2.};
+
+  \node[nt,text width=14.9cm] at (7.2,0.0) {Sem o \texttt{shift \$(( OPTIND - 1 ))}, o laço seguinte sobre \texttt{"\$@"} processaria \texttt{-vn}, \texttt{-o} e \texttt{saida.txt} como se fossem alvos. É o erro mais comum com \texttt{getopts}, e ele não produz mensagem nenhuma --- só um alvo chamado \texttt{-vn}. O \texttt{OPTIND} é uma variável global do shell: ao analisar argumentos dentro de uma função, declare \texttt{local OPTIND} para não corromper a contagem de quem chamou.};
+\end{tikzpicture}
+```
+O `getopts` avança pelo vetor de argumentos usando `OPTIND`; o `shift` final entrega ao script apenas os operandos.
+:::
+
+O `getopts` também aceita o argumento colado (`-osaida.txt`) e para sozinho num `--`, tratando o resto como operandos. É a convenção completa, sem que você escreva uma linha para isso.
+
+Três detalhes que economizam depuração:
+
+```bash
+local OPTIND          # obrigatorio ao usar getopts DENTRO de uma funcao
+OPTIND=1              # necessario para analisar um segundo vetor na mesma execucao
+getopts ':vno:h' opcao "${meus_args[@]}"   # analisar um array em vez de "$@"
+```
+
+## Escolher entre as duas estratégias
+
+::: {#fig-tres-estrategias}
+```{.tikz}
+%%| filename: estrategias-de-analise-de-argumentos
+%%| alt: Tabela comparando tres estrategias de analise de argumentos quanto a suporte a flags agrupadas, opcoes longas, separador e rejeicao de opcao desconhecida
+\begin{tikzpicture}[
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    rw/.style={font=\scriptsize,align=left,anchor=west},
+    sim/.style={font=\scriptsize\bfseries,manualgreen,align=center},
+    nao/.style={font=\scriptsize\bfseries,manualred,align=center},
+    box/.style={rounded corners=2pt,draw,thick,inner sep=0pt},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % cabecalho de colunas
+  \node[hd,manualred]   at (7.2,6.4) {\texttt{if} encadeado};
+  \node[hd,manualblue]  at (10.0,6.4) {\texttt{while} + \texttt{case}};
+  \node[hd,manualgreen] at (12.8,6.4) {\texttt{getopts}};
+  \draw[semithick,manualgray] (0.2,6.1) -- (14.0,6.1);
+
+  % linhas
+  \node[rw] at (0.3,5.6) {Opções agrupadas \quad \texttt{-vn}};
+  \node[nao] at (7.2,5.6) {não}; \node[nao] at (10.0,5.6) {não}; \node[sim] at (12.8,5.6) {sim};
+
+  \node[rw] at (0.3,5.0) {Argumento colado \quad \texttt{-osaida}};
+  \node[nao] at (7.2,5.0) {não}; \node[nao] at (10.0,5.0) {não}; \node[sim] at (12.8,5.0) {sim};
+
+  \node[rw] at (0.3,4.4) {Opções longas \quad \texttt{--verbose}};
+  \node[nao] at (7.2,4.4) {não}; \node[sim] at (10.0,4.4) {sim}; \node[nao] at (12.8,4.4) {não};
+
+  \node[rw] at (0.3,3.8) {Forma \texttt{--saida=/tmp/r.txt}};
+  \node[nao] at (7.2,3.8) {não}; \node[sim] at (10.0,3.8) {sim}; \node[nao] at (12.8,3.8) {não};
+
+  \node[rw] at (0.3,3.2) {Ordem livre das opções};
+  \node[nao] at (7.2,3.2) {não}; \node[sim] at (10.0,3.2) {sim}; \node[sim] at (12.8,3.2) {sim};
+
+  \node[rw] at (0.3,2.6) {Separador \texttt{--} respeitado};
+  \node[nao] at (7.2,2.6) {não}; \node[sim] at (10.0,2.6) {sim}; \node[sim] at (12.8,2.6) {sim};
+
+  \node[rw] at (0.3,2.0) {Rejeita opção desconhecida};
+  \node[nao] at (7.2,2.0) {não}; \node[sim] at (10.0,2.0) {sim}; \node[sim] at (12.8,2.0) {sim};
+
+  \node[rw] at (0.3,1.4) {Portável para \texttt{/bin/sh}};
+  \node[sim] at (7.2,1.4) {sim}; \node[sim] at (10.0,1.4) {sim}; \node[sim] at (12.8,1.4) {sim};
+
+  \draw[semithick,manualgray] (0.2,1.1) -- (14.0,1.1);
+
+  \node[nt,text width=14.4cm] at (7.1,0.3) {Nenhuma das três cobre tudo, e a escolha é simples na prática: \textbf{opções curtas apenas} pedem \texttt{getopts}, que traz a convenção POSIX pronta e de graça; \textbf{qualquer opção longa} pede o laço \texttt{while} com \texttt{case}. O \texttt{if} encadeado da primeira coluna não tem caso de uso --- ele custa o mesmo trabalho das outras duas e falha em tudo. O \texttt{getopt} externo do pacote \texttt{util-linux} faz opções longas \emph{e} agrupamento, mas exige o idioma \texttt{eval set -- "\$OPCOES"} e não existe no macOS nem no BSD.};
+\end{tikzpicture}
+```
+O que cada estratégia de análise de argumentos cobre.
+:::
+
+Se o script tem opções longas **e** precisa de agrupamento, existe o `getopt` externo (`/usr/bin/getopt`, do `util-linux`, presente no Kali). Ele funciona, mas o idioma é desconfortável:
+
+```bash
+opcoes=$(getopt -o 'vno:h' --long 'verbose,dry-run,saida:,help' -n "$programa" -- "$@") || exit 2
+eval set -- "$opcoes"
+while true; do
+    case "$1" in
+        -v|--verbose) VERBOSE=1; shift ;;
+        --) shift; break ;;
+        # ...
+    esac
+done
+```
+
+O `eval` aqui é seguro porque o `getopt` cita cada palavra na saída — mas é `eval` sobre entrada do usuário, e depende dessa citação estar correta. Some-se a isso que o `getopt` do BSD e do macOS é uma implementação antiga e incompatível, e a recomendação prática se sustenta: **use `getopts` ou o laço com `case`**.
+
+## O `--` e os nomes que começam com hífen
+
+O `--` marca o fim das opções, e vale tanto para o seu script quanto para os comandos que ele chama. Sempre que um caminho vindo de variável for para um comando, o `--` deve estar lá:
+
+```bash
+rm -- "$arquivo"          # se $arquivo for "-rf", nao vira opcao
+cp -- "$origem" "$destino"
+grep -- "$padrao" arquivo.txt
+```
+
+Um caso especialmente traiçoeiro: `grep "$padrao"` com um padrão que comece com hífen vira opção do `grep`. Se o padrão vier de entrada do usuário, isso é uma forma de alterar o comportamento do comando à distância.
+
+Para caminhos vindos de glob em diretório arbitrário, a defesa complementar é prefixar com `./`:
+
+```bash
+for f in ./*; do ... done      # cada item comeca com "./", nunca com "-"
+```
+
+## Validar antes de agir
+
+Depois da análise, três verificações valem a pena antes de qualquer efeito colateral:
+
+```bash
+# 1. quantidade minima de operandos
+(( $# >= 1 )) || { uso >&2; exit 2; }
+
+# 2. coerencia entre opcoes
+if (( SIMULAR )) && [[ -n $SAIDA ]]; then
+    echo "$programa: -n e -o sao incompativeis" >&2; exit 2
+fi
+
+# 3. valores fazem sentido
+[[ -z $SAIDA || -w $(dirname -- "$SAIDA") ]] ||
+    { echo "$programa: nao consigo gravar em $SAIDA" >&2; exit 2; }
+```
+
+E uma função `uso` que sirva às duas plateias: `uso` na saída padrão com código 0 quando o usuário pediu `--help`; `uso >&2` com código 2 quando ele errou. Confundir os dois faz o `--help` do script poluir um *pipeline* e o erro passar despercebido em automação.
+
+## 🐉 No Kali
+
+- **A validação de escopo entra logo depois da análise, antes de qualquer pacote sair da máquina.** Um script que recebe alvos por argumento deve verificar cada operando contra a faixa autorizada assim que a análise termina, e sair com código próprio se algo não pertence ao escopo. Deixar essa checagem para dentro do laço de varredura significa que os primeiros alvos já foram tocados quando o problema aparece. Varredura fora do escopo contratado é crime pela Lei 12.737/2012, e a análise de argumentos é o último ponto onde ela ainda é barata de impedir.
+- **`-o` sem argumento é a falha que mais aparece em wrapper de ferramenta.** `coletar -o` no fim da linha faz `OPTARG` vazio e o arquivo de saída vira o diretório atual, ou pior, o próximo argumento — que seria o alvo. Com o `:` inicial na cadeia de opções, esse caso cai no ramo `:` e o script para com mensagem clara em vez de sobrescrever algo.
+- **Não repasse `"$@"` cru para `nmap`, `hydra` ou `sqlmap`.** Se o script aceita opções que ele mesmo não entende e as encaminha, o usuário ganha acesso a toda a superfície da ferramenta por baixo do seu wrapper — inclusive `--script` do `nmap`, que executa código NSE. Aceite uma lista explícita de opções e monte a linha da ferramenta com um array (@sec-cap060).
+- **Nome de arquivo de saída de ferramenta ofensiva merece o `--`.** Resultados de `gobuster` e `nikto` costumam carregar URL no nome, e URL contém hífen com frequência. `rm -- "$relatorio"` e `mv -- "$antigo" "$novo"` custam dois caracteres.
+- **`getopts` dentro de função de biblioteca exige `local OPTIND`.** Num script de laboratório que analisa argumentos globais e depois chama uma função que também usa `getopts`, esquecer o `local` faz a segunda análise continuar de onde a primeira parou — o resultado é uma opção ignorada, sem erro, e um alvo processado com a configuração errada.
+
+> **Nota sobre a família RHEL.** `getopts`, `shift`, `set --` e os posicionais são POSIX e funcionam igual em qualquer shell, incluindo o `dash` do Debian e do Kali. O laço `while` com `case` usa `[[ ]]` e `(( ))` nos exemplos acima — troque por `[ ]` e `test` se o shebang for `#!/bin/sh`. A divergência real é o **`getopt` externo**: o do `util-linux`, presente tanto em RHEL quanto em Debian e Kali, suporta opções longas e o modo de citação exigido pelo `eval set --`; o do BSD e do macOS é a implementação histórica, sem `--long` e sem citação, e um script que dependa dele falha de forma confusa. Se a portabilidade além do Linux importa, `getopts` é o único analisador com que se pode contar.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-args`.
+
+1. **Escreva o script quebrado da abertura.**
+
+   ```bash
+   mkdir -p ~/lab-args && cd ~/lab-args
+   cat > quebrado.sh <<'EOF'
+   #!/usr/bin/env bash
+   VERBOSE=0; SIMULAR=0; SAIDA=""
+   if [ "$1" = "-v" ]; then VERBOSE=1; shift; fi
+   if [ "$1" = "-n" ]; then SIMULAR=1; shift; fi
+   if [ "$1" = "-o" ]; then SAIDA="$2"; shift 2; fi
+   echo "VERBOSE=$VERBOSE SIMULAR=$SIMULAR SAIDA=[$SAIDA] ARQUIVO=[$1]"
+   EOF
+   chmod +x quebrado.sh
+   ```
+
+2. **Reproduza os cinco modos de falha.**
+
+   ```bash
+   ./quebrado.sh -v -n dados.txt
+   ./quebrado.sh -n -v dados.txt
+   ./quebrado.sh -vn dados.txt
+   ./quebrado.sh dados.txt -v
+   ./quebrado.sh -o dados.txt
+   ```
+
+   Esperado: só a primeira linha está correta. Na segunda, `VERBOSE` fica 0. Na terceira, nada é reconhecido. Na quarta, o `-v` é ignorado. Na quinta, `SAIDA` recebe `dados.txt` e `ARQUIVO` fica vazio — nenhuma delas emite erro.
+
+3. **Escreva a versão com `getopts`.**
+
+   ```bash
+   cat > comgetopts.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   programa=${0##*/}
+   VERBOSE=0; SIMULAR=0; SAIDA=""
+   uso() { echo "Uso: $programa [-v] [-n] [-o ARQUIVO] ALVO..." ; }
+
+   while getopts ':vno:h' opcao; do
+       case "$opcao" in
+           v)  VERBOSE=1 ;;
+           n)  SIMULAR=1 ;;
+           o)  SAIDA="$OPTARG" ;;
+           h)  uso; exit 0 ;;
+           :)  echo "$programa: -$OPTARG exige um argumento" >&2; exit 2 ;;
+           \?) echo "$programa: opcao invalida: -$OPTARG" >&2; uso >&2; exit 2 ;;
+       esac
+   done
+   shift $(( OPTIND - 1 ))
+   echo "VERBOSE=$VERBOSE SIMULAR=$SIMULAR SAIDA=[$SAIDA] OPTIND=$OPTIND"
+   echo "operandos ($#):"; printf '  [%s]\n' "$@"
+   EOF
+   chmod +x comgetopts.sh
+   ```
+
+4. **Repita os cinco casos, agora corretos.**
+
+   ```bash
+   ./comgetopts.sh -v -n dados.txt
+   ./comgetopts.sh -n -v dados.txt
+   ./comgetopts.sh -vn dados.txt
+   ./comgetopts.sh -osaida.txt alvo1 alvo2
+   ./comgetopts.sh -o saida.txt alvo1 alvo2
+   ```
+
+   Esperado: as três primeiras produzem o mesmo resultado; as duas últimas também entre si. Confira que `OPTIND` bate com a @fig-getopts-caminhando.
+
+5. **Provoque os dois ramos de erro.**
+
+   ```bash
+   ./comgetopts.sh -z alvo; echo "codigo: $?"
+   ./comgetopts.sh -o;      echo "codigo: $?"
+   ```
+
+   Esperado: `opcao invalida: -z` e `-o exige um argumento`, ambas com código 2. Remova o `:` inicial de `':vno:h'` e repita: as mensagens viram as do próprio Bash, em inglês, e os dois casos ficam indistinguíveis.
+
+6. **Veja o que acontece sem o `shift`.**
+
+   ```bash
+   sed 's/^shift .*$/# shift removido/' comgetopts.sh > semshift.sh
+   chmod +x semshift.sh
+   ./semshift.sh -vn -o saida.txt alvo1
+   ```
+
+   Esperado: os operandos listados incluem `-vn`, `-o` e `saida.txt`. É exatamente o bug que a @fig-getopts-caminhando descreve — e ele não emite aviso nenhum.
+
+7. **Respeite o `--`.**
+
+   ```bash
+   ./comgetopts.sh -v -- -arquivo-estranho.txt
+   ```
+
+   Esperado: `VERBOSE=1` e um único operando, `-arquivo-estranho.txt`, tratado como nome e não como opção.
+
+8. **Escreva a versão com opções longas.**
+
+   ```bash
+   cat > comcase.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   programa=${0##*/}
+   VERBOSE=0; SAIDA=""
+   while (( $# > 0 )); do
+       case "$1" in
+           -v|--verbose) VERBOSE=1; shift ;;
+           -o|--saida)   [[ $# -ge 2 ]] || { echo "$programa: $1 exige argumento" >&2; exit 2; }
+                         SAIDA="$2"; shift 2 ;;
+           --saida=*)    SAIDA="${1#*=}"; shift ;;
+           --)           shift; break ;;
+           -*)           echo "$programa: opcao desconhecida: $1" >&2; exit 2 ;;
+           *)            break ;;
+       esac
+   done
+   echo "VERBOSE=$VERBOSE SAIDA=[$SAIDA]"; printf 'operando: [%s]\n' "$@"
+   EOF
+   chmod +x comcase.sh
+   ./comcase.sh --verbose --saida=/tmp/r.txt alvo1
+   ./comcase.sh --saida /tmp/r.txt -- -alvo-com-hifen
+   ./comcase.sh --xyz alvo; echo "codigo: $?"
+   ```
+
+   Esperado: as duas primeiras funcionam, com as duas grafias de `--saida`; a terceira rejeita a opção desconhecida com código 2.
+
+9. **Confirme que `-vn` agrupado não funciona no laço com `case`.**
+
+   ```bash
+   ./comcase.sh -vn alvo; echo "codigo: $?"
+   ```
+
+   Esperado: `opcao desconhecida: -vn`, com código 2. É a limitação da coluna do meio da @fig-tres-estrategias — e rejeitar explicitamente é melhor do que ignorar em silêncio.
+
+10. **Veja `$10` sem chaves.**
+
+    ```bash
+    set -- a b c d e f g h i j
+    echo "\$10  = $10"
+    echo "\${10} = ${10}"
+    echo "total: $#"
+    ```
+
+    Esperado: `$10` imprime `a0` — é `$1` seguido de `0`. Só `${10}` devolve `j`.
+
+11. **Prove que `OPTIND` é global.**
+
+    ```bash
+    analisar() {
+        local OPTIND opcao          # remova este 'local' e repita
+        while getopts ':x' opcao; do echo "  funcao viu: -$opcao"; done
+    }
+    set -- -x um dois
+    analisar "$@"
+    OPTIND=1
+    while getopts ':x' o; do echo "topo viu: -$o"; done
+    echo "OPTIND no topo: $OPTIND"
+    ```
+
+    Esperado: com `local OPTIND`, ambas as análises enxergam o `-x`. Sem ele, a segunda começa de onde a primeira parou e não encontra nada.
+
+12. **Teste o `--` na chamada a comandos, e limpe.**
+
+    ```bash
+    touch -- -arquivo-estranho.txt
+    ls -l -- -arquivo-estranho.txt
+    rm -- -arquivo-estranho.txt && echo "removido com sucesso"
+    cd ~ && rm -rf ~/lab-args
+    ```
+
+    Esperado: os três comandos funcionam. Tente `rm -arquivo-estranho.txt` sem o `--` antes de criar de novo e veja o `rm` reclamar de opções inválidas.
+
+## Resumo
+
+- **Análise de argumentos é a fronteira entre o que o usuário digitou e o que o script executa.** Uma cadeia de `if` comparando `$1` falha em ordem trocada, flags agrupadas, opção depois do operando e argumento faltando — tudo em silêncio.
+- **Os posicionais são um array**: `"$@"` para repassar, `"$*"` só para exibir, `${10}` com chaves obrigatórias a partir do décimo, e `set -- ...` para reescrevê-los.
+- **`shift` falha se pedir mais do que existe** e não altera nada nesse caso — o que vira laço infinito ou aborto sob `set -e`. Teste `$#` antes.
+- **`getopts` implementa a convenção POSIX de graça**: agrupamento (`-vn`), argumento colado (`-osaida`), `OPTARG`, e parada no `--`. Comece a cadeia de opções com `:` para ficar com o controle das mensagens de erro.
+- **`shift $(( OPTIND - 1 ))` depois do laço não é opcional.** Sem ele, as opções continuam em `"$@"` e viram operandos, sem aviso nenhum.
+- **`getopts` não faz opções longas.** Para `--verbose` e `--saida=X`, use o laço `while` com `case`, que também trata `--` e rejeita opção desconhecida.
+- **Use `--` ao chamar comandos com caminho vindo de variável** — `rm -- "$arq"`, `grep -- "$padrao"` — e prefixe globs com `./` para que nenhum item comece com hífen.
+- **`--help` sai na saída padrão com código 0; erro de uso sai em `stderr` com código 2.** Trocar os dois faz a ajuda poluir *pipeline* e o erro passar despercebido em automação.

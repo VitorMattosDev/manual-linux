@@ -1,3 +1,449 @@
 # Aritmética e manipulação de números no shell {#sec-cap063}
 
-*(em elaboracao)*
+O monitor de disco rodava a cada cinco minutos e nunca alertou. A linha que calculava a ocupação era esta:
+
+```bash
+usado=$(df --output=used  -k / | tail -1)     # 41943040
+total=$(df --output=size -k / | tail -1)      # 52428800
+percentual=$(( usado / total * 100 ))
+if (( percentual > 90 )); then alertar; fi
+```
+
+O disco chegou a 97% e o script continuou calado. Não havia erro de digitação, nem de permissão, nem de `df`. O valor de `percentual` era **zero** — e era zero desde o primeiro dia, com o disco vazio ou cheio.
+
+A aritmética do shell trabalha só com **inteiros**. O `usado / total` de 41943040 dividido por 52428800 vale 0,8 em matemática e vale `0` no shell, porque a parte fracionária é descartada. Zero vezes 100 continua zero. O `if` nunca dispara.
+
+A correção é uma troca de ordem — `(( usado * 100 / total ))` dá `80` — mas o problema de fundo é outro: **quem escreve aritmética no shell precisa saber onde a fração se perde**, porque o shell não avisa. Não há erro, não há aviso, não há `NaN`. Há um número redondo e errado.
+
+## `(( ))` e `$(( ))`: comando e expansão
+
+São duas coisas diferentes, e a confusão entre elas produz o segundo erro mais comum da área:
+
+```bash
+(( x = 5 + 3 ))          # COMANDO: avalia, atribui, devolve codigo de saida
+echo $(( 5 + 3 ))        # EXPANSAO: avalia e produz o texto "8"
+```
+
+O `(( ))` é um comando composto: ele não imprime nada, e o que ele devolve é um **código de saída**. E aqui está a inversão que surpreende todo mundo:
+
+```bash
+(( 1 )); echo $?    # 0  -- valor "verdadeiro"  -> codigo de SUCESSO
+(( 0 )); echo $?    # 1  -- valor "falso"       -> codigo de FALHA
+(( 5 > 3 )); echo $?  # 0
+```
+
+A lógica está certa e é a do @sec-cap056: em C, zero é falso; no shell, zero é sucesso. O `(( ))` faz a tradução entre os dois mundos. A consequência prática aparece sob `set -e`:
+
+```bash
+set -e
+contador=0
+(( contador++ ))     # avalia para 0 (pos-incremento), devolve codigo 1, ABORTA o script
+```
+
+O `contador++` devolve o valor **antes** do incremento, que é zero, e o `(( ))` traduz zero para código 1. O script morre numa linha que parecia inofensiva. As três defesas:
+
+```bash
+(( ++contador ))       # pre-incremento: avalia para 1, codigo 0
+(( contador++ )) || :  # neutraliza o codigo de saida
+contador=$(( contador + 1 ))   # atribuicao comum, sempre codigo 0
+```
+
+Dentro de qualquer contexto aritmético — `(( ))`, `$(( ))`, `[[ ]]` com operadores numéricos, índices de array —, as variáveis **dispensam o cifrão** e não sofrem divisão em palavras:
+
+```bash
+a=5; b=3
+echo $(( a * b ))        # 15 -- sem $ nos nomes
+echo $(( $a * $b ))      # 15 -- tambem funciona, mas e ruido
+arr[a+1]=x               # indice tambem e contexto aritmetico
+```
+
+Variável não definida vale zero em contexto aritmético, mesmo sob `set -u` na maioria das versões — o que é conveniente para contadores e traiçoeiro para configuração ausente.
+
+Os operadores disponíveis são praticamente os de C:
+
+```bash
++  -  *  /  %          # aritmetica basica; % e o resto
+**                     # potencia:  $(( 2 ** 10 ))  ->  1024
+++ --                  # incremento e decremento, pre e pos
+<< >> & | ^ ~          # deslocamento e operacoes bit a bit
+== != < <= > >=        # comparacao, resultado 1 ou 0
+&& || !                # logicos, com avaliacao curto-circuito
+? :                    # condicional ternario
+= += -= *= /= %= <<= >>= &= |= ^=    # atribuicoes compostas
+,                      # sequencia:  $(( a = 1, b = 2, a + b ))  ->  3
+```
+
+## Onde a fração se perde
+
+::: {#fig-divisao-inteira}
+```{.tikz}
+%%| filename: onde-a-fracao-se-perde
+%%| alt: Diagrama comparando quatro formas de calcular um percentual com aritmetica inteira, mostrando em qual delas o resultado e truncado para zero
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm},
+    ru/.style={bx,draw=manualred,fill=manualred!12},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=5.4cm},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (-0.3,7.0) {usado=41943040\qquad total=52428800\qquad ocupação real: 80\%};
+
+  % linha 1 -- errado
+  \node[cd,manualred] at (-0.3,6.1) {\$(( usado / total * 100 ))};
+  \node[ru,minimum width=1.6cm] at (5.4,6.1) {0 * 100};
+  \draw[fl,manualred] (6.4,6.1) -- (7.0,6.1);
+  \node[ru,minimum width=0.9cm] at (7.5,6.1) {0};
+  \node[ex,manualred] at (8.3,6.1) {A divisão acontece primeiro e \textbf{0,8 vira 0}. O alerta nunca dispara, com disco vazio ou cheio.};
+
+  % linha 2 -- ordem trocada
+  \node[cd,manualgreen] at (-0.3,4.7) {\$(( usado * 100 / total ))};
+  \node[ok,minimum width=2.6cm] at (5.8,4.7) {4194304000 / total};
+  \draw[fl,manualgreen] (7.2,4.7) -- (7.8,4.7);
+  \node[ok,minimum width=0.9cm] at (8.3,4.7) {80};
+  \node[ex,manualgreen] at (9.1,4.7) {\textbf{Multiplique antes de dividir.} Correção de um caractere de posição.};
+
+  % linha 3 -- escala
+  \node[cd,manualgreen] at (-0.3,3.3) {\$(( usado * 10000 / total ))};
+  \node[ok,minimum width=1.4cm] at (5.4,3.3) {8000};
+  \draw[fl,manualgreen] (6.2,3.3) -- (6.8,3.3);
+  \node[ok,minimum width=1.9cm] at (7.7,3.3) {80.00 \%};
+  \node[ex,manualgreen] at (8.9,3.3) {\textbf{Ponto fixo:} trabalhe em centésimos e formate na hora de imprimir.};
+
+  % linha 4 -- arredondamento
+  \node[cd,manualgreen] at (-0.3,1.9) {\$(( (usado * 100 + total/2) / total ))};
+  \node[ok,minimum width=0.9cm] at (7.5,1.9) {80};
+  \node[ex,manualgreen] at (8.3,1.9) {\textbf{Arredonda} em vez de truncar: soma metade do divisor antes de dividir.};
+
+  \node[nt,text width=14.9cm] at (7.2,0.7) {A divisão inteira do shell \textbf{trunca em direção a zero} e nunca emite aviso. Toda expressão com \texttt{/} merece a pergunta: \emph{o resultado intermediário cabe em inteiro?} A regra que resolve quase tudo é reordenar para que as multiplicações venham antes das divisões; quando a fração é o próprio resultado, escale por 100 ou 1000 e formate com \texttt{printf}. Só quando isso não basta --- raiz, logaritmo, média de valores reais --- vale pagar o processo do \texttt{bc} ou do \texttt{awk}.};
+\end{tikzpicture}
+```
+Onde a divisão inteira descarta a fração, e as três formas de contornar isso sem sair do shell.
+:::
+
+O padrão de ponto fixo, escrito por inteiro, é curto e resolve a maioria dos relatórios:
+
+```bash
+escala=100
+milesimos=$(( usado * 100 * escala / total ))     # 8000
+printf 'ocupacao: %d.%02d%%\n' $(( milesimos / escala )) $(( milesimos % escala ))
+# ocupacao: 80.00%
+```
+
+E os dois arredondamentos que valem decorar:
+
+```bash
+(( arredondado = (a + b/2) / b ))    # arredonda para o mais proximo
+(( teto        = (a + b - 1) / b ))  # arredonda para cima (teto)
+```
+
+O teto aparece o tempo todo ao calcular quantos blocos, quantas páginas ou quantas partes de tamanho fixo cabem numa quantidade.
+
+Um detalhe sobre negativos: o `/` trunca em direção a zero, então `$(( -7 / 2 ))` vale `-3` e não `-4`. O `%` acompanha, e `$(( -7 % 2 ))` vale `-1`. Isso segue a regra do C, não a matemática modular — em código que lida com números negativos, teste antes de assumir.
+
+## Bases numéricas e a armadilha do zero à esquerda
+
+O shell reconhece três notações, e uma delas causa um bug sazonal literal:
+
+```bash
+echo $(( 0x1F ))      # 31   -- prefixo 0x: hexadecimal
+echo $(( 017 ))       # 15   -- prefixo 0:  OCTAL
+echo $(( 2#1011 ))    # 11   -- base#numero, para qualquer base de 2 a 64
+```
+
+O prefixo `0` significa octal, e essa é uma herança do C que ninguém lembra até o dia em que um valor com zero à esquerda entra numa expressão:
+
+::: {#fig-zero-a-esquerda}
+```{.tikz}
+%%| filename: armadilha-do-zero-a-esquerda
+%%| alt: Diagrama mostrando como um numero com zero a esquerda e interpretado como octal na aritmetica do shell, com o caso de erro nos meses 08 e 09 e a correcao com o prefixo de base dez
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.6cm},
+    ru/.style={bx,draw=manualred,fill=manualred!12,minimum width=1.5cm},
+    am/.style={bx,draw=manualyellow,fill=manualyellow!28,minimum width=1.5cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13,minimum width=1.5cm},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=5.6cm},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[cd,manualblue] at (-0.3,6.9) {mes=\$(date +\%m)\qquad \# produz 01, 02, ... 08, 09, 10, 11, 12};
+
+  \node[hd,manualblue] at (2.4,6.1) {valor};
+  \node[hd,manualblue] at (5.2,6.1) {\texttt{\$(( mes ))}};
+  \node[hd,manualblue] at (8.4,6.1) {\texttt{\$(( 10\#mes ))}};
+  \draw[semithick,manualgray] (1.0,5.85) -- (13.8,5.85);
+
+  \node[cd] at (1.9,5.35) {07};
+  \node[am] at (5.2,5.35) {7};
+  \node[ok] at (8.4,5.35) {7};
+  \node[ex,manualgray] at (9.6,5.35) {octal válido: 07 vale 7, por coincidência};
+
+  \node[cd] at (1.9,4.65) {08};
+  \node[ru,minimum width=3.6cm] at (5.9,4.65) {erro: value too great};
+  \node[ok] at (8.4,4.65) {8};
+  \node[ex,manualred] at (9.6,4.65) {\textbf{o dígito 8 não existe em octal}};
+
+  \node[cd] at (1.9,3.95) {09};
+  \node[ru,minimum width=3.6cm] at (5.9,3.95) {erro: value too great};
+  \node[ok] at (8.4,3.95) {9};
+  \node[ex,manualred] at (9.6,3.95) {\textbf{idem} --- o script quebra em agosto e setembro};
+
+
+  \node[cd] at (1.9,3.25) {010};
+  \node[am] at (5.2,3.25) {8};
+  \node[ok] at (8.4,3.25) {10};
+  \node[ex,manualred] at (9.6,3.25) {\textbf{pior que um erro:} resultado errado, em silêncio};
+
+  \draw[semithick,manualgray] (1.0,2.9) -- (13.8,2.9);
+  \node[cd,manualgreen] at (1.0,2.4) {mes=\$(( 10\#\$(date +\%m) ))\qquad \# ou: mes=\$\{mes\#0\}};
+
+  \node[nt,text width=14.9cm] at (7.2,1.4) {O prefixo \texttt{0} significa \emph{octal} na aritmética do shell, como em C. Isso atinge tudo que o sistema formata com zero à esquerda: mês e dia de \texttt{date +\%m} e \texttt{+\%d}, hora e minuto de \texttt{+\%H} e \texttt{+\%M}, número de série, código de agência, identificador de tarefa. O sintoma clássico é um script que roda o ano inteiro e falha em \textbf{agosto e setembro} --- ou, no caso de \texttt{010}, um que nunca falha e sempre calcula errado. A correção é o prefixo explícito \texttt{10\#}, que força a base dez.};
+\end{tikzpicture}
+```
+Zero à esquerda vira octal: o bug que só aparece em agosto e setembro.
+:::
+
+A defesa é sempre uma das duas:
+
+```bash
+mes=$(( 10#$(date +%m) ))     # forca base dez
+mes=${mes#0}                  # remove o zero a esquerda (@sec-cap062)
+```
+
+O `10#` é a forma preferida porque funciona também para `00`, que a remoção de prefixo transformaria em vazio.
+
+## Inteiros de 64 bits, e o silêncio do estouro
+
+A aritmética do Bash usa inteiros com sinal do tamanho de um `long` da plataforma — 64 bits em qualquer Linux atual. O limite é 9.223.372.036.854.775.807, e ultrapassá-lo **não** produz erro:
+
+```bash
+echo $(( 9223372036854775807 + 1 ))     # -9223372036854775808
+```
+
+O valor dá a volta. Em scripts que multiplicam bytes por fatores, ou que fazem ponto fixo com escala grande, esse teto é alcançável: um disco de 8 TB em bytes multiplicado por 10000 já passa de 8 vezes 10 elevado a 16 — ainda cabe, mas a margem encolheu bastante. Quando o cálculo se aproxima disso, reduza a escala ou use `bc`.
+
+## `declare -i`, `let` e `expr`
+
+O atributo de inteiro faz o shell avaliar aritmética em toda atribuição àquela variável:
+
+```bash
+declare -i contador=0
+contador=5+3       # vale 8, sem $(( ))
+contador=abc       # vale 0, silenciosamente
+```
+
+É conveniente e tem um custo: a atribuição deixa de ser previsível para quem lê. Use com moderação, e nunca em variável que possa receber texto.
+
+Dois comandos herdados aparecem em scripts antigos:
+
+```bash
+let "x = 5 + 3"          # equivalente a (( x = 5 + 3 )), mas exige aspas
+x=$(expr 5 + 3)          # comando EXTERNO: um fork por operacao
+```
+
+O `expr` é um programa em `/usr/bin`, com todos os problemas do @sec-cap062 — um processo por cálculo — e ainda exige espaço entre os operandos e escape no `*`, que senão vira glob. Não há razão para usá-lo em Bash. O `let` funciona, mas o `(( ))` é mais legível e não exige citar a expressão.
+
+## Quando o problema é mesmo de ponto flutuante
+
+Nem tudo se resolve com inteiro escalado. Média de tempos de resposta, desvio padrão, conversão de unidades com fator fracionário, raiz quadrada — nesses casos, chame uma ferramenta:
+
+| Ferramenta | Uso típico | Custo |
+|---|---|---|
+| `printf '%.2f'` | só formatar um valor já pronto | builtin, sem processo |
+| `awk 'BEGIN{print 7/2}'` | um cálculo isolado com ponto flutuante | um processo |
+| `bc -l` | expressão longa, precisão arbitrária, funções | um processo |
+| `python3 -c` | quando já há Python envolvido | processo pesado |
+
+```bash
+# media com uma casa decimal
+awk -v s="$soma" -v n="$n" 'BEGIN { printf "%.1f\n", s/n }'
+
+# bc com escala explicita -- sem -l, a escala padrao e ZERO e a divisao trunca
+echo "scale=4; 41943040 / 52428800 * 100" | bc
+```
+
+O erro mais comum com `bc` é esquecer o `scale` ou o `-l`: `echo "7/2" | bc` devolve `3`, exatamente como o shell. O `bc` também usa `.` como separador decimal independentemente do *locale*, o que é bom para scripts e confunde quem espera a vírgula do português.
+
+E o ponto que fecha o assunto: **dentro de um laço, cada `bc` ou `awk` é um processo**. Se o cálculo é por item, escale para inteiro; se é agregado, acumule inteiros no laço e faça a divisão fracionária uma vez no fim.
+
+## Números aleatórios
+
+```bash
+echo $RANDOM               # 0 a 32767, a cada leitura
+echo $(( RANDOM % 100 ))   # 0 a 99 -- com vies, ver adiante
+echo $SRANDOM              # Bash 5.1+: 32 bits, de fonte do sistema
+```
+
+Duas ressalvas. A primeira é estatística: `RANDOM % 100` é levemente enviesado, porque 32768 não é múltiplo de 100 — os valores baixos aparecem um pouco mais. Para amostragem de laboratório, irrelevante; para qualquer coisa que dependa de uniformidade, use `shuf -i 0-99 -n 1`.
+
+A segunda é de segurança, e vale destaque: **`$RANDOM` não é criptograficamente seguro**. É um gerador pseudoaleatório simples, com semente previsível e período curto. Senha, token, nome de arquivo temporário que precise ser imprevisível, chave de qualquer tipo — nada disso sai de `$RANDOM`. As fontes corretas são `/dev/urandom`, o `openssl rand`, ou o `mktemp` para temporários:
+
+```bash
+token=$(head -c 32 /dev/urandom | base64)
+tmp=$(mktemp)                              # nao invente nome com $RANDOM
+```
+
+## 🐉 No Kali
+
+- **Cálculo de taxa e de intervalo entre requisições é aritmética inteira, e o erro tem consequência.** Um script que calcula a pausa como `$(( 1 / taxa ))` segundos sempre dá zero para qualquer taxa maior que 1 — o laço passa a bater no alvo sem pausa nenhuma, o que é indistinguível de uma negação de serviço acidental. Trabalhe em milissegundos: `pausa_ms=$(( 1000 / taxa ))` e use `sleep "$(( pausa_ms / 1000 )).$(( pausa_ms % 1000 ))"`, ou o `--max-rate` da própria ferramenta.
+- **Aritmética sobre octetos de endereço IP quebra em zero à esquerda.** Alvos escritos como `010.010.010.005` — formato que aparece em planilha de escopo e em exportação de inventário — fazem `$(( octeto ))` interpretar `010` como 8. O resultado é um endereço fora do escopo autorizado calculado a partir de um dentro dele. Varredura fora do escopo contratado é crime pela Lei 12.737/2012; a defesa é `10#` em todo octeto antes de qualquer conta, e validação do endereço reconstruído contra a faixa.
+- **`$RANDOM` não gera senha, token nem nome de arquivo imprevisível.** Em contexto ofensivo isso aparece de duas formas: gerar credencial de teste fraca o suficiente para ser adivinhada por terceiros, e nomear arquivos temporários de forma previsível, o que abre corrida de link simbólico num diretório compartilhado. Use `/dev/urandom` e `mktemp`.
+- **Contador sob `set -e` derruba script de varredura no primeiro alvo.** `(( total++ ))` com `total` valendo zero devolve código 1 e aborta — e como o primeiro alvo é justamente quando o contador está em zero, o script morre antes de fazer qualquer coisa útil. Use `(( ++total ))`.
+- **Somar tamanhos de captura de tráfego passa de 32 bits rápido.** Um `.pcap` de algumas horas já tem centenas de milhões de bytes; multiplicado por um fator de escala para calcular média em kbit/s, o intermediário cresce depressa. O teto de 64 bits do Bash aguenta, mas confira o resultado — estouro não emite aviso, só troca o sinal.
+
+> **Nota sobre a família RHEL.** A expansão `$(( ))` é **POSIX** e funciona em qualquer shell, incluindo o `dash` do Debian e do Kali. O comando `(( ))`, o `let`, o `declare -i`, o `**` de potência, o `$RANDOM` e a notação `base#numero` são extensões do Bash — um script `#!/bin/sh` que use `(( x++ ))` falha no `dash` com erro de sintaxe, e a alternativa portável é `x=$(( x + 1 ))`. O `$SRANDOM` exige Bash 5.1, presente no Kali atual e no RHEL 9, ausente no RHEL 8. Já o `bc` **não é instalado por padrão** nem no Kali nem em imagens mínimas de RHEL — `apt install bc` ou `dnf install bc`. O `awk` está sempre lá, o que faz dele a escolha mais segura para ponto flutuante em script que precisa rodar em máquina alheia.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-aritmetica`.
+
+1. **Reproduza o bug da abertura.**
+
+   ```bash
+   mkdir -p ~/lab-aritmetica && cd ~/lab-aritmetica
+   usado=41943040; total=52428800
+   echo "divide antes:    $(( usado / total * 100 ))"
+   echo "multiplica antes: $(( usado * 100 / total ))"
+   ```
+
+   Esperado: `0` e `80`. A única diferença é a ordem das operações — e a primeira forma nunca dispararia um alerta de disco cheio.
+
+2. **Veja a inversão de verdadeiro e falso.**
+
+   ```bash
+   (( 1 )); echo "(( 1 )) -> \$?=$?"
+   (( 0 )); echo "(( 0 )) -> \$?=$?"
+   (( 5 > 3 )); echo "(( 5 > 3 )) -> \$?=$?"
+   (( 5 < 3 )); echo "(( 5 < 3 )) -> \$?=$?"
+   ```
+
+   Esperado: `0`, `1`, `0`, `1`. Valor zero na aritmética vira código de falha no shell.
+
+3. **Derrube um script com `(( c++ ))`.**
+
+   ```bash
+   cat > contador.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -e
+   c=0
+   (( c++ ))
+   echo "esta linha nao aparece"
+   EOF
+   chmod +x contador.sh; ./contador.sh; echo "codigo: $?"
+
+   sed -i 's/(( c++ ))/(( ++c ))/' contador.sh
+   ./contador.sh; echo "codigo: $?"
+   ```
+
+   Esperado: a primeira versão morre em silêncio com código 1; a segunda imprime a linha. O pós-incremento devolveu o valor antigo, zero.
+
+4. **Confirme o truncamento e o comportamento com negativos.**
+
+   ```bash
+   for e in '7/2' '-7/2' '7%3' '-7%3' '2**10' '1/3*3'; do
+       printf '%-10s = %s\n' "$e" "$(( e ))"
+   done
+   ```
+
+   Esperado: `3`, `-3`, `1`, `-1`, `1024` e `0`. A divisão trunca em direção a zero, não para baixo.
+
+5. **Compare truncamento, arredondamento e teto.**
+
+   ```bash
+   a=17; b=5
+   echo "truncado:   $(( a / b ))"
+   echo "arredondado: $(( (a + b/2) / b ))"
+   echo "teto:        $(( (a + b - 1) / b ))"
+   ```
+
+   Esperado: `3`, `3` e `4`. Troque `a` para 18 e veja o arredondado virar `4`.
+
+6. **Faça ponto fixo com duas casas.**
+
+   ```bash
+   usado=41943040; total=52428800
+   centesimos=$(( usado * 10000 / total ))
+   printf 'ocupacao: %d.%02d%%\n' $(( centesimos / 100 )) $(( centesimos % 100 ))
+   ```
+
+   Esperado: `ocupacao: 80.00%`. Mude `usado` para `41000000` e confira que aparecem casas decimais reais.
+
+7. **Reproduza o bug de agosto.**
+
+   ```bash
+   for m in 07 08 09 010 12; do
+       printf 'mes=%-4s  $(( mes ))=' "$m"
+       ( echo "$(( m ))" ) 2>&1 | head -1
+   done
+   ```
+
+   Esperado: `07` dá 7, `08` e `09` produzem erro de valor, `010` dá **8** sem erro nenhum, e `12` dá 12. É a @fig-zero-a-esquerda em execução.
+
+8. **Corrija com `10#`.**
+
+   ```bash
+   for m in 07 08 09 010 12; do
+       printf 'mes=%-4s -> %s\n' "$m" "$(( 10#$m ))"
+   done
+   echo "mes atual: $(( 10#$(date +%m) ))"
+   ```
+
+   Esperado: 7, 8, 9, 10 e 12 — todos em base dez.
+
+9. **Veja o estouro de 64 bits acontecer em silêncio.**
+
+   ```bash
+   max=9223372036854775807
+   echo "max     = $max"
+   echo "max + 1 = $(( max + 1 ))"
+   echo "max * 2 = $(( max * 2 ))"
+   ```
+
+   Esperado: o sucessor do maior inteiro é o menor inteiro negativo. Nenhum aviso é emitido.
+
+10. **Compare as ferramentas de ponto flutuante.**
+
+    ```bash
+    echo "shell:         $(( 41943040 * 100 / 52428800 ))"
+    echo "bc sem scale:  $(echo '41943040 / 52428800 * 100' | bc)"
+    echo "bc com scale:  $(echo 'scale=4; 41943040 / 52428800 * 100' | bc)"
+    echo "awk:           $(awk 'BEGIN{ printf "%.4f\n", 41943040/52428800*100 }')"
+    echo "printf:        $(printf '%.4f\n' 80)"
+    ```
+
+    Esperado: o `bc` sem `scale` devolve `0` — ele trunca exatamente como o shell. Se o `bc` não estiver instalado, `sudo apt install bc`.
+
+11. **Meça o custo do processo por cálculo.**
+
+    ```bash
+    time { s=0; for i in $(seq 1 3000); do s=$(( s + i )); done; echo "shell: $s"; }
+    time { s=0; for i in $(seq 1 3000); do s=$(echo "$s + $i" | bc); done; echo "bc: $s"; }
+    ```
+
+    Esperado: o mesmo resultado, com o `bc` levando ordens de grandeza mais tempo — três mil processos contra nenhum.
+
+12. **Compare `RANDOM` com uma fonte adequada, e limpe.**
+
+    ```bash
+    echo "RANDOM:   $RANDOM $RANDOM $RANDOM"
+    echo "sorteio:  $(( RANDOM % 100 ))"
+    echo "shuf:     $(shuf -i 0-99 -n 1)"
+    echo "token:    $(head -c 24 /dev/urandom | base64)"
+    tmp=$(mktemp); echo "temporario seguro: $tmp"; rm -f "$tmp"
+    cd ~ && rm -rf ~/lab-aritmetica
+    ```
+
+    Esperado: valores diferentes a cada execução em todos os casos. Para uso em senha, token ou nome de temporário, só as duas últimas formas servem.
+
+## Resumo
+
+- **A aritmética do shell é só de inteiros, e a fração se perde sem aviso.** `$(( a / b * 100 ))` dá zero sempre que `a` for menor que `b`. Multiplique antes de dividir.
+- **`(( ))` é comando e devolve código de saída; `$(( ))` é expansão e produz texto.** No `(( ))`, valor zero vira código de falha — por isso `(( c++ ))` com `c` valendo zero aborta um script sob `set -e`. Use `(( ++c ))`.
+- **Dentro de contexto aritmético, variáveis dispensam o cifrão** e não sofrem divisão em palavras; variável não definida vale zero.
+- **Ponto fixo resolve a maioria dos relatórios:** escale por 100 ou 1000, faça a conta em inteiro e formate com `printf '%d.%02d'`. Guarde `(a + b/2)/b` para arredondar e `(a + b - 1)/b` para o teto.
+- **Zero à esquerda é octal.** `$(( 08 ))` é erro e `$(( 010 ))` é 8 — o que quebra scripts em agosto e setembro e corrompe cálculo sobre octetos de IP. Force a base com `$(( 10#$valor ))`.
+- **Inteiros são de 64 bits com sinal e estouram em silêncio**, dando a volta para negativo.
+- **Para ponto flutuante de verdade, use `awk` ou `bc -l`** — lembrando que `bc` sem `scale` trunca igual ao shell, e que o `bc` não vem instalado por padrão. Nunca chame nenhum dos dois uma vez por item dentro de um laço.
+- **`$RANDOM` não é criptograficamente seguro.** Senha, token e nome de temporário imprevisível vêm de `/dev/urandom`, `openssl rand` ou `mktemp`.

@@ -1,3 +1,544 @@
 # Funções, retorno e escopo de variáveis {#sec-cap059}
 
-*(em elaboracao)*
+O script de inventário funcionava bem em quinze máquinas. Ele tinha uma função que contava pacotes instalados e devolvia o número:
+
+```bash
+contar_pacotes() {
+    local n
+    n=$(dpkg-query -f '.\n' -W | wc -l)
+    return "$n"
+}
+
+contar_pacotes
+echo "pacotes instalados: $?"
+```
+
+Em uma instalação enxuta, com 180 pacotes, imprimia `180`. Correto. Na estação de trabalho com o metapacote `kali-linux-everything`, com 4.412 pacotes, imprimia `60`. Não `4412`, não um erro — `60`.
+
+O código de saída de qualquer processo no Linux é um inteiro de **oito bits**. O que o `return` recebe é reduzido módulo 256, e 4412 módulo 256 é 60. Não houve falha, não houve aviso: o valor simplesmente não coube no canal por onde tentaram passá-lo. A função tinha dois caminhos possíveis para devolver informação e o script escolheu o estreito.
+
+Uma função de shell não é uma função no sentido matemático nem no sentido de C. Ela é um **comando novo**, indistinguível de `ls` ou `grep` do ponto de vista de quem a chama. E comandos, no Unix, devolvem duas coisas muito diferentes: um fluxo de bytes na saída padrão e um número de zero a 255 dizendo se deu certo.
+
+## Definir uma função é criar um comando
+
+Há duas sintaxes, e a diferença entre elas é menor do que parece:
+
+```bash
+# forma POSIX -- funciona em qualquer shell
+contar_pacotes() {
+    dpkg-query -f '.\n' -W | wc -l
+}
+
+# forma do Bash/ksh -- os parenteses viram opcionais
+function contar_pacotes {
+    dpkg-query -f '.\n' -W | wc -l
+}
+```
+
+Prefira a primeira. Ela vale em `sh`, `dash`, `bash` e `zsh`; a palavra-chave `function` é uma extensão que não sobrevive a um `#!/bin/sh`, como visto no @sec-cap057. Os parênteses são decorativos: não recebem nada, nunca. Escrever `contar_pacotes(n)` é um erro de sintaxe.
+
+Depois de definida, a função entra na tabela de comandos do shell e passa a ter **precedência sobre programas externos**. É por isso que `type` é a ferramenta certa para descobrir o que uma palavra realmente executa:
+
+```bash
+type contar_pacotes    # contar_pacotes is a function
+declare -f             # imprime o corpo de todas as funcoes definidas
+declare -F             # imprime so os nomes
+unset -f contar_pacotes
+```
+
+Duas consequências práticas. A primeira é que **a definição precisa vir antes da chamada** no arquivo — o shell lê o script de cima para baixo, e uma função ainda não lida é um comando não encontrado. A segunda é que uma função definida no terminal interativo desaparece ao fechar a sessão; para persistir, ela vai no `~/.bashrc` (tema do Volume 15) ou num arquivo carregado com `source`.
+
+## A função recebe posicionais, não parâmetros nomeados
+
+Como a função é um comando, os argumentos chegam pelo mesmo mecanismo de sempre — `$1`, `$2`, `$#`, `"$@"`:
+
+```bash
+saudar() {
+    local nome="${1:?uso: saudar NOME [TRATAMENTO]}"
+    local tratamento="${2:-caro}"
+    printf 'Ola, %s %s\n' "$tratamento" "$nome"
+}
+
+saudar "Ana"              # Ola, caro Ana
+saudar "Ana" "estimada"   # Ola, estimada Ana
+saudar                    # erro, e o script para
+```
+
+Dentro da função, os posicionais são **substituídos temporariamente**: `$1` é o primeiro argumento da função, não o do script. O shell empilha os posicionais na entrada e os restaura na saída. Uma exceção importante quebra a simetria:
+
+```bash
+mostrar_contexto() {
+    echo "\$0          = $0"              # o nome do SCRIPT, nao da funcao
+    echo "FUNCNAME[0]  = ${FUNCNAME[0]}"  # o nome da funcao
+    echo "\$#          = $#"
+    echo "quem chamou  = ${FUNCNAME[1]:-<nivel superior>}"
+}
+```
+
+O `$0` **não** vira o nome da função — continua sendo o nome do script. Quem quer o nome da função usa `${FUNCNAME[0]}`, e `FUNCNAME` é um array (@sec-cap060) que guarda toda a pilha de chamadas. É exatamente disso que precisa uma função de log que informa de onde o erro veio.
+
+Para repassar argumentos adiante, vale a mesma regra do @sec-cap053: `"$@"` com aspas, sempre.
+
+```bash
+executar_com_log() {
+    echo "[$(date +%T)] executando: $*" >&2
+    "$@"                      # repassa cada argumento intacto
+}
+
+executar_com_log rm -f "arquivo com espaco.txt"
+```
+
+O `"$*"` na mensagem é adequado — ali queremos uma cadeia legível. O `"$@"` na execução é obrigatório — ali queremos os argumentos preservados um a um.
+
+## `return` devolve um código, não um valor
+
+Este é o ponto do capítulo. O `return` encerra a função e define o **código de saída**, com todas as restrições do @sec-cap056: inteiro, de 0 a 255, onde zero significa sucesso.
+
+```bash
+return 0        # sucesso
+return 1        # falha
+return 300      # vira 44
+return -1       # vira 255
+return "4412"   # vira 60  <- o bug da abertura
+```
+
+Um `return` sem argumento devolve o código do **último comando executado** na função, o que é quase sempre o que se quer numa função-predicado:
+
+```bash
+usuario_existe() {
+    id "$1" >/dev/null 2>&1     # o codigo deste comando vira o da funcao
+}
+
+if usuario_existe kali; then echo "existe"; fi
+```
+
+::: {#fig-canais-da-funcao}
+```{.tikz}
+%%| filename: canais-de-saida-de-uma-funcao
+%%| alt: Diagrama dos dois canais por onde uma funcao de shell devolve informacao: a saida padrao com texto de qualquer tamanho e o codigo de saida com um inteiro de 0 a 255
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt},
+    fn/.style={bx,draw=manualblue,fill=manualblue!10,minimum width=3.0cm,minimum height=1.6cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13,minimum width=4.6cm,minimum height=1.3cm},
+    ru/.style={bx,draw=manualred,fill=manualred!12,minimum width=4.6cm,minimum height=1.3cm},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=5.0cm},
+    fl/.style={-{Latex[length=1.8mm]},thick},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[fn] (f) at (2.2,4.6) {\textbf{função}\\[2pt] \texttt{contar\_pacotes}};
+
+  \node[ok] (o1) at (7.6,6.0) {\textbf{saída padrão}\\ texto de qualquer tamanho};
+  \node[ru] (o2) at (7.6,3.2) {\textbf{código de saída}\\ inteiro de 0 a 255};
+
+  \draw[fl,manualgreen] (f.north east) -- ++(0.6,0.5) -| (o1.west) ;
+  \draw[fl,manualred]   (f.south east) -- ++(0.6,-0.5) -| (o2.west);
+
+  \node[ex,manualgreen] at (10.2,6.0) {Lido com \texttt{n=\$(contar\_pacotes)}. Cabe \texttt{4412}, cabe uma tabela inteira, cabe um caminho com espaços.};
+  \node[ex,manualred] at (10.2,3.2) {Lido com \texttt{\$?}. \texttt{return 4412} vira \textbf{60}: o valor é reduzido módulo 256, em silêncio.};
+
+  \node[cd,manualgreen] at (0.4,1.9) {contar()\{ dpkg-query ... | wc -l; \}\quad n=\$(contar)};
+  \node[cd,manualred]   at (0.4,1.3) {contar()\{ ...; return "\$n"; \}\qquad\quad contar; n=\$?};
+
+  \node[nt,text width=14.9cm] at (7.4,0.35) {A regra que evita a classe inteira de erros: o \texttt{return} responde \emph{deu certo?}, a saída padrão responde \emph{qual é o resultado?}. Um número maior que 255, um texto, um caminho ou uma lista são \textbf{dados}, e dado sai pela saída padrão. Se a função precisa devolver as duas coisas --- um resultado e um indicativo de falha ---, ela imprime o resultado e usa o \texttt{return} apenas para o sucesso ou o fracasso.};
+\end{tikzpicture}
+```
+Os dois canais de saída de uma função: a saída padrão carrega dados, o código de saída carrega apenas o veredito.
+:::
+
+## Como uma função devolve dados de verdade
+
+Há três formas, e cada uma tem seu lugar.
+
+**Imprimir na saída padrão e capturar.** É a mais idiomática, e a que se comporta como uma função de verdade:
+
+```bash
+contar_pacotes() {
+    dpkg-query -f '.\n' -W 2>/dev/null | wc -l
+}
+
+n=$(contar_pacotes)
+echo "pacotes: $n"        # 4412, sem truncamento
+```
+
+O custo é real e vale conhecer: `$( )` cria um **subshell**, então a função roda num processo separado e qualquer variável que ela atribua morre junto — é o mesmo mecanismo do @sec-cap058. A substituição também remove as quebras de linha do final da saída, o que é conveniente aqui e traiçoeiro quando a saída deve ser preservada byte a byte.
+
+**Atribuir uma variável global, por convenção.** Sem subshell, e a forma mais rápida quando a função é chamada em laço apertado:
+
+```bash
+RESULTADO=""
+contar_pacotes() {
+    RESULTADO=$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l)
+}
+
+contar_pacotes
+echo "pacotes: $RESULTADO"
+```
+
+Funciona, mas cria acoplamento invisível: quem lê a chamada não vê que `RESULTADO` mudou. Use nome em maiúsculas e documente na linha acima.
+
+**Referência nomeada com `local -n`.** O chamador escolhe onde o resultado vai parar, o que é bem mais explícito:
+
+```bash
+contar_pacotes() {
+    local -n destino="$1"          # destino vira um apelido para a variavel nomeada
+    destino=$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l)
+}
+
+contar_pacotes total
+echo "pacotes: $total"
+```
+
+O `local -n` existe a partir do Bash 4.3 e tem uma armadilha específica: se o chamador passar uma variável com o **mesmo nome** do parâmetro interno (`contar_pacotes destino`), o Bash detecta a referência circular e falha. A convenção usual é prefixar os nomes internos — `local -n __destino="$1"` — para tornar a colisão improvável.
+
+## `local` e o escopo dinâmico
+
+Sem `local`, toda variável atribuída dentro de uma função é **global**. Isso não é um detalhe: é a origem de bugs em que uma função interfere no laço de quem a chamou porque as duas usam `i` como contador.
+
+```bash
+processar() {
+    local i arquivo         # declara sem atribuir
+    local total=0           # declara e atribui
+    for i in "$@"; do
+        arquivo="$i"
+        (( ++total ))
+    done
+    echo "$total"
+}
+```
+
+Declare como `local` **tudo** que a função usa internamente. É uma linha de disciplina que economiza horas de depuração.
+
+Agora o detalhe que surpreende quem vem de outra linguagem: o escopo do shell é **dinâmico**, não léxico. Uma variável `local` é visível não apenas na função que a declarou, mas em **todas as funções que ela chamar**, em qualquer profundidade.
+
+::: {#fig-escopo-dinamico}
+```{.tikz}
+%%| filename: escopo-dinamico-do-shell
+%%| alt: Pilha de chamadas mostrando que uma variavel local declarada numa funcao e visivel nas funcoes chamadas por ela, mas nao na que a chamou
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=left,font=\scriptsize\ttfamily,inner sep=4pt,minimum width=5.4cm},
+    gl/.style={bx,draw=manualgray,fill=manualgray!8},
+    md/.style={bx,draw=manualblue,fill=manualblue!10},
+    dentro/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    lb/.style={font=\scriptsize,align=left,anchor=west,text width=6.4cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[gl] (g) at (3.2,6.3) {\textbf{nível superior}\\ nivel=global};
+  \node[md] (m) at (3.2,4.6) {\textbf{externa()}\\ local segredo="abc"};
+  \node[dentro] (i) at (3.2,2.9) {\textbf{interna()}\\ echo "\$segredo"};
+
+  \draw[fl] (g) -- node[font=\tiny,manualgray,right] {chama} (m);
+  \draw[fl] (m) -- node[font=\tiny,manualgray,right] {chama} (i);
+
+  \node[lb,manualgray] at (6.6,6.3) {\texttt{segredo} \textbf{não existe} aqui --- nem antes nem depois da chamada.};
+  \node[lb,manualblue] at (6.6,4.6) {Dona da variável. Ao retornar, o valor anterior (se havia) é restaurado.};
+  \node[lb,manualgreen] at (6.6,2.9) {\textbf{Vê \texttt{abc}}, mesmo sem receber nada como argumento. Escopo \emph{dinâmico}: vale a pilha de chamadas, não o texto do arquivo.};
+
+  \node[nt,text width=14.9cm] at (7.4,1.2) {Em C, Python ou Rust, \texttt{interna} não enxergaria \texttt{segredo} --- o escopo lá é \emph{léxico}, definido por onde a função está escrita. No shell, o escopo é definido por \textbf{quem chamou quem} em tempo de execução. Duas consequências: uma função pode depender de variável que ela nunca declarou e funcionar, até ser chamada de outro lugar; e um \texttt{local} com nome genérico como \texttt{i} ou \texttt{arquivo} sobrescreve, durante toda a chamada, a variável homônima de qualquer função chamada abaixo dela.};
+\end{tikzpicture}
+```
+Escopo dinâmico: `local` protege quem está acima na pilha, nunca quem está abaixo.
+:::
+
+O lado bom disso é que uma função utilitária pode ler configuração declarada pelo chamador sem receber vinte argumentos. O lado ruim é que a colisão de nomes é silenciosa e depende do caminho de execução. A defesa é a mesma dos dois lados: nomes internos descritivos, `local` em tudo, e nada de `i`, `n`, `tmp` ou `arquivo` em funções de biblioteca.
+
+## `local x=$(cmd)` esconde o erro do comando
+
+Esta é a armadilha mais reportada pelo `shellcheck` (código SC2155), e a razão dela é sutil:
+
+```bash
+# ERRADO: o if nunca vai falhar
+pegar_versao() {
+    local v=$(comando-que-nao-existe)   # o codigo de saida perdido e o de "local"
+    if [[ $? -ne 0 ]]; then return 1; fi
+    echo "$v"
+}
+
+# CERTO: declare e atribua em linhas separadas
+pegar_versao() {
+    local v
+    v=$(comando-que-nao-existe) || return 1
+    echo "$v"
+}
+```
+
+`local` é um **comando**, e comandos têm código de saída. Quando você escreve `local v=$(cmd)`, o shell executa `cmd`, entrega a saída ao `local`, e o `$?` que sobra é o do `local` — que praticamente sempre é zero. O erro do comando é engolido. O mesmo vale para `declare`, `export` e `readonly`. A regra é mecânica: **declare numa linha, atribua na seguinte**.
+
+Isso importa ainda mais sob `set -e`, porque a atribuição bem-sucedida do `local` impede o `set -e` de abortar.
+
+## Funções, `set -e` e o encerramento correto
+
+Duas confusões comuns valem separar:
+
+```bash
+verificar() {
+    [[ -f /etc/os-release ]]   # se falhar, a funcao devolve 1 -- e so
+    echo "ok"
+}
+```
+
+Sob `set -e`, uma função que falha **no meio** aborta o script. Mas quando a função é usada como condição — em `if`, `while`, `&&`, `||`, ou negada com `!` — o `set -e` fica **suspenso dentro dela**, incluindo em tudo que ela chamar. Uma função que valida entrada e que você testa com `if validar; then` não vai abortar em erro interno, mesmo com `set -e` ligado. É comportamento documentado, e é o motivo de funções de validação precisarem de `return` explícito em cada caminho de saída.
+
+A outra confusão é `exit` contra `return`:
+
+```bash
+morrer() {
+    printf 'erro: %s\n' "$*" >&2
+    exit 1                # encerra o SCRIPT inteiro
+}
+
+falhar_local() {
+    printf 'aviso: %s\n' "$*" >&2
+    return 1              # encerra apenas a FUNCAO
+}
+```
+
+Uma função de biblioteca não deve chamar `exit` — ela tira do chamador a chance de tratar o erro, e transforma o que seria um desvio em fim de programa. A exceção legítima é a função `morrer`/`die` do próprio script, cujo propósito declarado é abortar.
+
+Cuidado com o efeito colateral: se essa função for chamada dentro de `$( )`, o `exit` mata só o subshell, e o script segue adiante como se nada tivesse acontecido.
+
+## Função que substitui um comando, e o `command`
+
+Como funções têm precedência sobre programas externos, dá para envolver um comando existente:
+
+```bash
+# adiciona confirmacao ao rm em sessao interativa
+rm() {
+    command rm -i "$@"     # 'command' pula a funcao e chama o programa real
+}
+```
+
+Sem o `command`, o `rm` de dentro chamaria a própria função e o resultado seria recursão infinita até o `FUNCNEST` (padrão 0, isto é, sem limite) ou o esgotamento da pilha. Os três desvios úteis:
+
+```bash
+command ls    # ignora funcao e alias, usa o executavel do PATH
+builtin cd    # forca o builtin, ignorando funcao de mesmo nome
+enable -n echo   # desliga um builtin, deixando o /bin/echo assumir
+```
+
+Envolver comandos é legítimo em `~/.bashrc` pessoal. **Dentro de um script, é armadilha**: quem lê a chamada a `rm` não tem como saber que ela virou outra coisa vinte linhas acima. Em script, dê nome próprio à função.
+
+A recursão em si funciona normalmente, e vale para percorrer estruturas em árvore:
+
+```bash
+profundidade() {
+    local dir="$1" nivel="${2:-0}" sub
+    printf '%*s%s\n' $(( nivel * 2 )) '' "${dir##*/}"
+    for sub in "$dir"/*/; do
+        [[ -d $sub ]] || continue
+        profundidade "${sub%/}" $(( nivel + 1 ))
+    done
+}
+```
+
+Cada nível tem seus próprios `local`, então a recursão se comporta como se espera. Só lembre que o shell não faz otimização de chamada em cauda e que cada nível custa memória.
+
+## Quando promover a função a script
+
+Uma função vive no processo do shell atual; um script vive num processo próprio. A escolha entre os dois raramente é estética:
+
+| Situação | Escolha |
+|---|---|
+| Precisa alterar o diretório ou variáveis da sessão | Função (um script não consegue) |
+| Vai ser chamada por `cron`, `systemd` ou outro programa | Script |
+| Corpo passou de umas 50 linhas ou tem lógica própria | Script |
+| Usada em três scripts diferentes | Arquivo de biblioteca, carregado com `source` |
+| É um atalho de digitação sem argumentos | `alias` basta |
+
+O arquivo de biblioteca é o caso intermediário: um `.sh` que **só define funções** e não executa nada ao ser carregado, trazido com `source lib/comum.sh`. A estruturação de scripts grandes é tema do Volume 12; por ora, a regra útil é que uma biblioteca que imprime ou altera estado ao ser carregada vai surpreender alguém.
+
+## 🐉 No Kali
+
+- **Função de varredura não deve chamar `exit`.** Num script que percorre uma lista de alvos autorizados, uma função que aborta o programa inteiro porque um host não respondeu descarta o trabalho já feito nos anteriores. Use `return` com código distinto por tipo de falha — `1` para host inalcançável, `2` para fora do escopo, `3` para ferramenta ausente — e deixe o laço do @sec-cap058 decidir se continua. O relatório parcial de dezoito alvos vale mais que nenhum relatório.
+- **A validação de escopo pertence a uma função, e ela devolve código, não texto.** `no_escopo "$alvo" || continue` é legível e testável isoladamente. Escrever a validação inline em cada ponto do script garante que uma das cópias vai divergir das outras. Varrer endereço fora do escopo contratado é crime pela Lei 12.737/2012, e a diferença entre acertar e errar costuma ser uma condição repetida em quatro lugares e corrigida em três.
+- **Não sobrescreva `nmap`, `curl` ou `ping` com função de mesmo nome em script.** É tentador criar `nmap() { command nmap --max-rate 100 "$@"; }` para garantir a temporização. O problema aparece na hora de interpretar o resultado: quem lê o script vê `nmap -T4` e conclui que a taxa é a do `-T4`. Chame de `nmap_lento` — o nome documenta a intenção e o wrapper deixa de ser invisível.
+- **`local` em função que manipula credencial não apaga nada da memória.** O `local` controla visibilidade, não conteúdo: a variável continua no processo até ser sobrescrita, e o `/proc/PID/environ` só não a mostra porque ela não foi exportada. Para segredo, valem as regras do @sec-cap052 — não exportar, não passar por argumento, e ler de arquivo com permissão `600`.
+- **`export -f` atravessa o `sudo` de formas que surpreendem.** Exportar função para subprocessos é um recurso do Bash que já foi vetor de execução remota de código (o Shellshock, CVE-2014-6271, explorava exatamente a forma como funções exportadas eram transportadas pelo ambiente). O bug foi corrigido em 2014 e a sintaxe de transporte mudou, mas o princípio permanece: uma função exportada é código que viaja no ambiente. Não exporte função em script que eleva privilégio.
+
+> **Nota sobre a família RHEL.** A sintaxe de funções é a do Bash e não muda entre distribuições. As divergências relevantes são de versão: `local -n` exige Bash 4.3 (2014), o que exclui o Bash 3.2 do macOS mas não incomoda nenhum RHEL ainda suportado. Já `local` em si **não é POSIX** — funciona no `dash` do Debian e do Kali por extensão, mas um script `#!/bin/sh` que dependa de `local -n`, de `declare -A` ou de `FUNCNAME` vai falhar. Se a portabilidade para `/bin/sh` importa, o teto é `local` simples, sem opções.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-funcoes`.
+
+1. **Reproduza o bug da abertura.**
+
+   ```bash
+   mkdir -p ~/lab-funcoes && cd ~/lab-funcoes
+   contar_return() { local n; n=$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l); return "$n"; }
+   contar_stdout() { dpkg-query -f '.\n' -W 2>/dev/null | wc -l; }
+
+   contar_return; echo "via return: $?"
+   echo "via stdout: $(contar_stdout)"
+   ```
+
+   Esperado: os dois números diferem sempre que houver mais de 255 pacotes. O primeiro é o segundo módulo 256 — confirme com `echo $(( $(contar_stdout) % 256 ))`.
+
+2. **Veja o teto de 8 bits diretamente.**
+
+   ```bash
+   testar() { return "$1"; }
+   for v in 0 1 255 256 300 4412; do
+       testar "$v"; echo "return $v  -> \$? = $?"
+   done
+   ```
+
+   Esperado: `0`, `1`, `255`, `0`, `44` e `60`. Note que `return 256` vira `0`, ou seja, **falha vira sucesso** em silêncio.
+
+3. **Confirme que `$0` não é o nome da função.**
+
+   ```bash
+   cat > ctx.sh <<'EOF'
+   #!/usr/bin/env bash
+   quem_sou_eu() {
+       echo "\$0         = $0"
+       echo "FUNCNAME[0] = ${FUNCNAME[0]}"
+       echo "chamador    = ${FUNCNAME[1]:-<script>}"
+   }
+   externa() { quem_sou_eu; }
+   externa
+   EOF
+   chmod +x ctx.sh && ./ctx.sh
+   ```
+
+   Esperado: `$0` mostra `./ctx.sh`, `FUNCNAME[0]` mostra `quem_sou_eu` e o chamador aparece como `externa`.
+
+4. **Prove o escopo dinâmico.**
+
+   ```bash
+   interna() { echo "interna ve: [${segredo:-<vazio>}]"; }
+   externa() { local segredo="abc"; interna; }
+
+   externa
+   echo "topo ve: [${segredo:-<vazio>}]"
+   ```
+
+   Esperado: a função interna imprime `[abc]` mesmo sem receber argumento; o nível superior imprime `[<vazio>]`. É a @fig-escopo-dinamico em execução.
+
+5. **Veja a colisão de nomes que o escopo dinâmico causa.**
+
+   ```bash
+   auxiliar() { local i; for i in a b c; do :; done; }
+   principal() {
+       local i
+       for i in 1 2 3; do
+           auxiliar
+           echo -n "$i "
+       done; echo
+   }
+   principal
+
+   auxiliar_ruim() { for i in a b c; do :; done; }   # SEM local
+   principal_ruim() {
+       for i in 1 2 3; do auxiliar_ruim; echo -n "$i "; done; echo
+   }
+   principal_ruim
+   ```
+
+   Esperado: a primeira imprime `1 2 3`; a segunda imprime `c` uma única vez e para — a função auxiliar destruiu o contador do laço de quem a chamou.
+
+6. **Comprove que `local x=$(cmd)` engole o erro.**
+
+   ```bash
+   ruim() { local v=$(ls /nao-existe 2>/dev/null); echo "ruim: \$?=$?"; }
+   bom()  { local v; v=$(ls /nao-existe 2>/dev/null); echo "bom:  \$?=$?"; }
+   ruim; bom
+   ```
+
+   Esperado: `ruim` imprime `$?=0` e `bom` imprime `$?=2`. Só a segunda forma permite tratar a falha.
+
+7. **Devolva dados pelos três caminhos.**
+
+   ```bash
+   por_stdout() { echo "4412"; }
+   por_global()  { RESULTADO="4412"; }
+   por_nameref() { local -n destino="$1"; destino="4412"; }
+
+   a=$(por_stdout);            echo "stdout : $a"
+   por_global;                 echo "global : $RESULTADO"
+   por_nameref b;              echo "nameref: $b"
+   ```
+
+   Esperado: os três imprimem `4412`. Compare o custo com `time` num laço de mil chamadas — o `$( )` é o mais caro, por criar um processo a cada volta.
+
+8. **Veja a variável morrer no subshell da substituição.**
+
+   ```bash
+   contador=0
+   incrementa() { (( ++contador )); echo "dentro: $contador"; }
+   saida=$(incrementa)
+   echo "$saida / depois da captura: contador=$contador"
+   incrementa
+   echo "sem captura: contador=$contador"
+   ```
+
+   Esperado: dentro da captura o contador chega a 1, mas o valor externo continua 0; sem a captura, ele realmente vira 1.
+
+9. **Observe o `set -e` suspenso dentro da condição.**
+
+   ```bash
+   cat > sete.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -e
+   valida() { false; echo "  ainda rodei apos o false"; return 0; }
+   if valida; then echo "condicao: passou"; fi
+   valida
+   echo "esta linha nao deve aparecer"
+   EOF
+   chmod +x sete.sh; ./sete.sh; echo "codigo final: $?"
+   ```
+
+   Esperado: no `if`, o `false` não aborta e a função segue até o fim. Na chamada direta, o script morre no `false` e a última linha nunca é impressa.
+
+10. **Envolva um comando e escape da recursão.**
+
+    ```bash
+    ls() { echo "[wrapper]"; command ls "$@"; }
+    ls -d /etc
+    unset -f ls
+    type ls
+    ```
+
+    Esperado: o prefixo `[wrapper]` seguido da saída real. Remova o `command` mentalmente e note que a função chamaria a si mesma para sempre.
+
+11. **Escreva uma função-predicado e uma função `morrer`.**
+
+    ```bash
+    morrer() { printf 'erro: %s\n' "$*" >&2; exit 1; }
+    tem_comando() { command -v "$1" >/dev/null 2>&1; }
+
+    tem_comando nmap  && echo "nmap presente"
+    tem_comando xyzzy || echo "xyzzy ausente (codigo $?)"
+    ```
+
+    Esperado: o predicado devolve 0 ou 1 sem imprimir nada — o que o torna combinável com `&&`, `||` e `if`. Uma função-predicado que imprime mensagem não serve como condição.
+
+12. **Recursão com `local` por nível, e limpeza.**
+
+    ```bash
+    profundidade() {
+        local dir="$1" nivel="${2:-0}" sub
+        printf '%*s%s\n' $(( nivel * 2 )) '' "${dir##*/}"
+        (( nivel >= 2 )) && return 0
+        for sub in "$dir"/*/; do
+            [[ -d $sub ]] || continue
+            profundidade "${sub%/}" $(( nivel + 1 ))
+        done
+    }
+    profundidade /etc/apt
+    cd ~ && rm -rf ~/lab-funcoes
+    ```
+
+    Esperado: a árvore indentada até dois níveis. Cada chamada tem seu próprio `nivel` e `sub` porque ambos são `local` — sem isso, a recursão se embaralharia na primeira volta.
+
+## Resumo
+
+- **Uma função é um comando, não uma função matemática.** Recebe argumentos posicionais (`$1`, `"$@"`), tem precedência sobre programas externos, e precisa ser definida antes de ser chamada.
+- **`return` devolve um código de saída de 0 a 255, nunca um valor.** `return 4412` produz `60` sem aviso, e `return 256` transforma falha em sucesso. Dado sai pela **saída padrão**, capturado com `$(funcao)`.
+- **Sem `local`, toda variável da função é global.** Declare como `local` tudo que a função usa — inclusive os contadores de laço, que são a fonte mais comum de colisão.
+- **O escopo do shell é dinâmico:** um `local` é visível em todas as funções chamadas abaixo dele na pilha, mas nunca acima. Isso torna nomes genéricos em funções de biblioteca especialmente perigosos.
+- **`local x=$(cmd)` descarta o código de saída de `cmd`.** Declare numa linha e atribua na seguinte — vale também para `declare`, `export` e `readonly`.
+- **`$0` continua sendo o nome do script dentro da função.** O nome da função está em `${FUNCNAME[0]}`, e a pilha inteira em `FUNCNAME`.
+- **`exit` numa função encerra o script inteiro; `return` encerra só a função.** Biblioteca usa `return`; só a função `morrer` do próprio script usa `exit`.
+- **Use `command` para envolver um comando sem cair em recursão infinita** — e evite envolver comandos dentro de scripts, onde o wrapper fica invisível para quem lê.

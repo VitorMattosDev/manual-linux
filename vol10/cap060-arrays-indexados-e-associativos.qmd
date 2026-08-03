@@ -1,3 +1,487 @@
 # Arrays indexados e associativos {#sec-cap060}
 
-*(em elaboracao)*
+O script de backup tinha uma variável de configuração no topo, e a ideia parecia boa:
+
+```bash
+EXCLUSOES="--exclude=/proc --exclude=/sys --exclude=/home/kali/Downloads"
+rsync -a $EXCLUSOES /origem/ /destino/
+```
+
+Funcionou por meses. Quebrou no dia em que alguém acrescentou um diretório com espaço no nome:
+
+```bash
+EXCLUSOES="--exclude=/proc --exclude=/home/kali/Meus Documentos"
+```
+
+O `rsync` recebeu `--exclude=/home/kali/Meus` e, separadamente, `Documentos` — que ele interpretou como **mais um caminho de origem**. O backup passou a incluir o que devia excluir e a copiar um diretório inexistente, reclamando disso todas as noites num log que ninguém lia.
+
+A tentação natural é pôr aspas: `rsync -a "$EXCLUSOES"`. Isso piora. Agora o `rsync` recebe um único argumento gigante, com todos os `--exclude` grudados, e falha na hora.
+
+O problema não tem solução dentro de uma variável de texto, e a razão é estrutural: **uma cadeia de caracteres não guarda onde um item termina e o próximo começa**. Ou você deixa o shell adivinhar pelos espaços — e ele erra em qualquer item que contenha espaço — ou você impede a divisão e perde a separação por completo. O shell tem um tipo de dado para isso, e é o assunto deste capítulo.
+
+## Um array preserva as fronteiras entre os itens
+
+A mesma configuração, com o tipo certo:
+
+```bash
+EXCLUSOES=(
+    --exclude=/proc
+    --exclude=/sys
+    "--exclude=/home/kali/Meus Documentos"
+)
+rsync -a "${EXCLUSOES[@]}" /origem/ /destino/
+```
+
+O `rsync` recebe exatamente três argumentos, o terceiro com o espaço intacto. Nenhuma adivinhação, nenhum `IFS` envolvido. E se o array estiver vazio, o `rsync` recebe zero argumentos extras em vez de um argumento vazio.
+
+As formas de criar um array:
+
+```bash
+arr=(um dois tres)                  # literal
+arr=()                              # vazio
+declare -a arr                      # declaracao explicita
+arr[0]=um; arr[5]=seis              # por indice, com buracos permitidos
+arr+=(quatro)                       # acrescenta ao final
+
+logs=( /var/log/*.log )             # de um glob -- cada arquivo e um item
+mapfile -t linhas < arquivo.txt     # de um arquivo, uma linha por item
+readarray -t linhas < arquivo.txt   # sinonimo de mapfile
+IFS=: read -ra caminhos <<< "$PATH" # de uma cadeia, com separador escolhido
+```
+
+O `mapfile -t` merece destaque: o `-t` remove a quebra de linha de cada item, e o comando é bem mais rápido e mais seguro que um laço `while read` acumulando com `+=`. Para a saída de um comando, combine com a substituição de processo do @sec-cap058:
+
+```bash
+mapfile -t usuarios < <(cut -d: -f1 /etc/passwd)
+echo "${#usuarios[@]} usuarios"
+```
+
+## `[@]` contra `[*]`: a distinção que decide tudo
+
+Acessar um elemento é simples; acessar o array inteiro tem quatro formas, e três delas estão erradas na maioria dos casos.
+
+```bash
+arr=(um "dois com espaco" tres)
+
+echo "${arr[0]}"        # um -- indices comecam em ZERO
+echo "${arr[-1]}"       # tres -- indice negativo conta do fim
+echo "${#arr[@]}"       # 3 -- quantidade de elementos
+echo "${#arr[0]}"       # 2 -- comprimento do PRIMEIRO ELEMENTO
+echo "${!arr[@]}"       # 0 1 2 -- os indices existentes
+```
+
+Repare na diferença entre `${#arr[@]}` e `${#arr[0]}`: uma conta itens, a outra conta caracteres de um item. É uma fonte recorrente de confusão, e o `[@]` é o que faz a diferença.
+
+::: {#fig-arroba-contra-asterisco}
+```{.tikz}
+%%| filename: arroba-contra-asterisco-em-arrays
+%%| alt: Matriz comparando as quatro formas de expandir um array inteiro, mostrando quantas palavras cada uma produz para um array de tres itens em que um contem espaco
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=3pt,minimum height=0.58cm},
+    ok/.style={bx,draw=manualgreen,fill=manualgreen!13},
+    ru/.style={bx,draw=manualred,fill=manualred!12},
+    cd/.style={font=\scriptsize\ttfamily,align=left,anchor=west},
+    ex/.style={font=\scriptsize,align=left,anchor=west,text width=4.6cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[font=\scriptsize\ttfamily,manualblue,anchor=west] at (-0.5,7.1) {arr=(um "dois com espaco" tres)};
+
+  % linha 1 -- "${arr[@]}"
+  \node[cd,manualgreen] at (-0.5,6.2) {"\$\{arr[@]\}"};
+  \node[ok,minimum width=0.9cm] at (3.7,6.2) {um};
+  \node[ok,minimum width=2.6cm] at (5.5,6.2) {dois com espaco};
+  \node[ok,minimum width=0.9cm] at (7.4,6.2) {tres};
+  \node[ex,manualgreen] at (8.4,6.2) {\textbf{3 palavras.} Cada item vira um argumento, com espaços preservados. \emph{Esta é a forma correta} em praticamente todo uso.};
+
+  % linha 2 -- "${arr[*]}"
+  \node[cd,manualblue] at (-0.5,4.6) {"\$\{arr[*]\}"};
+  \node[bx,draw=manualblue,fill=manualblue!10,minimum width=4.6cm] at (5.5,4.6) {um dois com espaco tres};
+  \node[ex,manualblue] at (8.4,4.6) {\textbf{1 palavra.} Todos os itens unidos pelo \emph{primeiro caractere} do \texttt{IFS}. Útil só para exibir ou registrar em log.};
+
+  % linha 3 -- ${arr[@]} sem aspas
+  \node[cd,manualred] at (-0.5,3.0) {\$\{arr[@]\}};
+  \node[ru,minimum width=0.9cm] at (3.7,3.0) {um};
+  \node[ru,minimum width=1.0cm] at (4.9,3.0) {dois};
+  \node[ru,minimum width=0.8cm] at (6.0,3.0) {com};
+  \node[ru,minimum width=1.4cm] at (7.3,3.0) {espaco};
+  \node[ru,minimum width=0.9cm] at (8.5,3.0) {tres};
+  \node[ex,manualred] at (9.4,3.0) {\textbf{4 palavras.} As aspas caem, o \texttt{IFS} recorta de novo. O bug da abertura, agora com array.};
+
+  % linha 4 -- ${arr[*]} sem aspas
+  \node[cd,manualred] at (-0.5,1.6) {\$\{arr[*]\}};
+  \node[ru,minimum width=0.9cm] at (3.7,1.6) {um};
+  \node[ru,minimum width=1.0cm] at (4.9,1.6) {dois};
+  \node[ru,minimum width=0.8cm] at (6.0,1.6) {com};
+  \node[ru,minimum width=1.4cm] at (7.3,1.6) {espaco};
+  \node[ru,minimum width=0.9cm] at (8.5,1.6) {tres};
+  \node[ex,manualred] at (9.4,1.6) {\textbf{4 palavras}, iguais às de cima. Sem aspas, \texttt{[@]} e \texttt{[*]} são indistinguíveis --- e ambos inúteis.};
+
+  \node[nt,text width=14.9cm] at (7.2,0.5) {A escolha se resume a uma pergunta: o resultado vai virar \textbf{vários argumentos} ou \textbf{um texto}? Para passar a um comando, iterar num \texttt{for} ou copiar para outro array, use \texttt{"\$\{arr[@]\}"} --- com as aspas, sempre. Para imprimir numa mensagem ou gravar numa linha de log, use \texttt{"\$\{arr[*]\}"}. As duas formas sem aspas não têm uso legítimo: elas desfazem exatamente a estrutura que motivou o array.};
+\end{tikzpicture}
+```
+As quatro expansões de um array inteiro, e quantas palavras cada uma produz.
+:::
+
+O mesmo par `@`/`*` já apareceu em `"$@"` e `"$*"` no @sec-cap059 — não é coincidência: os parâmetros posicionais **são** um array, com a mesma semântica.
+
+Para juntar com outro separador que não o do `IFS`, altere-o localmente:
+
+```bash
+arr=(alfa beta gama)
+( IFS=,; echo "${arr[*]}" )     # alfa,beta,gama -- em subshell, sem afetar o resto
+```
+
+## Fatias, buracos e a natureza esparsa dos índices
+
+```bash
+arr=(zero um dois tres quatro cinco)
+
+echo "${arr[@]:2}"        # dois tres quatro cinco -- a partir do indice 2
+echo "${arr[@]:1:3}"      # um dois tres -- 3 itens a partir do indice 1
+echo "${arr[@]: -2}"      # quatro cinco -- espaco antes do menos e obrigatorio
+```
+
+O espaço em `${arr[@]: -2}` não é opcional: sem ele, o `:-` é lido como o operador de valor padrão do @sec-cap062.
+
+Um array de shell **não é um vetor contíguo**. Os índices são chaves de uma tabela, e apagar um elemento deixa um buraco:
+
+```bash
+arr=(a b c d)
+unset 'arr[1]'
+echo "${#arr[@]}"        # 3 -- restam tres elementos
+echo "${!arr[@]}"        # 0 2 3 -- mas os indices sao 0, 2 e 3
+echo "${arr[1]:-vazio}"  # vazio
+```
+
+Aspas em `unset 'arr[1]'` evitam que o `[1]` seja tratado como glob quando existir um arquivo chamado `arr1` no diretório. Depois do `unset`, iterar de `0` até `${#arr[@]}` menos um **pula elementos e visita índices inexistentes**. As duas formas corretas de percorrer:
+
+```bash
+for item in "${arr[@]}"; do ... done       # pelos VALORES, ignora buracos
+for i in "${!arr[@]}"; do ... done         # pelos INDICES que existem
+```
+
+Para reindexar e eliminar os buracos, basta reconstruir: `arr=("${arr[@]}")`.
+
+## Arrays associativos: chave de texto em vez de índice
+
+A partir do Bash 4, o shell tem tabelas hash. A declaração é obrigatória e é o erro número um de quem começa:
+
+```bash
+declare -A porta          # SEM isto, o Bash trata como array indexado
+porta[ssh]=22
+porta[http]=80
+porta[https]=443
+porta=( [dns]=53 [smtp]=25 )       # tambem na criacao
+
+echo "${porta[https]}"    # 443
+echo "${!porta[@]}"       # as CHAVES: https smtp dns ssh http (ordem arbitraria)
+echo "${porta[@]}"        # os VALORES
+echo "${#porta[@]}"       # 5
+```
+
+Sem `declare -A`, `porta[ssh]=22` faz o shell avaliar `ssh` como expressão aritmética — variável não definida vale zero — e você acaba com um array indexado onde tudo foi parar no índice 0, sobrescrevendo-se. Nenhum erro é emitido.
+
+::: {#fig-indexado-e-associativo}
+```{.tikz}
+%%| filename: array-indexado-e-associativo
+%%| alt: Comparacao entre a estrutura interna de um array indexado esparso e a de um array associativo, mostrando pares de chave e valor em ambos
+\begin{tikzpicture}[
+    bx/.style={rounded corners=1.5pt,draw,thick,align=center,font=\scriptsize\ttfamily,inner sep=2.5pt,minimum height=0.55cm},
+    ky/.style={bx,draw=manualblue,fill=manualblue!12,minimum width=1.5cm},
+    vl/.style={bx,draw=manualgreen,fill=manualgreen!12,minimum width=2.0cm},
+    hd/.style={font=\scriptsize\bfseries,align=center},
+    fl/.style={-{Latex[length=1.4mm]},semithick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---- indexado
+  \node[hd,manualblue] at (3.3,7.0) {\texttt{declare -a} \quad indexado};
+  \node[font=\tiny,manualgray] at (3.3,6.6) {chave = número inteiro};
+  \foreach \yy/\kk/\vv in {5.9/0/a, 5.25/2/c, 4.6/3/d, 3.95/9/j} {
+    \node[ky] at (2.2,\yy) {[\kk]};
+    \node[vl] at (4.6,\yy) {\vv};
+    \draw[fl] (2.95,\yy) -- (3.6,\yy);
+  }
+  \node[font=\scriptsize,manualred,anchor=west] at (5.8,5.25) {índice 1 apagado};
+  \node[font=\scriptsize,manualred,anchor=west] at (5.8,3.95) {saltou de 3 para 9};
+  \node[font=\scriptsize,manualgray,align=left,text width=6.6cm,anchor=north west] at (0.9,3.3) {\texttt{\$\{\#arr[@]\}} vale \textbf{4}, mas o maior índice é \textbf{9}. Um laço contando de \texttt{0} a \texttt{3} perderia o \texttt{j} e leria dois índices vazios.};
+
+  % ---- associativo
+  \node[hd,manualblue] at (11.6,7.0) {\texttt{declare -A} \quad associativo};
+  \node[font=\tiny,manualgray] at (11.6,6.6) {chave = texto qualquer};
+  \foreach \yy/\kk/\vv in {5.9/ssh/22, 5.25/http/80, 4.6/https/443, 3.95/{dns rev}/53} {
+    \node[ky,minimum width=1.9cm] at (10.2,\yy) {[\kk]};
+    \node[vl,minimum width=1.4cm] at (12.9,\yy) {\vv};
+    \draw[fl] (11.2,\yy) -- (12.2,\yy);
+  }
+  \node[font=\scriptsize,manualgray,align=left,text width=6.6cm,anchor=north west] at (8.9,3.3) {A ordem de \texttt{\$\{!m[@]\}} é a da tabela \emph{hash}: não é a de inserção nem a alfabética, e pode mudar entre versões do Bash. Ordene explicitamente quando a saída precisar ser estável.};
+
+  \node[nt,text width=14.9cm] at (7.2,0.9) {Os dois são a mesma estrutura por dentro --- uma tabela de chaves --- e diferem apenas no tipo aceito como chave. Por isso o array indexado do shell é naturalmente \textbf{esparso}: \texttt{arr[100]=x} num array de três elementos não aloca 97 posições vazias, só acrescenta uma chave. E por isso \texttt{\$\{!arr[@]\}} existe: sem ele, não há como saber quais índices realmente estão ocupados.};
+\end{tikzpicture}
+```
+Array indexado e array associativo são a mesma tabela de chaves; muda apenas o tipo da chave.
+:::
+
+Percorrer um associativo é sempre pelas chaves, e quase sempre com ordenação explícita:
+
+```bash
+for servico in "${!porta[@]}"; do
+    printf '%-8s %s\n' "$servico" "${porta[$servico]}"
+done
+
+# com ordem estavel
+for servico in $(printf '%s\n' "${!porta[@]}" | sort); do
+    printf '%-8s %s\n' "$servico" "${porta[$servico]}"
+done
+```
+
+Chaves podem conter espaço, barra e quase qualquer coisa, desde que citadas: `porta["dns reverso"]=53`. Os usos típicos são contagem de ocorrências, deduplicação e tabelas de tradução:
+
+```bash
+# contar shells em uso -- o array associativo faz o papel do sort | uniq -c
+declare -A contagem
+while IFS=: read -r _ _ _ _ _ _ shell; do
+    (( ++contagem["$shell"] ))
+done < /etc/passwd
+
+for sh in "${!contagem[@]}"; do
+    printf '%4d  %s\n' "${contagem[$sh]}" "$sh"
+done | sort -rn
+```
+
+Repare que `(( ++contagem["$shell"] ))` funciona mesmo para uma chave que ainda não existe: em contexto aritmético, ausente vale zero.
+
+Para deduplicar preservando a ordem original, o associativo serve de conjunto:
+
+```bash
+declare -A visto
+unicos=()
+for item in "${lista[@]}"; do
+    [[ -n ${visto[$item]:-} ]] && continue
+    visto[$item]=1
+    unicos+=("$item")
+done
+```
+
+## Construir linha de comando é o uso que mais salva
+
+Este é o padrão que resolve o problema da abertura em qualquer contexto — flags condicionais, caminhos com espaço, opções vindas de variável:
+
+```bash
+argumentos=( -a --delete )
+[[ -n ${VERBOSE:-} ]]  && argumentos+=( -v )
+[[ -n ${SIMULAR:-} ]]  && argumentos+=( --dry-run )
+[[ -n ${LIMITE:-} ]]   && argumentos+=( --bwlimit="$LIMITE" )
+
+for dir in "${EXCLUSOES[@]}"; do
+    argumentos+=( --exclude="$dir" )
+done
+
+rsync "${argumentos[@]}" "$ORIGEM/" "$DESTINO/"
+```
+
+Nada aqui depende do `IFS`, nenhum caminho precisa estar livre de espaços, e acrescentar uma opção é uma linha. A alternativa com `eval` — que ainda aparece em scripts antigos — reintroduz a injeção de comando discutida no @sec-cap053 e não resolve nada que o array não resolva.
+
+Uma ressalva de versão: sob `set -u` (@sec-cap057), expandir um array **vazio** com `"${arr[@]}"` era erro fatal até o Bash 4.3. Em Bash 4.4 e posteriores — o que inclui qualquer Kali atual — o array vazio expande para nada, corretamente. Se o script precisa rodar em sistemas antigos, a defesa é `"${arr[@]:-}"` ou testar `(( ${#arr[@]} ))` antes.
+
+Para depurar o que exatamente vai ser executado, imprima com `%q`, que mostra as fronteiras:
+
+```bash
+printf 'comando: rsync'; printf ' %q' "${argumentos[@]}"; printf '\n'
+```
+
+## O que arrays não fazem
+
+**Não existe array de arrays.** O shell tem uma dimensão só, e não há sintaxe para aninhar. As saídas usuais são combinar chave e índice num associativo (`matriz["2,3"]=valor`), guardar cada linha como texto com um separador escolhido, ou aceitar que o problema pede outra linguagem — Python ou `awk`, tema do Volume 11.
+
+**Arrays não são passados nem devolvidos por funções.** Uma função recebe palavras, e o array vira palavras ao ser expandido. As três formas de contornar:
+
+```bash
+# 1. expandir na chamada e reconstruir dentro (perde o nome, preserva os itens)
+processar() { local -a itens=( "$@" ); echo "${#itens[@]} itens"; }
+processar "${lista[@]}"
+
+# 2. nameref, quando a funcao precisa MODIFICAR o array do chamador
+acrescentar() { local -n ref="$1"; shift; ref+=( "$@" ); }
+acrescentar lista novo1 novo2
+
+# 3. imprimir com separador nulo e ler de volta (atravessa ate subshell)
+mapfile -t -d '' copia < <(printf '%s\0' "${origem[@]}")
+```
+
+**`declare -A` dentro de função cria variável local por padrão** no Bash 4.2 e posteriores. Para um associativo global declarado dentro de uma função, use `declare -gA`.
+
+## 🐉 No Kali
+
+- **Lista de alvos autorizados é array, nunca cadeia de texto.** `ALVOS=( 10.10.10.5 10.10.10.7 "servidor de teste.lab" )` sobrevive a nome com espaço e a lista vazia; `ALVOS="10.10.10.5 10.10.10.7"` depende do `IFS` e falha em silêncio no primeiro item atípico. Como o laço sobre alvos é justamente onde o filtro de escopo se aplica (@sec-cap058), o tipo de dado errado aqui vira alvo varrido fora do escopo contratado — crime pela Lei 12.737/2012.
+- **Opções de `nmap`, `gobuster` e `hydra` montadas condicionalmente pedem array.** Um wrapper que decide entre `-sS` e `-sT` conforme o privilégio, que acrescenta `--max-rate` quando há limite contratado e que insere o arquivo de saída só às vezes é exatamente o caso do `argumentos+=( ... )`. Com string e `eval`, uma senha ou um caminho com aspas na lista de opções vira execução de comando.
+- **Array associativo é a estrutura natural para o mapa porta-serviço e para agregar resultados.** Depois de percorrer a saída de uma varredura, `declare -A achados; achados["$ip:$porta"]="$banner"` dá deduplicação de graça e consulta direta, sem reprocessar arquivo. Lembre que a ordem de `${!achados[@]}` é arbitrária: relatório sai por `sort`.
+- **`mapfile -t` sobre arquivo de alvos é mais seguro que `for alvo in $(cat alvos.txt)`.** O segundo divide por espaço, expande glob e engasga em linha com comentário contendo `*`. O primeiro preserva a linha inteira; filtre comentários e linhas vazias com `[[ $alvo =~ ^[[:space:]]*(#|$) ]] && continue` dentro do laço.
+- **Arquivos de wordlist do Kali não cabem em array.** `/usr/share/wordlists/rockyou.txt` tem mais de 14 milhões de linhas; `mapfile` carregaria tudo na memória do shell, com sobrecarga de várias dezenas de bytes por item. Wordlist se processa em fluxo, com `while IFS= read -r`, ou se entrega direto à ferramenta que sabe lidar com ela. Array é para dezenas ou milhares de itens, não para milhões.
+
+> **Nota sobre a família RHEL.** Arrays indexados existem no Bash desde a versão 2 e não variam entre distribuições. Arrays **associativos** exigem Bash 4 (2009) e portanto estão presentes em qualquer RHEL 7 ou posterior; o `mapfile -d`, usado acima com o byte nulo, exige Bash 4.4 — RHEL 8 em diante, e todo Kali atual. A divergência que realmente morde é outra: **arrays não são POSIX**. Um script com `#!/bin/sh` que use `arr=(...)` funciona em RHEL, onde `/bin/sh` é o Bash, e falha no `dash` do Debian e do Kali com um `Syntax error: "(" unexpected`. Se o script usa array, o shebang é `#!/usr/bin/env bash`, sem exceção.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali, contido em `~/lab-arrays`.
+
+1. **Reproduza o bug da abertura com uma string.**
+
+   ```bash
+   mkdir -p ~/lab-arrays && cd ~/lab-arrays
+   EXCLUSOES="--exclude=/proc --exclude=/home/Meus Documentos"
+   printf '[%s]\n' $EXCLUSOES
+   echo "--- com aspas ---"
+   printf '[%s]\n' "$EXCLUSOES"
+   ```
+
+   Esperado: sem aspas, quatro linhas — `Meus` e `Documentos` separados. Com aspas, uma linha só, com tudo grudado. Nenhuma das duas é o que o `rsync` precisa.
+
+2. **Corrija com array.**
+
+   ```bash
+   EXCLUSOES=( --exclude=/proc "--exclude=/home/Meus Documentos" )
+   printf '[%s]\n' "${EXCLUSOES[@]}"
+   echo "quantidade: ${#EXCLUSOES[@]}"
+   ```
+
+   Esperado: exatamente duas linhas, a segunda com o espaço preservado, e `quantidade: 2`.
+
+3. **Percorra a matriz de expansões da figura.**
+
+   ```bash
+   arr=(um "dois com espaco" tres)
+   echo '--- "${arr[@]}" ---'; printf '[%s]\n' "${arr[@]}"
+   echo '--- "${arr[*]}" ---'; printf '[%s]\n' "${arr[*]}"
+   echo '--- ${arr[@]} ---';   printf '[%s]\n' ${arr[@]}
+   echo '--- ${arr[*]} ---';   printf '[%s]\n' ${arr[*]}
+   ```
+
+   Esperado: 3, 1, 4 e 4 linhas, na ordem. É a @fig-arroba-contra-asterisco em execução.
+
+4. **Separe contagem de itens de comprimento de item.**
+
+   ```bash
+   arr=(alfa beta "gama delta")
+   echo "itens no array:        ${#arr[@]}"
+   echo "caracteres em arr[0]:  ${#arr[0]}"
+   echo "caracteres em arr[2]:  ${#arr[2]}"
+   ```
+
+   Esperado: `3`, `4` e `10`.
+
+5. **Crie um buraco e veja o laço ingênuo falhar.**
+
+   ```bash
+   arr=(a b c d)
+   unset 'arr[1]'
+   echo "tamanho: ${#arr[@]}   indices: ${!arr[@]}"
+   echo "--- laco por indice numerico (ERRADO) ---"
+   for (( i = 0; i < ${#arr[@]}; i++ )); do echo "[$i]=${arr[$i]:-<vazio>}"; done
+   echo "--- laco por indices existentes (CERTO) ---"
+   for i in "${!arr[@]}"; do echo "[$i]=${arr[$i]}"; done
+   ```
+
+   Esperado: o laço numérico imprime um `<vazio>` no índice 1 e nunca alcança o `d` no índice 3. O correto imprime os três elementos reais.
+
+6. **Reindexe.**
+
+   ```bash
+   arr=( "${arr[@]}" )
+   echo "indices apos reindexar: ${!arr[@]}"
+   ```
+
+   Esperado: `0 1 2`, sem buracos.
+
+7. **Fatie.**
+
+   ```bash
+   n=(zero um dois tres quatro cinco)
+   echo "a partir de 2 : ${n[@]:2}"
+   echo "3 itens do 1  : ${n[@]:1:3}"
+   echo "ultimos 2     : ${n[@]: -2}"
+   echo "ultimo item   : ${n[-1]}"
+   ```
+
+   Esperado: as quatro fatias descritas. Remova o espaço antes do `-2` e veja a expansão mudar de sentido.
+
+8. **Veja o que acontece sem `declare -A`.**
+
+   ```bash
+   unset mapa
+   mapa[ssh]=22
+   mapa[http]=80
+   declare -p mapa
+   ```
+
+   Esperado: `declare -a mapa=([0]="80")`. Sem a declaração, `ssh` e `http` foram avaliados como aritmética, ambos valeram zero, e o segundo sobrescreveu o primeiro. Nenhum erro foi emitido.
+
+9. **Agora com a declaração.**
+
+   ```bash
+   unset mapa; declare -A mapa
+   mapa[ssh]=22; mapa[http]=80; mapa["dns reverso"]=53
+   declare -p mapa
+   for k in "${!mapa[@]}"; do printf '%-14s %s\n' "$k" "${mapa[$k]}"; done
+   ```
+
+   Esperado: três pares distintos, com a chave contendo espaço intacta. Rode o laço duas vezes e note que a ordem pode não ser a de inserção.
+
+10. **Conte com um associativo.**
+
+    ```bash
+    declare -A contagem
+    while IFS=: read -r _ _ _ _ _ _ shell; do
+        (( ++contagem["$shell"] ))
+    done < /etc/passwd
+    for sh in "${!contagem[@]}"; do printf '%4d  %s\n' "${contagem[$sh]}" "$sh"; done | sort -rn
+    ```
+
+    Esperado: a distribuição de shells do sistema, do mais usado ao menos. No Kali, `/usr/sbin/nologin` costuma liderar.
+
+11. **Monte uma linha de comando condicional e inspecione-a.**
+
+    ```bash
+    VERBOSE=1; LIMITE=2000
+    argumentos=( -a --delete )
+    [[ -n ${VERBOSE:-} ]] && argumentos+=( -v )
+    [[ -n ${LIMITE:-}  ]] && argumentos+=( --bwlimit="$LIMITE" )
+    argumentos+=( "--exclude=/home/Meus Documentos" )
+
+    printf 'rsync'; printf ' %q' "${argumentos[@]}"; printf ' ORIGEM/ DESTINO/\n'
+    ```
+
+    Esperado: a linha completa, com o `--exclude` do caminho com espaço citado pelo `%q`. É a forma de conferir a lista antes de trocar o `printf` pelo `rsync` de verdade.
+
+12. **Carregue um arquivo com `mapfile` e devolva um array de uma função.**
+
+    ```bash
+    printf 'alvo um\nalvo dois\n# comentario\n\nalvo tres\n' > alvos.txt
+    mapfile -t alvos < alvos.txt
+    echo "lidos: ${#alvos[@]}"
+
+    filtrar() {
+        local -n destino="$1"; shift
+        local linha
+        destino=()
+        for linha in "$@"; do
+            [[ $linha =~ ^[[:space:]]*(#|$) ]] && continue
+            destino+=( "$linha" )
+        done
+    }
+    filtrar validos "${alvos[@]}"
+    printf '[%s]\n' "${validos[@]}"
+    cd ~ && rm -rf ~/lab-arrays
+    ```
+
+    Esperado: `lidos: 5` (incluindo comentário e linha vazia) e três itens válidos ao final, cada um com o espaço interno preservado.
+
+## Resumo
+
+- **Cadeia de texto não guarda fronteiras entre itens.** Lista de caminhos, de alvos ou de opções de comando é array — a alternativa depende do `IFS` e quebra no primeiro item com espaço.
+- **`"${arr[@]}"` com aspas é a forma correta em quase todo uso**: produz um argumento por elemento. `"${arr[*]}"` junta tudo numa palavra só e serve para exibir. Sem aspas, as duas viram a mesma coisa e desfazem o array.
+- **`${#arr[@]}` conta elementos; `${#arr[0]}` conta caracteres do primeiro.** E `${!arr[@]}` lista os índices que realmente existem.
+- **Arrays do shell são esparsos.** `unset 'arr[1]'` deixa um buraco, então iterar por índice numérico pula elementos. Percorra por `"${arr[@]}"` ou por `"${!arr[@]}"`; reindexe com `arr=("${arr[@]}")`.
+- **Array associativo exige `declare -A` antes do primeiro uso.** Sem isso, a chave de texto é avaliada como aritmética, vale zero, e todos os valores se sobrescrevem no índice 0 sem nenhum aviso.
+- **A ordem de `${!assoc[@]}` é a da tabela hash**, não a de inserção nem a alfabética. Ordene explicitamente quando a saída importar.
+- **Montar linha de comando com `argumentos+=( ... )` e chamar `cmd "${argumentos[@]}"`** resolve flags condicionais e caminhos com espaço sem `eval`. Confira com `printf ' %q'` antes de executar.
+- **Arrays não são POSIX e não aninham.** Exigem `#!/usr/bin/env bash`, e não são passados a funções — expanda com `"${arr[@]}"` e reconstrua, ou use `local -n` quando a função precisar modificar o original.
