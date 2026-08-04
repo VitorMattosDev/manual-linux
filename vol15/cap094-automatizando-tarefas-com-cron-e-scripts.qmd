@@ -1,3 +1,412 @@
 # Automatizando tarefas com cron e scripts agendados {#sec-cap094}
 
-*(em elaboracao)*
+O backup rodava todo dia às duas da manhã havia oito meses. A entrada estava no `crontab`, o script existia, a linha terminava com `>/dev/null 2>&1` para não encher a caixa de e-mail. No dia em que o disco morreu, o diretório de destino tinha exatamente um arquivo: o primeiro, de oito meses antes. O script quebrara na segunda noite, quando alguém renomeou uma pasta. Todas as 240 execuções seguintes falharam na segunda linha e saíram calados, porque o redirecionamento que evitava o incômodo diário também descartava a mensagem de erro.
+
+O @sec-cap043 apresentou a sintaxe do `cron`, do `at` e dos timers do systemd. Este capítulo trata do que vem depois da sintaxe: **por que uma tarefa agendada falha de um jeito diferente de um comando digitado, e o que se escreve para que ela não falhe em silêncio**. A diferença entre um script que funciona quando você o executa e um script que funciona sozinho às duas da manhã, sem ninguém olhando, é toda de disciplina — e cada item dessa disciplina existe porque alguém já perdeu dados sem ele.
+
+## Por que a tarefa agendada falha diferente
+
+Um comando digitado tem três coisas que a tarefa agendada não tem: **você olhando a saída**, **um ambiente completo** e **uma única execução por vez**. Cada uma dessas ausências é um modo de falha.
+
+::: {#fig-pontos-falha-cron}
+```{.tikz}
+%%| filename: pontos-falha-cron
+%%| alt: As seis etapas de uma tarefa agendada, como cada uma falha em silencio e o que fecha a brecha
+\begin{tikzpicture}[
+    et/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize\bfseries,inner sep=3pt,minimum width=2.5cm,minimum height=0.95cm},
+    fa/.style={align=left,font=\scriptsize,manualred,text width=4.9cm,anchor=west},
+    ok/.style={align=left,font=\scriptsize,manualgreen,text width=4.6cm,anchor=west},
+    hdr/.style={align=center,font=\scriptsize\bfseries,manualgray}
+  ]
+  \node[hdr] at (0,6.9)   {etapa};
+  \node[hdr] at (4.4,6.9) {como falha em silêncio};
+  \node[hdr] at (10.0,6.9){o que fecha a brecha};
+  \draw[manualgray,thick] (-1.4,6.55) -- (12.6,6.55);
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,5.9) {disparo};
+  \node[fa] at (1.9,5.9) {o serviço \texttt{cron} não está ativo, ou a linha do \texttt{crontab} não tem \texttt{\textbackslash n} final};
+  \node[ok] at (7.7,5.9) {\texttt{systemctl is-active cron}; editar sempre por \texttt{crontab -e}};
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,4.5) {ambiente};
+  \node[fa] at (1.9,4.5) {\texttt{PATH} mínimo, sem \texttt{.bashrc}, \texttt{HOME} diferente: \texttt{command not found}};
+  \node[ok] at (7.7,4.5) {caminho absoluto; \texttt{PATH} declarado no topo do script};
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,3.1) {concorrência};
+  \node[fa] at (1.9,3.1) {a execução anterior ainda roda; duas cópias corrompem o destino};
+  \node[ok] at (7.7,3.1) {\texttt{flock} num arquivo de trava};
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,1.7) {execução};
+  \node[fa] at (1.9,1.7) {erro no meio do script e as linhas seguintes rodam mesmo assim};
+  \node[ok] at (7.7,1.7) {\texttt{set -euo pipefail} e \texttt{trap} de limpeza};
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,0.3) {registro};
+  \node[fa] at (1.9,0.3) {\texttt{>/dev/null 2>\&1} descarta justamente a mensagem de erro};
+  \node[ok] at (7.7,0.3) {\texttt{logger -t} para o journald; nunca descartar \texttt{stderr}};
+
+  \node[et,draw=manualblue,fill=manualblue!12] at (0,-1.1) {notificação};
+  \node[fa] at (1.9,-1.1) {ninguém é avisado; a falha só aparece no dia em que se precisa do resultado};
+  \node[ok] at (7.7,-1.1) {\texttt{MAILTO}, ou um sinal de vida que alerta pela \emph{ausência}};
+\end{tikzpicture}
+```
+As seis etapas de uma tarefa agendada e o modo de falha silenciosa de cada uma.
+:::
+
+O caso da abertura atravessou a @fig-pontos-falha-cron inteira: o erro aconteceu na etapa de execução, foi descartado na de registro, e ninguém foi notificado. Qualquer uma das três defesas teria bastado.
+
+## O ambiente do `cron` é mínimo, de propósito
+
+A causa mais frequente de "funciona quando eu rodo, falha no `cron`" é o ambiente. O `cron` executa a tarefa com um ambiente deliberadamente enxuto: não é shell de login, não é interativo, e portanto não lê `/etc/profile`, nem `~/.bash_profile`, nem `~/.bashrc` (@sec-cap092). O que ele define é pouco:
+
+```bash
+# o ambiente que a sua tarefa realmente recebe
+SHELL=/bin/sh
+PATH=/usr/bin:/bin
+HOME=/home/kali
+LOGNAME=kali
+```
+
+Três consequências que quebram scripts todo dia:
+
+- **`PATH` curto.** Nada de `/usr/local/bin`, nada de `~/.local/bin`. Uma ferramenta instalada por `pipx` (@sec-cap038) ou compilada da fonte (@sec-cap037) simplesmente não é encontrada.
+- **`SHELL=/bin/sh`, não Bash.** No Debian e no Kali, `/bin/sh` é o `dash`. Toda construção que só existe no Bash — `[[ ]]`, arrays, `local` fora de função, substituição de processo `<( )` — falha com erro de sintaxe. O script com `#!/bin/bash` está a salvo; a linha do `crontab` com sintaxe de Bash direto, não.
+- **Nenhum alias, nenhuma função do `.bashrc`.** É o erro das três da manhã do capítulo anterior.
+
+A forma de descobrir isso sem adivinhação é capturar o ambiente real:
+
+```bash
+# no crontab, temporariamente:
+* * * * * /usr/bin/env > /tmp/ambiente-do-cron.txt 2>&1
+```
+
+Espere um minuto, leia o arquivo, remova a linha. Agora você sabe exatamente com o que está lidando, em vez de supor.
+
+A correção é declarar o ambiente no topo do próprio script, não no `crontab` — assim ela viaja junto com o script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.local/bin
+export LC_ALL=C           # saida previsivel de ferramentas que mudam com o locale
+cd "$(dirname "$0")"      # nunca dependa do diretorio de onde foi chamado
+```
+
+O `LC_ALL=C` merece nota: sem ele, o `sort` ordena diferente conforme o idioma do sistema e a saída do `date` muda de formato. Um script que compara ou fatia texto (@sec-cap068) pode dar resultados diferentes no seu terminal e no `cron`, apenas por causa do locale.
+
+## Anatomia de um script agendado robusto
+
+Juntando as defesas num esqueleto que serve de ponto de partida para qualquer tarefa agendada:
+
+```bash
+#!/usr/bin/env bash
+# backup-diario.sh — copia /var/dados para o destino, com rotacao.
+set -euo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly TAG=backup-diario
+readonly ORIGEM=/var/dados
+readonly DESTINO=/srv/backup
+readonly TRAVA=/var/lock/${TAG}.lock
+
+log()  { logger -t "$TAG" -p user.info  -- "$*"; echo "[$TAG] $*"; }
+erro() { logger -t "$TAG" -p user.err   -- "$*"; echo "[$TAG] ERRO: $*" >&2; }
+
+# exclusao mutua: se ja ha uma execucao rodando, sai sem fazer nada
+exec 9>"$TRAVA"
+if ! flock -n 9; then
+    log "execucao anterior ainda em andamento; saindo"
+    exit 0
+fi
+
+# limpeza garantida, mesmo em erro ou interrupcao
+tmp=$(mktemp -d)
+trap 'rc=$?; rm -rf "$tmp"; [[ $rc -ne 0 ]] && erro "falhou com codigo $rc"; exit $rc' EXIT
+
+log "inicio"
+[[ -d $ORIGEM ]]  || { erro "origem inexistente: $ORIGEM"; exit 1; }
+mkdir -p -- "$DESTINO"
+
+rsync -a --delete --link-dest="$DESTINO/atual" \
+      -- "$ORIGEM/" "$tmp/novo/"
+mv -- "$tmp/novo" "$DESTINO/$(date +%F)"
+ln -sfn -- "$DESTINO/$(date +%F)" "$DESTINO/atual"
+
+log "fim: $DESTINO/$(date +%F)"
+```
+
+Cada bloco existe por um motivo:
+
+- **`set -euo pipefail`** (@sec-cap071) faz o script parar no primeiro erro em vez de seguir adiante com estado inconsistente. É a defesa que faltava no caso da abertura.
+- **`flock -n 9`** garante que só há uma execução por vez. Sem isso, um backup que demora 70 minutos numa tarefa horária acumula processos concorrentes até derrubar a máquina — e, pior, dois `rsync` escrevendo no mesmo destino produzem lixo.
+- **`trap ... EXIT`** apaga o temporário aconteça o que acontecer, e transforma qualquer código de saída diferente de zero numa mensagem de erro registrada. A limpeza que só roda no caminho feliz não é limpeza.
+- **A validação explícita da origem** transforma um erro futuro incompreensível numa mensagem clara agora.
+- **`mv` no fim** torna a operação praticamente atômica: ou o diretório do dia existe completo, ou não existe. Um backup escrito diretamente no destino final pode ser interrompido no meio e ficar parecendo completo.
+
+## Idempotência: rodar duas vezes tem de dar no mesmo
+
+Uma tarefa agendada será executada de novo — porque você a disparou manualmente para testar, porque o `anacron` recuperou uma execução perdida, porque a máquina voltou de uma suspensão. **Se rodar duas vezes causa dano, o script está errado.**
+
+```bash
+mkdir -p /srv/backup          # idempotente: nao falha se ja existe
+useradd svc 2>/dev/null || true   # NAO e idempotente de verdade: mascara erro real
+id -u svc >/dev/null 2>&1 || useradd svc   # idempotente: testa antes de agir
+echo "linha" >> /etc/hosts    # NAO e idempotente: duplica a cada execucao
+grep -qxF "linha" /etc/hosts || echo "linha" >> /etc/hosts   # idempotente
+```
+
+O padrão geral é **testar o estado desejado antes de agir**, e não mascarar erro com `|| true`. O `|| true` engole tanto "já existe, tudo bem" quanto "faltou permissão" — que são situações completamente diferentes com a mesma aparência.
+
+## Registro: onde a tarefa conta o que fez
+
+O comportamento padrão do `cron` é enviar por e-mail local qualquer saída da tarefa. Como quase nenhuma máquina moderna tem entrega de e-mail configurada, essa saída se perde — e é daí que vem o reflexo de escrever `>/dev/null 2>&1`, que resolve o incômodo criando o problema da abertura.
+
+A solução correta é mandar a saída para o `journald` (@sec-cap042), que já tem rotação, carimbo de tempo e consulta:
+
+```bash
+logger -t backup-diario -p user.info "inicio"
+logger -t backup-diario -p user.err  "falhou: origem inexistente"
+
+# consultar depois:
+journalctl -t backup-diario --since today
+journalctl -t backup-diario -p err -n 20
+```
+
+Se preferir um arquivo próprio, redirecione **anexando** e mantendo o `stderr`:
+
+```bash
+0 2 * * * /usr/local/bin/backup-diario.sh >> /var/log/backup.log 2>&1
+```
+
+Repare em `>>` (anexa) e não `>` (sobrescreve), e no `2>&1` **depois** do redirecionamento de saída — invertido, o `stderr` vai para o terminal antigo e some. Um arquivo próprio exige uma regra de `logrotate`, ou você trocou o problema do silêncio pelo do disco cheio.
+
+::: {.callout-warning}
+**Nunca escreva `>/dev/null 2>&1` numa tarefa agendada.** Se o objetivo é silenciar a saída normal e manter os erros, o correto é `>/dev/null` sozinho — o `stderr` continua chegando e o `cron` avisa. Descartar `stderr` é escolher, antecipadamente, não ficar sabendo do dia em que a tarefa quebrar. Foi essa a decisão que custou oito meses de backups no caso da abertura.
+:::
+
+## Notificação: o alerta que funciona pela ausência
+
+Registrar não é ser avisado. Ninguém lê o `journal` de uma máquina que está funcionando. Três níveis, em ordem crescente de confiabilidade:
+
+**`MAILTO` no `crontab`** — funciona se a máquina tem entrega de e-mail. Simples e frágil.
+
+```crontab
+MAILTO=admin@exemplo.local
+0 2 * * * /usr/local/bin/backup-diario.sh
+```
+
+**Notificação ativa em caso de erro** — o script chama algo quando falha. Melhor, mas tem um furo grave: se o script nunca chegar a rodar, ele também nunca alerta.
+
+**Sinal de vida (o *dead man's switch*)** — a tarefa avisa um observador externo a cada execução **bem-sucedida**, e o observador alerta quando o sinal *não chega* no prazo:
+
+```bash
+# ultima linha do script, so alcancada se tudo deu certo
+curl -fsS --max-time 10 --retry 3 "$URL_SINAL" >/dev/null || true
+```
+
+Esta é a única forma que detecta o modo de falha mais perigoso: **a tarefa que parou de existir**. O `crontab` apagado por engano, o serviço `cron` desativado numa migração, a máquina desligada. Nenhum alerta baseado em erro pega isso, porque não há erro — não há nada. O `|| true` no fim é intencional: falha em notificar não deve derrubar um backup que já funcionou.
+
+## Testar antes de agendar
+
+Um script que você só viu funcionar no seu terminal não foi testado para o `cron`. O teste que vale é rodar com ambiente vazio:
+
+```bash
+env -i /usr/local/bin/backup-diario.sh          # ambiente completamente limpo
+env -i HOME="$HOME" PATH=/usr/bin:/bin SHELL=/bin/sh /usr/local/bin/backup-diario.sh
+```
+
+O primeiro é mais severo que o `cron` real; o segundo é uma imitação fiel. Se passa nos dois, o ambiente não vai ser a causa da falha. Some a isso as checagens do @sec-cap072:
+
+```bash
+bash -n backup-diario.sh        # sintaxe
+shellcheck backup-diario.sh     # analise estatica
+bash -x backup-diario.sh        # rastreio de execucao
+```
+
+E, na hora de agendar, prefira o horário de teste antes do definitivo: `*/5 * * * *` por meia hora prova mais do que ler a linha dez vezes.
+
+## Quando `cron` e quando timer do systemd
+
+O @sec-cap043 apresentou os dois. O critério prático de escolha:
+
+| Situação | Escolha |
+|---|---|
+| Tarefa simples, portável entre Unixes | `cron` |
+| Máquina desligada no horário e a tarefa não pode ser pulada | `anacron` ou timer com `Persistent=true` |
+| Precisa de dependência de outro serviço | timer do systemd |
+| Precisa de limite de CPU, memória ou isolamento | timer (herda todas as diretivas de unit) |
+| Quer registro estruturado sem esforço | timer (saída já vai para o journal) |
+| Precisa impedir sobreposição | timer (`Type=oneshot` já serializa) ou `flock` no `cron` |
+
+: Critérios para escolher entre `cron` e timer do systemd {#tbl-cron-vs-timer}
+
+A vantagem que mais pesa na prática é a última coluna do registro: a saída de uma unit vai automaticamente para o `journal`, com identificação e código de saída, sem você configurar nada. `systemctl list-timers` mostra a próxima execução e a última, que é a pergunta que se faz quando algo não rodou.
+
+## 🐉 No Kali
+
+- **O Kali é frequentemente uma VM que fica desligada, e isso quebra o `cron`.** O `cron` só dispara se a máquina estiver ligada no minuto exato; uma tarefa das duas da manhã nunca roda numa VM que você liga às nove. A solução é o `anacron` — que executa tarefas perdidas assim que a máquina liga, com granularidade diária, semanal e mensal — ou um timer com `Persistent=true`. Para atualizar bases de dados de ferramentas ou rodar manutenção, é o `anacron` que você quer, não o `cron`.
+- **`apt update` automático no Kali rolling exige cautela** (@sec-cap033). Agendar `apt update` para manter os índices frescos é seguro e útil. Agendar `apt full-upgrade` sem supervisão num repositório *rolling* não é: uma atualização pode trocar versão de kernel, de driver gráfico ou de biblioteca no meio da noite e deixar a VM sem interface na manhã seguinte. O padrão sensato é atualizar índices automaticamente e aplicar upgrades manualmente, com você olhando.
+- **Automatizar coleta em teste autorizado é rotina, e o escopo tem de estar no script.** Rodar periodicamente um levantamento contra um ambiente que você tem autorização escrita para testar é prática normal — e o alvo pertence ao escopo autorizado, nunca a um terceiro. O cuidado específico da tarefa agendada é que ela **continua rodando depois que o engajamento termina**: um scan que você esqueceu no `crontab` e que segue batendo num alvo após o fim do contrato deixa de ser autorizado, e uso não autorizado é crime (Lei 12.737/2012). A disciplina é registrar a data de término no próprio script e fazê-lo se recusar a rodar depois dela, além de remover a entrada do `crontab` no encerramento.
+- **Tarefa agendada roda com o privilégio de quem a agendou, e é aí que mora a escalada.** Um script no `crontab` do root que seja gravável por um usuário comum entrega root a esse usuário na próxima execução. Um script agendado por root que use caminho relativo, ou que chame um programa sem caminho absoluto com `PATH` manipulável, tem o mesmo efeito (@sec-cap085). A regra: script executado por root fica em `/usr/local/bin` ou `/usr/local/sbin`, com dono root, permissão `755`, e nunca em diretório onde outro usuário escreve. Auditar o `crontab` do root e o `/etc/cron.d/` é parada obrigatória em qualquer revisão de um sistema comprometido — é um dos lugares mais comuns de persistência de invasor (@sec-cap089).
+- **O `journalctl -t` é seu amigo em VM sem e-mail.** Como praticamente nenhum Kali tem MTA configurado, o `MAILTO` do `crontab` não entrega nada e a saída da tarefa se perde. Padronizar `logger -t nome-da-tarefa` desde a primeira linha do script resolve isso sem instalar nada, e `journalctl -t nome-da-tarefa --since today` vira a consulta única para saber o que aconteceu.
+
+> **Nota sobre a família RHEL.** A implementação de `cron` do Fedora e do RHEL é o `cronie`, com as mesmas sintaxe e semântica do `cron` do Debian, e o `anacron` embutido. Duas diferenças relevantes: o `/bin/sh` do RHEL é o Bash em modo POSIX, não o `dash`, o que faz alguns *bashismos* passarem lá e falharem no Debian — se você escreve para as duas famílias, teste no `dash`, que é o mais restritivo. E o SELinux (@sec-cap088) pode bloquear uma tarefa do `cron` que acesse caminhos fora do contexto esperado, com a negação registrada no log de auditoria e nenhum sintoma óbvio no script. Em RHEL, `ausearch -m avc -ts recent` é o primeiro lugar a olhar quando a tarefa "não faz nada" sem erro.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. O objetivo é **reproduzir cada modo de falha silenciosa** e depois fechá-lo. Tudo acontece em `~/lab-cron` e é removido no fim.
+
+1. **Prepare o terreno e confirme o serviço.**
+
+   ```bash
+   mkdir -p ~/lab-cron/{origem,destino} && cd ~/lab-cron
+   echo "dado importante" > origem/arquivo.txt
+   sudo systemctl is-active cron || sudo systemctl enable --now cron
+   crontab -l 2>/dev/null > crontab.original || true
+   ```
+
+   Esperado: o serviço `cron` ativo e uma cópia do seu `crontab` atual guardada. O passo 10 restaura a partir dela.
+
+2. **Descubra o ambiente real do `cron`, sem adivinhar.**
+
+   ```bash
+   (crontab -l 2>/dev/null; echo "* * * * * /usr/bin/env > $HOME/lab-cron/ambiente.txt 2>&1") | crontab -
+   sleep 70
+   cat ~/lab-cron/ambiente.txt
+   ```
+
+   Esperado: um punhado de variáveis, com `PATH=/usr/bin:/bin` e `SHELL=/bin/sh`. Compare com o seu `env` no terminal e veja quanta coisa não está lá. Este é o ambiente em que a sua tarefa vive.
+
+3. **Reproduza a falha por `PATH`.**
+
+   ```bash
+   printf '#!/bin/bash\nshellcheck --version\n' > ~/lab-cron/falha-path.sh
+   chmod +x ~/lab-cron/falha-path.sh
+   ~/lab-cron/falha-path.sh                                  # funciona
+   env -i HOME="$HOME" PATH=/usr/bin:/bin ~/lab-cron/falha-path.sh   # simula o cron
+   ```
+
+   Esperado: funciona no terminal e pode falhar com `command not found` sob o ambiente mínimo, dependendo de onde a ferramenta está instalada. `env -i` é o teste que revela isso em um segundo, em vez de na madrugada seguinte.
+
+4. **Reproduza a falha silenciosa da abertura.**
+
+   ```bash
+   cat > ~/lab-cron/backup-ingenuo.sh <<'EOF'
+   #!/bin/bash
+   cp -r "$HOME/lab-cron/origem-que-nao-existe" "$HOME/lab-cron/destino/"
+   echo "backup concluido"
+   EOF
+   chmod +x ~/lab-cron/backup-ingenuo.sh
+   ~/lab-cron/backup-ingenuo.sh >/dev/null 2>&1
+   echo "codigo de saida: $?"
+   ls ~/lab-cron/destino/
+   ```
+
+   Esperado: **nenhuma mensagem na tela**, destino vazio, e um código de saída diferente de zero que ninguém olhou. Sem `set -e`, o `echo "backup concluido"` ainda roda e mente. É exatamente o cenário dos oito meses.
+
+5. **Agora escreva a versão robusta.**
+
+   ```bash
+   cat > ~/lab-cron/backup-bom.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+   export LC_ALL=C
+   TAG=lab-backup
+   ORIGEM="$HOME/lab-cron/origem"
+   DESTINO="$HOME/lab-cron/destino"
+   TRAVA="$HOME/lab-cron/lab-backup.lock"
+
+   log()  { logger -t "$TAG" -p user.info -- "$*"; echo "[$TAG] $*"; }
+   erro() { logger -t "$TAG" -p user.err  -- "$*"; echo "[$TAG] ERRO: $*" >&2; }
+
+   exec 9>"$TRAVA"
+   flock -n 9 || { log "ja em execucao; saindo"; exit 0; }
+
+   tmp=$(mktemp -d)
+   trap 'rc=$?; rm -rf "$tmp"; [ "$rc" -ne 0 ] && erro "falhou com codigo $rc"; exit "$rc"' EXIT
+
+   log "inicio"
+   [ -d "$ORIGEM" ] || { erro "origem inexistente: $ORIGEM"; exit 1; }
+   mkdir -p -- "$DESTINO"
+   cp -a -- "$ORIGEM/." "$tmp/"
+   mv -- "$tmp" "$DESTINO/$(date +%F-%H%M%S)"
+   trap - EXIT
+   log "fim"
+   EOF
+   chmod +x ~/lab-cron/backup-bom.sh
+   ~/lab-cron/backup-bom.sh
+   ls ~/lab-cron/destino/
+   ```
+
+   Esperado: mensagens de início e fim, e um diretório datado no destino. Rode de novo e veja que um segundo diretório aparece — a tarefa é repetível sem dano.
+
+6. **Force o erro e veja que agora ele fala.**
+
+   ```bash
+   mv ~/lab-cron/origem ~/lab-cron/origem-renomeada
+   ~/lab-cron/backup-bom.sh; echo "codigo de saida: $?"
+   journalctl -t lab-backup -p err --since "5 min ago" --no-pager | tail -3
+   mv ~/lab-cron/origem-renomeada ~/lab-cron/origem
+   ```
+
+   Esperado: mensagem de erro na tela, código de saída 1, e o erro registrado no `journal`. É exatamente a mudança de comportamento que teria salvado os oito meses.
+
+7. **Comprove a exclusão mútua do `flock`.**
+
+   ```bash
+   ( flock -n 9 || echo "trava ocupada"; sleep 20 ) 9>~/lab-cron/lab-backup.lock &
+   sleep 2
+   ~/lab-cron/backup-bom.sh
+   wait
+   ```
+
+   Esperado: a segunda invocação imprime `ja em execucao; saindo` e termina com código 0, sem tocar no destino. Sem `flock`, as duas escreveriam ao mesmo tempo.
+
+8. **Compare idempotente e não-idempotente.**
+
+   ```bash
+   touch ~/lab-cron/hosts-teste
+   for n in 1 2 3; do echo "127.0.0.1 teste" >> ~/lab-cron/hosts-teste; done
+   wc -l < ~/lab-cron/hosts-teste                       # 3 linhas: NAO idempotente
+   : > ~/lab-cron/hosts-teste
+   for n in 1 2 3; do
+       grep -qxF "127.0.0.1 teste" ~/lab-cron/hosts-teste || echo "127.0.0.1 teste" >> ~/lab-cron/hosts-teste
+   done
+   wc -l < ~/lab-cron/hosts-teste                       # 1 linha: idempotente
+   ```
+
+   Esperado: 3 e depois 1. Três execuções, mesmo estado final — é essa a propriedade que uma tarefa agendada precisa ter.
+
+9. **Agende de verdade, com registro correto, e observe.**
+
+   ```bash
+   (crontab -l | grep -v 'ambiente.txt'; \
+    echo "*/1 * * * * $HOME/lab-cron/backup-bom.sh >/dev/null") | crontab -
+   crontab -l
+   sleep 130
+   journalctl -t lab-backup --since "3 min ago" --no-pager | tail -6
+   ls ~/lab-cron/destino/
+   ```
+
+   Esperado: duas execuções registradas no `journal` e dois diretórios novos no destino. Repare que o redirecionamento é `>/dev/null` **sem** `2>&1` — a saída normal é silenciada e o erro continua chegando.
+
+10. **Limpe tudo.**
+
+    ```bash
+    if [ -s ~/lab-cron/crontab.original ]; then crontab ~/lab-cron/crontab.original; else crontab -r; fi
+    crontab -l 2>/dev/null || echo "crontab vazio"
+    rm -rf ~/lab-cron
+    ```
+
+    Esperado: o `crontab` volta ao que era antes e o diretório de laboratório desaparece. Remover a tarefa ao terminar é o mesmo hábito que impede um scan esquecido de continuar rodando depois do fim de um engajamento.
+
+## Resumo
+
+- **Tarefa agendada falha em silêncio, e o silêncio é o padrão.** As seis etapas — disparo, ambiente, concorrência, execução, registro e notificação — têm cada uma um modo de falha que não produz sintoma nenhum até o dia em que você precisa do resultado.
+- **O ambiente do `cron` é mínimo:** `PATH=/usr/bin:/bin`, `SHELL=/bin/sh` (o `dash` no Debian e no Kali) e nenhum arquivo de inicialização lido. Declare `PATH`, `LC_ALL` e `cd` no topo do script, e teste com `env -i` antes de agendar.
+- **`set -euo pipefail`, `flock` e `trap ... EXIT` são o esqueleto mínimo.** Parar no primeiro erro, garantir execução única e limpar sempre — inclusive no caminho de falha.
+- **Idempotência não é opcional:** a tarefa vai rodar duas vezes. Teste o estado desejado antes de agir e evite `|| true`, que confunde "já estava assim" com "não tive permissão".
+- **`>/dev/null 2>&1` é a linha que custou oito meses de backup.** Silencie a saída normal com `>/dev/null` e deixe o `stderr` passar; registre com `logger -t` e consulte com `journalctl -t`.
+- **O alerta que pega o pior caso funciona pela ausência.** Um sinal de vida a cada execução bem-sucedida detecta a tarefa que deixou de existir — o que nenhum alerta baseado em erro consegue.
+- **Em VM que fica desligada, `cron` não basta:** `anacron` ou timer com `Persistent=true`. E script agendado por root gravável por outro usuário é escalada de privilégio — `/usr/local/sbin`, dono root, `755`.
