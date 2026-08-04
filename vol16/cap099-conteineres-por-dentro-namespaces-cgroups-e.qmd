@@ -1,3 +1,444 @@
 # Contêineres por dentro: namespaces, cgroups e Docker {#sec-cap099}
 
-*(em elaboracao)*
+Um contêiner acabou de subir. Dentro dele, `ps aux` mostra dois processos, `hostname` responde `a3f9c2b1e004`, `ip addr` lista uma interface `eth0` com um endereço que não existe na sua rede, e `ls /` mostra uma árvore de diretórios que não é a sua. Parece uma máquina inteira. No hospedeiro, o mesmo software aparece como um processo comum na saída de `ps`, com PID 48211, filho do `containerd`, executando o binário que você conhece.
+
+As duas visões estão corretas e descrevem a mesma coisa. Um contêiner não é uma máquina virtual em miniatura: é um **processo comum do Linux com a visão do sistema alterada**. Não há kernel próprio, não há hardware emulado, não há camada de tradução. O que existe são três mecanismos do kernel — *namespaces*, *cgroups* e restrição de privilégio — combinados de tal maneira que o processo não consegue enxergar nem afetar o que está fora do seu recorte.
+
+Este capítulo desmonta a mágica. Vamos construir isolamento na mão, com `unshare` e `ip netns`, antes de usar o Docker — porque quem entende o que o Docker faz por baixo diagnostica um contêiner quebrado, avalia o risco de uma opção como `--privileged` e sabe por que um contêiner comprometido não é o mesmo que uma VM comprometida.
+
+## O que separa um contêiner de uma máquina virtual
+
+A diferença estrutural é onde fica a fronteira de isolamento. Uma máquina virtual (assunto do @sec-cap100) emula hardware e roda um kernel próprio; o hipervisor é a fronteira. Um contêiner compartilha o kernel do hospedeiro; a fronteira é o próprio kernel, aplicando regras diferentes a processos diferentes.
+
+::: {#fig-vm-vs-conteiner}
+```{.tikz}
+%%| filename: vm-vs-conteiner
+%%| alt: Comparacao entre a pilha de uma maquina virtual e a de um conteiner, mostrando onde fica a fronteira
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum height=0.8cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    ttl/.style={font=\small\bfseries,align=center}
+  ]
+  % --- coluna VM ---
+  \node[ttl] at (-3.4,5.6) {Máquina virtual};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=2.9cm] at (-4.9,4.7) {app A};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=2.9cm] at (-1.9,4.7) {app B};
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.9cm]  at (-4.9,3.8) {bibliotecas};
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.9cm]  at (-1.9,3.8) {bibliotecas};
+  \node[bx,draw=manualred,fill=manualred!14,minimum width=2.9cm]   at (-4.9,2.9) {kernel convidado};
+  \node[bx,draw=manualred,fill=manualred!14,minimum width=2.9cm]   at (-1.9,2.9) {kernel convidado};
+  \node[bx,draw=manualyellow,fill=manualyellow!22,minimum width=5.9cm] at (-3.4,2.0) {hipervisor (KVM/QEMU)};
+  \node[bx,draw=manualgreen,fill=manualgreen!12,minimum width=5.9cm]   at (-3.4,1.1) {kernel do hospedeiro};
+  \node[bx,draw=manualgray,fill=manualgray!12,minimum width=5.9cm]     at (-3.4,0.2) {hardware};
+
+  % --- coluna conteiner ---
+  \node[ttl] at (3.4,5.6) {Contêiner};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=2.9cm] at (1.9,4.7) {app A};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=2.9cm] at (4.9,4.7) {app B};
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.9cm]  at (1.9,3.8) {bibliotecas};
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.9cm]  at (4.9,3.8) {bibliotecas};
+  \node[bx,draw=manualred,fill=manualred!14,minimum width=2.9cm]   at (1.9,2.9) {namespaces\\\tiny + cgroups + seccomp};
+  \node[bx,draw=manualred,fill=manualred!14,minimum width=2.9cm]   at (4.9,2.9) {namespaces\\\tiny + cgroups + seccomp};
+  \node[bx,draw=manualgreen,fill=manualgreen!12,minimum width=5.9cm] at (3.4,1.65) {kernel do hospedeiro --- \textbf{um só}};
+  \node[bx,draw=manualgray,fill=manualgray!12,minimum width=5.9cm]   at (3.4,0.2) {hardware};
+
+  \draw[dashed,thick,manualgray] (0,-0.4) -- (0,5.9);
+
+  \node[nt,text width=12.8cm,anchor=north] at (0,-0.8)
+    {À esquerda, cada convidado tem o seu próprio kernel: a fronteira é o hipervisor, e um comprometimento dentro do convidado precisa \emph{ainda} furar essa camada para alcançar o hospedeiro. À direita, o kernel é um só: a fronteira é a configuração que ele aplica ao processo. Contêiner sobe em milissegundos e custa pouca memória; VM leva segundos e reserva RAM. Contêiner isola menos --- uma falha no kernel compartilhado atinge tudo o que roda sobre ele. É uma escolha entre densidade e profundidade de isolamento, não entre uma tecnologia moderna e uma antiga.};
+\end{tikzpicture}
+```
+Máquina virtual e contêiner: onde cada um coloca a fronteira de isolamento.
+:::
+
+Como a @fig-vm-vs-conteiner mostra, a pergunta prática não é "qual é melhor", mas "de quem eu preciso me defender". Contêineres separam aplicações que você controla; máquinas virtuais separam código em que você não confia.
+
+## Namespaces: recortar a visão do sistema
+
+Um namespace é um recorte de um recurso global do kernel. Processos dentro do mesmo namespace veem o mesmo recorte; processos fora veem outro. O kernel oferece oito:
+
+| Namespace | Recorta | Efeito visível |
+|---|---|---|
+| `mnt` | tabela de montagem | outra árvore de diretórios |
+| `pid` | numeração de processos | o primeiro processo do contêiner é o PID 1 |
+| `net` | interfaces, rotas, firewall | pilha de rede própria |
+| `uts` | hostname e domainname | `hostname` responde outra coisa |
+| `ipc` | filas, semáforos, memória compartilhada | IPC não atravessa |
+| `user` | mapeamento de UID e GID | root dentro, usuário comum fora |
+| `cgroup` | raiz da hierarquia de cgroups | não vê os cgroups do hospedeiro |
+| `time` | relógios monotônicos e de boot | uptime diferente |
+
+: Os oito namespaces do kernel Linux {#tbl-namespaces}
+
+Eles são independentes. Nada obriga um processo a entrar em todos — e o Docker, por padrão, não usa o `user` namespace, decisão que tem consequências de segurança discutidas adiante.
+
+Cada processo expõe os seus em `/proc/<PID>/ns/`:
+
+```bash
+ls -l /proc/self/ns/
+# net -> 'net:[4026531840]'   <- o numero e o identificador do namespace
+lsns                            # lista todos os namespaces do sistema e quem esta neles
+lsns -t net                     # so os de rede
+```
+
+Dois processos estão no mesmo namespace se, e somente se, o número entre colchetes for igual. É a maneira mais direta de responder a "esse processo está isolado ou não".
+
+### Criando namespaces na mão
+
+`unshare` cria namespaces novos e executa um comando dentro deles; `nsenter` entra em namespaces de um processo existente.
+
+```bash
+# hostname proprio (namespace UTS)
+sudo unshare --uts bash
+hostname contêiner-de-teste     # dentro
+hostname                        # o hospedeiro nao muda; saia com exit
+
+# arvore de processos propria (namespace PID)
+sudo unshare --pid --fork --mount-proc bash
+ps aux                          # dentro: bash e PID 1, e ha 2 processos no total
+echo $$                         # 1
+```
+
+O `--mount-proc` não é opcional e a razão é instrutiva: o namespace PID renumera os processos, mas `ps` lê `/proc`, que continua sendo o `/proc` do hospedeiro se ninguém montar um novo. Sem `--mount-proc`, o isolamento existe no kernel e não aparece nas ferramentas — o processo tem PID 1 e `ps` mostra a máquina inteira.
+
+```bash
+# entrar nos namespaces de um processo que ja existe
+sudo nsenter --target <PID> --mount --uts --ipc --net --pid bash
+```
+
+`nsenter` é a ferramenta que resgata um contêiner quebrado: um contêiner sem shell, sem `ps` e sem `cat` dentro da imagem continua sendo inspecionável a partir do hospedeiro, usando os binários do hospedeiro dentro dos namespaces do contêiner.
+
+### Namespace de rede na prática
+
+O namespace de rede tem ferramenta própria, `ip netns`, e é o que torna possível montar topologias inteiras numa máquina só — o mesmo laboratório de rede do @sec-cap078 sem nenhuma VM.
+
+```bash
+sudo ip netns add lab                       # cria o namespace
+sudo ip netns exec lab ip addr              # so o loopback, e ele esta down
+sudo ip link add veth-h type veth peer name veth-c   # par de interfaces ligadas
+sudo ip link set veth-c netns lab           # uma ponta vai para dentro
+sudo ip addr add 10.42.0.1/24 dev veth-h && sudo ip link set veth-h up
+sudo ip netns exec lab ip addr add 10.42.0.2/24 dev veth-c
+sudo ip netns exec lab ip link set veth-c up
+sudo ip netns exec lab ip link set lo up
+ping -c2 10.42.0.2                          # hospedeiro alcanca o namespace
+```
+
+Um par `veth` é um cabo virtual: o que entra numa ponta sai na outra. É exatamente assim que o Docker conecta contêineres à bridge `docker0` — sem nenhuma mágica adicional.
+
+### O namespace de usuário e o root que não é root
+
+O namespace `user` é o mais recente e o mais importante do ponto de vista de segurança. Ele mapeia intervalos de UIDs: o UID 0 **dentro** do namespace corresponde a um UID comum, digamos 100000, **fora** dele.
+
+```bash
+unshare --user --map-root-user bash      # NAO precisa de sudo
+id                                        # uid=0(root) gid=0(root)
+cat /proc/self/uid_map                    # 0  1000  1   <- root aqui e o 1000 la fora
+touch /etc/teste-root                     # Permission denied: o root e falso
+```
+
+O processo se acha root e tem todas as capabilities (@sec-cap087) **dentro** do seu namespace; fora dele continua sendo o seu usuário comum. É o que permite contêineres *rootless* — a diferença mais relevante entre Podman e Docker no modo padrão.
+
+## cgroups: limitar o que o processo consome
+
+Namespaces controlam o que o processo **vê**. Control groups controlam quanto ele **consome**. São hierárquicos, expostos em `/sys/fs/cgroup/`, e desde a versão 2 formam uma árvore única com controladores por recurso.
+
+```bash
+mount | grep cgroup                      # cgroup2 on /sys/fs/cgroup type cgroup2
+cat /sys/fs/cgroup/cgroup.controllers    # cpuset cpu io memory hugetlb pids rdma
+cat /proc/self/cgroup                    # em qual cgroup o shell atual esta
+```
+
+Criar um cgroup é criar um diretório; aplicar um limite é escrever num arquivo:
+
+```bash
+sudo mkdir /sys/fs/cgroup/lab
+echo '+memory +pids +cpu' | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+echo 50M    | sudo tee /sys/fs/cgroup/lab/memory.max     # teto de memoria
+echo 20     | sudo tee /sys/fs/cgroup/lab/pids.max       # teto de processos
+echo '20000 100000' | sudo tee /sys/fs/cgroup/lab/cpu.max # 20% de um núcleo
+echo $$     | sudo tee /sys/fs/cgroup/lab/cgroup.procs   # move o shell atual
+```
+
+A partir daí, o shell e todos os seus filhos estão sob o limite. Estourar `memory.max` aciona o *OOM killer* dentro do cgroup, sem afetar o resto da máquina; estourar `pids.max` faz `fork` falhar, o que é a defesa contra *fork bomb*.
+
+```bash
+cat /sys/fs/cgroup/lab/memory.current    # uso atual em bytes
+cat /sys/fs/cgroup/lab/memory.events     # quantas vezes bateu no teto
+cat /sys/fs/cgroup/lab/cpu.stat          # tempo de CPU e quanto foi estrangulado
+```
+
+O systemd (@sec-cap040) gerencia cgroups o tempo todo por baixo dos panos — cada unit é um cgroup, e é por isso que `systemd-cgls` e `systemd-cgtop` existem:
+
+```bash
+systemd-cgls | head -30                  # a arvore de cgroups por unit
+systemd-cgtop                            # top por cgroup, em vez de por processo
+systemctl set-property nginx.service MemoryMax=512M   # limite declarativo
+```
+
+## Isolamento de raiz: de `chroot` a overlayfs
+
+Falta a terceira peça: a árvore de arquivos própria. `chroot` (@sec-cap044) muda a raiz aparente de um processo e existe desde os anos 1970 — e não é um mecanismo de segurança: um processo com `CAP_SYS_CHROOT` sai de um chroot com poucas linhas de C. Runtimes de contêiner usam `pivot_root`, que desmonta a raiz antiga em vez de apenas escondê-la, dentro de um namespace `mnt` próprio.
+
+Sobre isso vem o sistema de arquivos em camadas. Uma imagem de contêiner é uma pilha de camadas somente-leitura; o contêiner em execução acrescenta uma camada gravável no topo, e o **overlayfs** apresenta a união das duas como uma árvore só.
+
+::: {#fig-camadas-imagem}
+```{.tikz}
+%%| filename: camadas-imagem
+%%| alt: Camadas de uma imagem de conteiner empilhadas sob uma camada gravavel apresentada por overlayfs
+\begin{tikzpicture}[
+    bx/.style={rounded corners=2pt,draw,thick,align=left,font=\scriptsize,inner sep=4pt,minimum width=6.6cm,minimum height=0.72cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualgreen,fill=manualgreen!16] (w) at (0,3.3)
+    {\textbf{camada gravável} \tiny (upperdir) --- só deste contêiner};
+  \node[bx,draw=manualblue,fill=manualblue!16]  (l3) at (0,2.4)
+    {\texttt{COPY app/ /opt/app} \tiny --- 4 MB};
+  \node[bx,draw=manualblue,fill=manualblue!12]  (l2) at (0,1.5)
+    {\texttt{RUN apt install python3} \tiny --- 42 MB};
+  \node[bx,draw=manualblue,fill=manualblue!8]   (l1) at (0,0.6)
+    {\texttt{FROM debian:stable-slim} \tiny --- 74 MB, imagem base};
+
+  \node[nt,anchor=west,font=\scriptsize] at (3.6,0.6)  {compartilhada por};
+  \node[nt,anchor=west,font=\scriptsize] at (3.6,0.32) {\emph{todos} os contêineres};
+  \node[nt,anchor=west,font=\scriptsize] at (3.6,0.04) {que usam essa base};
+
+  \draw[decorate,decoration={brace,amplitude=5pt,mirror},manualgray,thick]
+    (-3.55,0.22) -- (-3.55,2.78) node[midway,left=6pt,font=\scriptsize,manualgray,align=right]
+    {somente\\leitura};
+
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=6.6cm] (v) at (0,4.6)
+    {\textbf{visão do processo:} \texttt{/} \tiny --- a união de todas as camadas};
+  \draw[fl] (w) -- (v);
+
+  \node[nt,text width=12.4cm,anchor=north] at (0,-0.4)
+    {O processo enxerga uma árvore comum. Ao gravar num arquivo que vem de uma camada inferior, o overlayfs faz \emph{copy-up}: copia o arquivo para a camada gravável e altera a cópia --- a camada de baixo permanece intacta e continua servindo outros contêineres. Ao remover a camada gravável, tudo o que o contêiner escreveu desaparece. É daí que vem tanto a leveza (dez contêineres da mesma imagem ocupam o espaço de uma) quanto a regra prática: \textbf{dado que precisa sobreviver ao contêiner tem de estar num volume}, nunca na camada gravável.};
+\end{tikzpicture}
+```
+As camadas de uma imagem e a camada gravável que o overlayfs sobrepõe a elas.
+:::
+
+```bash
+mount -t overlay overlay -o \
+  lowerdir=/base,upperdir=/topo,workdir=/trabalho /mnt/uniao
+```
+
+Como a @fig-camadas-imagem indica, cada instrução do `Dockerfile` vira uma camada, o que explica duas práticas: agrupar comandos `RUN` relacionados reduz camadas e tamanho, e ordenar da menos volátil para a mais volátil aproveita o cache de build.
+
+## Docker: a montagem industrial dessas peças
+
+Com as três peças na mesa, o Docker deixa de ser mágico. Ele é um empacotamento de: namespaces, cgroups, overlayfs, capabilities restritas, um perfil seccomp que bloqueia dezenas de syscalls e um perfil AppArmor (@sec-cap088), mais um formato de imagem, um registro e uma CLI.
+
+```bash
+sudo apt install docker.io && sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"          # veja o aviso adiante antes de fazer isso
+
+docker run --rm -it debian:stable-slim bash
+docker ps            # em execucao        docker ps -a       # todos
+docker images        # imagens locais     docker logs <id>   # saida do processo
+docker exec -it <id> bash                # nsenter com outra roupa
+docker inspect <id> | jq '.[0].State.Pid' # o PID no hospedeiro
+docker stop <id>     # SIGTERM e, apos o prazo, SIGKILL
+```
+
+O `docker inspect` para descobrir o PID e depois `ls -l /proc/<PID>/ns/` no hospedeiro fecha o círculo: o contêiner é aquele processo, com aqueles namespaces.
+
+Um `Dockerfile` mínimo e correto:
+
+```dockerfile
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -u 10001 app             # NAO rode como root dentro do conteiner
+USER app
+WORKDIR /opt/app
+COPY --chown=app:app . .
+ENTRYPOINT ["python3", "servico.py"]
+```
+
+```bash
+docker build -t meu-servico:1.0 .
+docker run --rm -p 8080:8080 \
+  --memory=256m --cpus=0.5 --pids-limit=100 \
+  --read-only --tmpfs /tmp \
+  --cap-drop=ALL --security-opt no-new-privileges \
+  meu-servico:1.0
+```
+
+Cada opção dessa segunda linha em diante é um dos mecanismos deste capítulo exposto na CLI: `--memory` e `--cpus` são cgroups, `--cap-drop` são capabilities, `--read-only` é a montagem, `no-new-privileges` desliga a escalada por SUID (@sec-cap023).
+
+### As três opções que anulam o isolamento
+
+::: {.callout-important}
+**`--privileged`, `--net=host` e o socket do Docker montado dentro do contêiner são, cada um por si, um caminho direto para o hospedeiro.**
+
+- `--privileged` devolve todas as capabilities, remove o perfil seccomp e dá acesso a `/dev` — um processo assim monta o disco do hospedeiro e edita `/etc/shadow`. Use apenas quando souber exatamente por quê, e prefira `--cap-add` do que for específico.
+- `--net=host` remove o namespace de rede: o contêiner passa a enxergar e a poder capturar todo o tráfego do hospedeiro.
+- `-v /var/run/docker.sock:/var/run/docker.sock` dá ao contêiner o poder de criar outros contêineres — inclusive um `--privileged` montando `/`. É equivalente a dar root no hospedeiro.
+
+Pela mesma lógica, **pertencer ao grupo `docker` equivale a ter root sem senha**: `docker run -v /:/hospedeiro -it debian chroot /hospedeiro` é tudo o que separa um membro do grupo do controle total da máquina. Em máquina pessoal isso pode ser aceitável desde que consciente; em servidor multiusuário, não é.
+:::
+
+### Podman, rootless e a alternativa sem daemon
+
+```bash
+sudo apt install podman
+podman run --rm -it docker.io/library/debian:stable-slim bash   # sem daemon, sem root
+podman generate systemd --new --name meu-servico > ~/.config/systemd/user/app.service
+```
+
+Podman executa contêineres como processos filhos do seu usuário, sem daemon privilegiado, usando o namespace `user` para mapear o root de dentro num UID comum de fora. A CLI é compatível com a do Docker (`alias docker=podman` funciona para o uso cotidiano), e a integração com o systemd de usuário substitui o `--restart=always`. Para quem chegou até aqui pelo caminho da segurança, é o padrão mais defensável.
+
+## 🐉 No Kali
+
+- **Contêiner é o jeito mais barato de manter o Kali limpo.** Em vez de instalar dezenas de ferramentas com dependências conflitantes no sistema principal, `docker run --rm -it kalilinux/kali-rolling` dá um Kali descartável, e `apt install kali-linux-headless` dentro dele monta um ambiente completo que você joga fora depois. O mesmo vale para ferramentas isoladas — cada uma na sua imagem, sem poluir o hospedeiro. É a aplicação prática do @sec-cap097: a VM some, o `Dockerfile` fica.
+- **Alvos vulneráveis de laboratório rodam bem em contêiner, com uma ressalva séria.** DVWA, Juice Shop e WebGoat sobem com um comando e são excelentes para praticar. A ressalva: **publique a porta apenas no loopback** (`-p 127.0.0.1:8080:80`, nunca `-p 8080:80`) e jamais em máquina com IP público. Uma aplicação deliberadamente vulnerável exposta à internet é comprometida em minutos e passa a ser um problema seu, não didático. Para alvos que exigem kernel próprio ou exploração de privilégio local, o certo é VM isolada (@sec-cap100), não contêiner.
+- **Ferramentas de rede dentro de contêiner exigem capabilities específicas — e é aí que se aprende o modelo.** `nmap` com varredura SYN, `tcpdump` (@sec-cap084) e `ping` precisam de `CAP_NET_RAW`; a resposta certa é `--cap-add=NET_RAW`, e não `--privileged`. Quando uma ferramenta falha dentro de um contêiner com "operation not permitted", a pergunta é sempre qual capability ou qual syscall bloqueada pelo perfil seccomp está faltando — `strace` (@sec-cap102) responde em um comando.
+- **Do lado defensivo, contêiner mal configurado é hoje um dos achados mais comuns em teste de infraestrutura.** A lista que se verifica primeiro: contêiner rodando como root, `--privileged` sem justificativa, socket do Docker montado, imagem base desatualizada, segredo embutido em `ENV` ou em camada da imagem (`docker history` revela), e API do Docker exposta na porta 2375 sem TLS — esta última, um root remoto sem autenticação. Ferramentas como `trivy` e `docker scout` automatizam a parte de vulnerabilidades da imagem.
+- **Um contêiner comprometido não é uma VM comprometida.** Como o kernel é compartilhado, uma vulnerabilidade de kernel explorável de dentro do contêiner alcança o hospedeiro e todos os outros contêineres. Isso muda a ordem das prioridades: manter o kernel do hospedeiro atualizado (@sec-cap098) importa mais do que endurecer a imagem, e código realmente não confiável — uma amostra de malware, um binário de origem desconhecida — vai para VM isolada, não para contêiner.
+
+> **Nota sobre a família RHEL.** A Red Hat abandonou o Docker e adotou Podman, Buildah e Skopeo como pilha padrão, o que faz `podman` estar presente por padrão e `docker` ser apenas um alias. Os limites de cgroup são idênticos, mas o SELinux entra em cena com o rótulo `container_t`: montagens de volume exigem o sufixo `:Z` ou `:z` (`-v /dados:/dados:Z`) para receber o rótulo correto, e a ausência dele é a causa número um de "permission denied" dentro do contêiner apesar das permissões de arquivo estarem certas.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Os passos 1 a 6 constroem um contêiner na mão, sem Docker; os passos 7 a 9 mostram o Docker fazendo o mesmo. O passo 10 limpa.
+
+1. **Descubra os namespaces do seu próprio shell.**
+
+   ```bash
+   ls -l /proc/self/ns/
+   lsns | head
+   lsns -t net
+   readlink /proc/self/ns/net
+   ```
+
+   Esperado: oito links simbólicos, cada um com um número entre colchetes. Todos os seus processos compartilham os mesmos números — você está no namespace inicial de tudo.
+
+2. **Isole o hostname e comprove que o hospedeiro não muda.**
+
+   ```bash
+   hostname
+   sudo unshare --uts bash -c 'hostname lab-isolado; hostname; readlink /proc/self/ns/uts'
+   hostname
+   readlink /proc/self/ns/uts
+   ```
+
+   Esperado: dentro do `unshare` o hostname é `lab-isolado`; fora, permanece o original. Os dois números de namespace UTS são diferentes — é a prova do isolamento.
+
+3. **Isole a árvore de processos e veja o PID 1 nascer.**
+
+   ```bash
+   sudo unshare --pid --fork --mount-proc bash
+   echo $$
+   ps aux
+   ls /proc | grep -c '^[0-9]'
+   exit
+   ```
+
+   Esperado: `$$` vale 1 e `ps aux` mostra dois ou três processos. Repita **sem** `--mount-proc` e observe que `ps` volta a listar a máquina inteira: o isolamento continua existindo, mas a ferramenta lê o `/proc` errado.
+
+4. **Monte uma rede isolada com um par veth.**
+
+   ```bash
+   sudo ip netns add lab
+   sudo ip netns exec lab ip -brief addr
+   sudo ip link add veth-h type veth peer name veth-c
+   sudo ip link set veth-c netns lab
+   sudo ip addr add 10.42.0.1/24 dev veth-h && sudo ip link set veth-h up
+   sudo ip netns exec lab ip addr add 10.42.0.2/24 dev veth-c
+   sudo ip netns exec lab ip link set veth-c up
+   sudo ip netns exec lab ip link set lo up
+   ping -c2 10.42.0.2
+   sudo ip netns exec lab ip route
+   ```
+
+   Esperado: o namespace começa com apenas `lo` e sem endereço; ao final, o ping funciona nos dois sentidos e a tabela de rotas de dentro é independente da de fora. Você acabou de construir a mesma ligação que o Docker cria para cada contêiner.
+
+5. **Vire root sem ser root, com o namespace de usuário.**
+
+   ```bash
+   unshare --user --map-root-user bash
+   id
+   cat /proc/self/uid_map
+   touch /etc/prova-de-que-nao-e-root ; echo "saida: $?"
+   exit
+   ```
+
+   Esperado: `id` diz `uid=0(root)`, o `uid_map` mostra o mapeamento `0 <seu-uid> 1`, e a escrita em `/etc` falha. Repare que **não** foi preciso `sudo` para chegar até aqui — é essa a base dos contêineres rootless.
+
+6. **Aplique um limite de cgroup e force o teto.**
+
+   ```bash
+   sudo mkdir -p /sys/fs/cgroup/lab
+   echo '+memory +pids' | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+   echo 30M | sudo tee /sys/fs/cgroup/lab/memory.max
+   echo 15  | sudo tee /sys/fs/cgroup/lab/pids.max
+   sudo bash -c 'echo $$ > /sys/fs/cgroup/lab/cgroup.procs; \
+       cat /proc/self/cgroup; \
+       dd if=/dev/zero of=/dev/null bs=100M count=1; echo "saida: $?"'
+   cat /sys/fs/cgroup/lab/memory.events
+   ```
+
+   Esperado: o `dd` aloca um buffer de 100 MiB, estoura o teto de 30 MB e é morto pelo OOM killer **do cgroup**; `memory.events` registra o evento em `oom_kill`. O restante da máquina não é afetado — que é exatamente a diferença entre limite por cgroup e limite global.
+
+7. **Suba um contêiner e reencontre tudo o que você construiu na mão.**
+
+   ```bash
+   sudo systemctl enable --now docker
+   sudo docker run -d --name lab99 --memory=64m --pids-limit=50 \
+        debian:stable-slim sleep 3600
+   pid=$(sudo docker inspect -f '{{.State.Pid}}' lab99)
+   echo "PID no hospedeiro: $pid"
+   sudo ls -l /proc/$pid/ns/
+   ps -o pid,ppid,cmd -p "$pid"
+   ```
+
+   Esperado: o contêiner é um processo `sleep 3600` visível no hospedeiro, e os números dos seus namespaces diferem dos do seu shell. É o mesmo mecanismo dos passos 2 a 5, montado de uma vez.
+
+8. **Confirme que os limites do Docker são cgroups.**
+
+   ```bash
+   sudo cat /sys/fs/cgroup/system.slice/docker-*.scope/memory.max 2>/dev/null | head -3
+   sudo docker exec lab99 cat /sys/fs/cgroup/memory.max
+   sudo docker exec lab99 hostname
+   sudo docker exec lab99 ip -brief addr
+   sudo docker exec lab99 ps aux
+   ```
+
+   Esperado: `memory.max` vale `67108864` (64 MB) tanto pelo caminho do hospedeiro quanto de dentro. O hostname é o ID do contêiner, `ip addr` mostra uma `eth0` da rede `172.17.0.0/16`, e `ps` lista o `sleep` como PID 1.
+
+9. **Compare uma execução endurecida com uma privilegiada.**
+
+   ```bash
+   sudo docker run --rm --cap-drop=ALL debian:stable-slim \
+        sh -c 'id; touch /tmp/ok && echo "escrita ok"; ip link add x type dummy || echo "sem CAP_NET_ADMIN: correto"'
+   sudo docker run --rm --privileged debian:stable-slim \
+        sh -c 'ls /dev | wc -l; ip link add x type dummy && echo "PRIVILEGIADO: criou interface"'
+   sudo docker run --rm debian:stable-slim sh -c 'ls /dev | wc -l'
+   ```
+
+   Esperado: com `--cap-drop=ALL` a criação de interface falha; com `--privileged` ela funciona e `/dev` tem dezenas de entradas em vez de meia dúzia. Essa diferença de contagem em `/dev` é a maneira mais rápida de detectar um contêiner privilegiado.
+
+10. **Limpe tudo.**
+
+    ```bash
+    sudo docker rm -f lab99
+    sudo ip netns del lab
+    sudo ip link del veth-h 2>/dev/null
+    sudo rmdir /sys/fs/cgroup/lab
+    ip netns list; ls /sys/fs/cgroup/ | grep -c '^lab$' || echo "cgroup removido"
+    ```
+
+    Esperado: nenhum namespace `lab`, nenhuma interface `veth-h`, nenhum cgroup `lab`. Se o `rmdir` reclamar que o diretório está ocupado, ainda há processo dentro do cgroup — mova-o para a raiz antes.
+
+## Resumo
+
+- **Contêiner é processo, não máquina.** Namespaces recortam o que ele vê, cgroups limitam o que ele consome, e capabilities, seccomp e MAC restringem o que ele pode fazer. Não há kernel próprio nem hardware emulado.
+- **Oito namespaces, independentes entre si**: `mnt`, `pid`, `net`, `uts`, `ipc`, `user`, `cgroup` e `time`. `/proc/<PID>/ns/` mostra em quais o processo está; `unshare` cria, `nsenter` entra, `lsns` lista.
+- **`--mount-proc` junto com `--pid` não é detalhe:** sem ele, o isolamento existe no kernel e as ferramentas continuam mostrando a máquina inteira.
+- **cgroups v2 são diretórios em `/sys/fs/cgroup/`**, e aplicar limite é escrever num arquivo. `memory.max`, `pids.max` e `cpu.max` cobrem os três estouros mais comuns; o systemd já gerencia essa árvore por unit.
+- **Imagem é pilha de camadas somente-leitura sob uma camada gravável**, unidas por overlayfs. Dado que precisa sobreviver ao contêiner vai em volume, nunca na camada gravável.
+- **`--privileged`, `--net=host` e o socket do Docker montado anulam o isolamento**, e pertencer ao grupo `docker` equivale a ter root sem senha. Podman rootless evita a categoria inteira do problema.
+- **Contêiner isola menos que VM porque o kernel é compartilhado.** Aplicação sua em contêiner; código não confiável em máquina virtual.
+- **No Kali, contêiner é a forma barata de manter o sistema limpo e subir alvos de laboratório** — sempre com a porta publicada apenas no loopback, e nunca em máquina exposta.
