@@ -1,3 +1,481 @@
 # Virtualização: KVM, QEMU e o laboratório de estudos {#sec-cap100}
 
-*(em elaboracao)*
+Para praticar o que este manual ensinou, é preciso ter onde errar. Um servidor com serviços mal configurados para endurecer, uma máquina-alvo para escanear, um roteador para depurar, um sistema para quebrar e restaurar em trinta segundos. Nada disso pode acontecer no notebook que você usa para trabalhar, e alugar três máquinas na nuvem para estudar é caro e — no caso de um alvo deliberadamente vulnerável — irresponsável.
+
+A resposta é o laboratório virtualizado: várias máquinas completas dentro de uma só, numa rede que não alcança nada além dela mesma, com a capacidade de voltar ao estado anterior por um comando. Este capítulo constrói esse laboratório com as ferramentas nativas do Linux — KVM, QEMU e libvirt —, e explica por que cada peça existe.
+
+A distinção com o @sec-cap099 é o eixo do capítulo. Contêiner compartilha o kernel; máquina virtual traz o seu. Para separar aplicações que você controla, contêiner basta e custa menos. Para executar código em que você não confia, ou um sistema operacional inteiro que não é Linux, ou um kernel que você pretende travar de propósito, é máquina virtual — e a diferença deixa de ser preferência para virar requisito.
+
+## O que virtualiza o quê
+
+Virtualizar é apresentar a um sistema operacional convidado um conjunto de hardware que não existe fisicamente. Historicamente isso era feito por tradução de instruções em software, o que custava caro. Desde 2006, os processadores trazem extensões — **Intel VT-x** e **AMD-V** — que permitem executar as instruções do convidado diretamente na CPU, com o hipervisor interceptando apenas o que é privilegiado. É a diferença entre uma VM utilizável e uma VM lenta.
+
+```bash
+grep -oE 'vmx|svm' /proc/cpuinfo | sort -u    # vmx = Intel, svm = AMD; vazio = desligado
+lscpu | grep -i virtual
+sudo apt install cpu-checker && sudo kvm-ok   # veredito direto
+```
+
+Se o resultado for vazio, o motivo mais comum não é o processador: é a extensão desativada no firmware UEFI. O segundo motivo mais comum é você já estar dentro de uma VM sem virtualização aninhada habilitada.
+
+A pilha do Linux divide o trabalho entre três peças que costumam ser confundidas:
+
+::: {#fig-pilha-kvm}
+```{.tikz}
+%%| filename: pilha-kvm
+%%| alt: Pilha de virtualizacao no Linux mostrando o papel de libvirt, QEMU, KVM e do hardware
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum height=1.0cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.7mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=3.0cm] (g1) at (-3.3,5.0) {\textbf{convidado 1}\\\tiny Debian servidor};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=3.0cm] (g2) at (0.0,5.0)  {\textbf{convidado 2}\\\tiny Kali};
+  \node[bx,draw=manualblue,fill=manualblue!12,minimum width=3.0cm] (g3) at (3.3,5.0)  {\textbf{convidado 3}\\\tiny alvo vulnerável};
+
+  \node[bx,draw=manualyellow,fill=manualyellow!22,minimum width=9.6cm] (q) at (0,3.6)
+    {\textbf{QEMU} --- um processo por VM \tiny: emula disco, placa de rede, teclado, BIOS/UEFI};
+  \node[bx,draw=manualred,fill=manualred!14,minimum width=9.6cm] (k) at (0,2.3)
+    {\textbf{KVM} --- módulo do kernel \tiny: executa as instruções do convidado direto na CPU};
+  \node[bx,draw=manualgreen,fill=manualgreen!12,minimum width=9.6cm] (h) at (0,1.0)
+    {\textbf{kernel do hospedeiro} \tiny: escalonamento, memória, rede, armazenamento};
+  \node[bx,draw=manualgray,fill=manualgray!12,minimum width=9.6cm] (hw) at (0,-0.3)
+    {\textbf{CPU com VT-x / AMD-V} \tiny + RAM + discos};
+
+  \draw[fl] (g1) -- (-3.3,4.15);
+  \draw[fl] (g2) -- (0,4.15);
+  \draw[fl] (g3) -- (3.3,4.15);
+  \draw[fl] (q) -- (k);
+  \draw[fl] (k) -- (h);
+  \draw[fl] (h) -- (hw);
+
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.6cm,anchor=west] (lv) at (5.4,3.6)
+    {\textbf{libvirt}\\\tiny define, inicia, faz\\\tiny snapshot e rede};
+  \node[bx,draw=manualblue,fill=manualblue!8,minimum width=2.6cm,anchor=west] (cli) at (5.4,5.0)
+    {\texttt{virsh}\\\texttt{virt-manager}\\\texttt{virt-install}};
+  \draw[fl] (cli) -- (lv);
+  \draw[fl] (lv.west) -- (4.9,3.6);
+
+  \node[nt,text width=12.6cm,anchor=north] at (0,-1.1)
+    {Três peças, três papéis. \textbf{KVM} é apenas o módulo que dá acesso às extensões da CPU --- ele não sabe o que é um disco. \textbf{QEMU} é o processo em espaço de usuário que emula os periféricos e, quando há KVM, delega a execução da CPU a ele. \textbf{libvirt} é a camada de gerência que guarda a definição da VM em XML, cuida das redes virtuais e dos snapshots, e oferece a mesma interface para \texttt{virsh} (linha de comando), \texttt{virt-manager} (gráfico) e ferramentas de nuvem. Sem KVM o QEMU ainda funciona, emulando a CPU por software --- lento, mas é assim que se roda ARM num x86.};
+\end{tikzpicture}
+```
+A pilha de virtualização no Linux e o papel de cada camada.
+:::
+
+Vale registrar a taxonomia clássica, ainda que a fronteira seja porosa: hipervisor **tipo 1** roda direto sobre o hardware (VMware ESXi, Xen, Hyper-V); **tipo 2** roda sobre um sistema operacional hospedeiro (VirtualBox, VMware Workstation). O KVM desmonta a dicotomia — ele transforma o próprio kernel Linux em hipervisor, o que faz dele tipo 1 na arquitetura e tipo 2 na experiência de uso.
+
+Também aparece a distinção entre virtualização **completa** (o convidado não sabe que é virtual) e **paravirtualização** (o convidado tem drivers cientes disso). Na prática, todo convidado moderno usa drivers `virtio` para disco e rede: em vez de emular uma controladora SATA real byte a byte, o `virtio` conversa diretamente com o hospedeiro. A diferença de desempenho é de várias vezes, e escolher `virtio` na criação da VM é a otimização de maior retorno que existe.
+
+## Instalando a pilha e o primeiro convidado
+
+```bash
+sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system \
+                 libvirt-clients virtinst virt-manager bridge-utils
+sudo systemctl enable --now libvirtd
+sudo usermod -aG libvirt,kvm "$USER"     # relogar depois; evita sudo em cada virsh
+virsh -c qemu:///system version
+virsh nodeinfo
+```
+
+O QEMU sozinho já sobe uma VM, e vale ver isso uma vez para entender o que a libvirt automatiza:
+
+```bash
+qemu-img create -f qcow2 disco.qcow2 20G
+qemu-system-x86_64 -enable-kvm -m 2048 -smp 2 \
+  -drive file=disco.qcow2,if=virtio \
+  -cdrom kali.iso -boot d \
+  -nic user,model=virtio-net-pci \
+  -display gtk
+```
+
+Cada opção é um pedaço de hardware inventado. É funcional e insustentável: a linha cresce, nada persiste, e não há snapshot. Daí a libvirt.
+
+### Formatos de disco e o porquê do qcow2
+
+```bash
+qemu-img create -f qcow2 lab.qcow2 40G     # cresce conforme o uso
+qemu-img info lab.qcow2                    # tamanho virtual x tamanho real em disco
+qemu-img convert -O qcow2 disco.raw disco.qcow2
+qemu-img snapshot -l lab.qcow2             # snapshots internos do arquivo
+```
+
+| Formato | Característica | Quando usar |
+|---|---|---|
+| `raw` | imagem bruta, tamanho fixo | máximo desempenho, ferramentas externas |
+| `qcow2` | alocação sob demanda, snapshot, compressão | padrão para laboratório |
+| `vmdk` / `vdi` | formatos de VMware e VirtualBox | importar VMs prontas |
+
+: Formatos de disco de máquina virtual {#tbl-formatos-disco}
+
+O `qcow2` é o padrão certo para laboratório por causa de duas propriedades: um disco de 40 GB declarado ocupa 2 GB reais até você preenchê-lo, e ele suporta snapshot no próprio arquivo. Se estiver importando uma VM em `.vmdk` de um curso ou de um repositório de alvos, `qemu-img convert` resolve.
+
+### Criando a VM com libvirt
+
+```bash
+# baixar uma imagem de nuvem em vez de instalar do zero: mais rapido e reproduzivel
+wget https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
+sudo mv debian-12-genericcloud-amd64.qcow2 /var/lib/libvirt/images/base-debian.qcow2
+
+# disco derivado: nao toca na base, so grava as diferencas
+sudo qemu-img create -f qcow2 -F qcow2 \
+  -b /var/lib/libvirt/images/base-debian.qcow2 \
+  /var/lib/libvirt/images/srv1.qcow2 20G
+
+sudo virt-install --name srv1 --memory 1024 --vcpus 1 \
+  --disk /var/lib/libvirt/images/srv1.qcow2,bus=virtio \
+  --import --os-variant debian12 \
+  --network network=lab-isolada,model=virtio \
+  --graphics none --console pty,target_type=serial --noautoconsole
+```
+
+O disco derivado (*backing file*) é a técnica que faz um laboratório de dez VMs caber em disco: todas partem da mesma base somente-leitura e gravam apenas as diferenças — a mesma ideia das camadas de imagem do @sec-cap099, um nível abaixo.
+
+Imagens de nuvem não têm senha definida; a configuração inicial entra por **cloud-init**, num pequeno ISO de dados:
+
+```bash
+cat > user-data <<'EOF'
+#cloud-config
+hostname: srv1
+users:
+  - name: lab
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAA... sua-chave
+package_update: true
+packages: [nginx, curl]
+EOF
+printf 'instance-id: srv1\nlocal-hostname: srv1\n' > meta-data
+genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
+```
+
+Anexar `seed.iso` à VM no primeiro boot cria o usuário, instala a chave SSH (@sec-cap086) e os pacotes. É o mesmo mecanismo que provedores de nuvem usam, e transforma "criar VM" numa operação declarativa e repetível — a ideia do @sec-cap097 aplicada a máquinas inteiras.
+
+### Operando as VMs com `virsh`
+
+```bash
+virsh list --all                 # todas as VMs definidas
+virsh start srv1                 # ligar
+virsh console srv1               # console serial; sair com Ctrl+]
+virsh shutdown srv1              # ACPI: desligamento limpo
+virsh destroy srv1               # equivalente a arrancar o cabo de forca
+virsh undefine srv1 --remove-all-storage   # apaga a definicao E os discos
+virsh domifaddr srv1             # o IP que o convidado recebeu
+virsh dumpxml srv1 | head -30    # a definicao completa, em XML
+virsh edit srv1                  # editar a definicao
+virsh setmem srv1 2G --live      # ajustes a quente
+```
+
+O par `shutdown`/`destroy` merece atenção: `destroy` não apaga nada, apesar do nome — corta a energia. Quem apaga é `undefine`, e com `--remove-all-storage` leva o disco junto.
+
+::: {.callout-warning}
+**`virsh undefine --remove-all-storage` apaga os discos sem confirmação.** Se a VM usa um disco derivado de uma base compartilhada, verifique antes o que está sendo removido: `virsh domblklist <vm>` lista os arquivos. Apagar a base leva junto todas as VMs derivadas dela, e o erro só aparece na próxima vez que uma delas tentar ligar.
+:::
+
+### Snapshots: a função que torna o laboratório útil
+
+```bash
+virsh snapshot-create-as srv1 limpo "estado apos instalacao"
+virsh snapshot-list srv1
+virsh snapshot-revert srv1 limpo         # volta ao estado, em segundos
+virsh snapshot-delete srv1 limpo
+```
+
+Snapshot é o que permite estudar sem medo: quebre o `sudoers`, apague o `/boot`, instale um rootkit, e volte. É também o que evita a armadilha do laboratório que vira produção — uma VM que você tem medo de quebrar deixou de ser laboratório.
+
+Uma ressalva importante: snapshot **não é backup**. Ele depende do disco original, degrada o desempenho quando são muitos encadeados e não protege contra falha do hospedeiro. Para preservar de verdade, `virsh dumpxml` mais uma cópia do `.qcow2` com a VM desligada.
+
+## Rede: o ponto onde o laboratório vira ou não um problema
+
+A escolha do modo de rede define se o seu alvo vulnerável é um exercício ou um risco.
+
+| Modo | O convidado alcança | Alguém alcança o convidado | Uso |
+|---|---|---|---|
+| `nat` (padrão `default`) | internet e o hospedeiro | só o hospedeiro | uso geral |
+| `isolated` | apenas os outros convidados da mesma rede | ninguém de fora | **alvos vulneráveis** |
+| `bridge` | a LAN inteira, com IP próprio | toda a LAN | servidor real |
+| `user` (QEMU puro) | internet, via pilha em espaço de usuário | ninguém | teste rápido, sem root |
+
+: Modos de rede virtual e o que cada um expõe {#tbl-modos-rede}
+
+```bash
+virsh net-list --all
+cat > lab-isolada.xml <<'EOF'
+<network>
+  <name>lab-isolada</name>
+  <bridge name='virbr-lab' stp='on' delay='0'/>
+  <ip address='10.99.0.1' netmask='255.255.255.0'>
+    <dhcp><range start='10.99.0.100' end='10.99.0.200'/></dhcp>
+  </ip>
+</network>
+EOF
+virsh net-define lab-isolada.xml
+virsh net-start lab-isolada && virsh net-autostart lab-isolada
+```
+
+A ausência do elemento `<forward/>` é justamente o que torna a rede isolada: sem ele, a libvirt não cria NAT nem rota para fora. Os convidados falam entre si e com o endereço da bridge no hospedeiro, e nada mais.
+
+::: {#fig-lab-virtual}
+```{.tikz}
+%%| filename: lab-virtual
+%%| alt: Topologia de um laboratorio virtual com rede isolada contendo Kali e alvos, separada da rede local
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.9cm,minimum height=1.15cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    ln/.style={thick,manualgray}
+  ]
+  \filldraw[rounded corners=6pt,fill=manualred!6,draw=manualred,thick,dashed]
+    (-5.5,-2.3) rectangle (5.5,1.5);
+  \node[font=\scriptsize\bfseries,manualred,anchor=north west] at (-5.4,1.4)
+    {rede isolada 10.99.0.0/24 --- sem rota para fora};
+
+  \node[bx,draw=manualblue,fill=manualblue!14] (kali) at (-3.5,-0.3)
+    {\textbf{Kali}\\\tiny 10.99.0.10\\\tiny estação de trabalho};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (srv) at (0,-0.3)
+    {\textbf{srv1}\\\tiny 10.99.0.20\\\tiny Debian + nginx};
+  \node[bx,draw=manualred,fill=manualred!14] (alvo) at (3.5,-0.3)
+    {\textbf{alvo}\\\tiny 10.99.0.30\\\tiny deliberadamente frágil};
+
+  \draw[ln] (-4.6,-1.5) -- (4.6,-1.5);
+  \draw[ln] (kali) -- (-3.5,-1.5);
+  \draw[ln] (srv)  -- (0,-1.5);
+  \draw[ln] (alvo) -- (3.5,-1.5);
+  \node[font=\scriptsize,manualgray,anchor=north] at (0,-1.6) {bridge virbr-lab};
+
+  \node[bx,draw=manualgreen,fill=manualgreen!12,minimum width=3.4cm] (host) at (0,3.0)
+    {\textbf{hospedeiro}\\\tiny virsh, virt-manager\\\tiny e os arquivos .qcow2};
+  \node[bx,draw=manualgray,fill=manualgray!10,minimum width=3.0cm] (lan) at (4.6,3.0)
+    {\textbf{sua LAN}\\\tiny e a internet};
+  \draw[ln] (host) -- (lan);
+
+  \draw[ln,dashed,manualgreen] (host) -- (0,1.5);
+  \node[nt,anchor=west,font=\scriptsize,manualgreen] at (0.3,2.2) {só o hospedeiro alcança};
+  \node[nt,anchor=west,font=\scriptsize,manualgreen] at (0.3,1.94) {a rede isolada};
+
+  \node[nt,text width=12.4cm,anchor=north] at (0,-2.7)
+    {O alvo frágil só é alcançável de dentro do retângulo vermelho. Nenhum pacote sai, e nenhum entra a partir da LAN --- o que protege a sua rede e, tão importante quanto, protege terceiros de um alvo comprometido que passasse a atacar a partir da sua conexão. Para dar internet a um convidado por tempo limitado (instalar pacotes, por exemplo), troque temporariamente a rede dele para \texttt{default} com \texttt{virsh attach-interface}, e devolva à rede isolada antes de ligar o alvo vulnerável.};
+\end{tikzpicture}
+```
+Topologia do laboratório: rede isolada, alvos dentro, LAN de fora.
+:::
+
+## Virtualização aninhada e desempenho
+
+Se o seu Kali já é uma VM, rodar VMs dentro dele exige **virtualização aninhada**, que precisa ser habilitada no hospedeiro real:
+
+```bash
+# no hospedeiro Linux (Intel)
+cat /sys/module/kvm_intel/parameters/nested          # Y ou N
+echo 'options kvm_intel nested=1' | sudo tee /etc/modprobe.d/kvm.conf
+sudo modprobe -r kvm_intel && sudo modprobe kvm_intel
+```
+
+Em VirtualBox e VMware há uma caixa equivalente nas configurações da VM ("Enable Nested VT-x/AMD-V"). Sem isso, o QEMU ainda roda, mas em emulação pura por software — dez a vinte vezes mais lento, o que na prática inviabiliza um laboratório.
+
+Ajustes que rendem, em ordem de retorno:
+
+- **`virtio` para disco e rede** — o maior ganho isolado.
+- **Não superestimar a RAM.** Somar a memória de todas as VMs até passar da RAM física leva o hospedeiro a fazer swap, e uma VM em swap é dolorosa.
+- **`--cpu host-passthrough`** expõe as instruções reais da CPU ao convidado, o que importa para carga com AES ou AVX.
+- **KSM** (`/sys/kernel/mm/ksm/run`) deduplica páginas idênticas de memória entre VMs iguais — útil com muitos convidados do mesmo sistema, ao custo de CPU.
+- **Cache de disco `none`** com `virtio` evita cache duplo entre convidado e hospedeiro.
+
+```bash
+virsh domstats srv1 --cpu-total --balloon --block --interface | head -20
+virt-top                       # top para VMs
+```
+
+## Alternativas e quando usar cada uma
+
+```bash
+# VirtualBox: mais simples, multiplataforma, importa .ova de cursos
+VBoxManage list vms
+VBoxManage snapshot "kali" take limpo
+
+# Vagrant: definir maquinas em arquivo, com libvirt ou VirtualBox por tras
+vagrant init debian/bookworm64 && vagrant up && vagrant ssh
+```
+
+| Ferramenta | Vantagem | Custo |
+|---|---|---|
+| KVM + libvirt | nativo, rápido, roteirizável | curva inicial maior |
+| VirtualBox | simples, importa `.ova`, roda no Windows | mais lento, extensões proprietárias |
+| Vagrant | laboratório declarativo, versionável | mais uma camada para aprender |
+| QEMU puro | emula outras arquiteturas (ARM, RISC-V) | lento sem KVM |
+
+: Escolhendo a ferramenta de virtualização {#tbl-ferramentas-virt}
+
+Vale destacar o último caso: `qemu-system-aarch64` executa uma imagem ARM num PC x86, por emulação completa. É lento e é a única forma prática de analisar um binário de roteador ou de dispositivo embarcado sem ter o hardware.
+
+## 🐉 No Kali
+
+- **O laboratório de alvos vulneráveis é a razão número um para virtualizar, e a rede isolada não é opcional.** Metasploitable, DVWA, VulnHub e as máquinas de treino em geral são construídas com falhas reais e sem correção. Numa rede em ponte, elas ficam acessíveis a qualquer dispositivo da sua LAN — e, se houver encaminhamento de porta no roteador, à internet. Um alvo comprometido por terceiros e usado para atacar outras pessoas a partir do seu IP é um problema jurídico seu. Regra fixa: alvo vulnerável nasce e morre em rede `isolated`.
+- **Autorização também vale dentro de casa.** Praticar exploração é legítimo em máquinas que você mesmo criou ou em plataformas que autorizam explicitamente (Hack The Box, TryHackMe, laboratórios de certificação). O que a virtualização não muda: escanear ou explorar sistema de terceiros sem autorização escrita é crime pela Lei 12.737/2012, e o fato de o ataque partir de uma VM não altera nada. O laboratório existe justamente para que não exista tentação de treinar em alvo real.
+- **Kali dentro de VM é a instalação recomendada, e traz configurações próprias.** `kali-tweaks` ajusta itens que fazem diferença em convidado; o pacote `spice-vdagent` (ou `open-vm-tools` no VMware) habilita área de transferência compartilhada e redimensionamento automático de tela. Snapshot antes de cada sessão de estudo transforma qualquer engano em trinta segundos de perda.
+- **Adaptador USB de Wi-Fi precisa de passagem direta para dentro da VM.** Modo monitor não funciona pela placa emulada: é preciso repassar o dispositivo USB físico ao convidado, com `virsh attach-device` e um XML de `hostdev`, ou pelo menu de USB no VirtualBox/VMware. O driver que precisa existir é o do convidado, o que reencontra o assunto de DKMS do @sec-cap098 — desta vez dentro da VM.
+- **Analisar malware exige VM, não contêiner, e com regras extras.** Rede isolada ou desligada, snapshot antes e reversão depois, sem pastas compartilhadas com o hospedeiro e sem passagem de USB. Amostras modernas detectam ambiente virtualizado e alteram o comportamento, e escapes de hipervisor, embora raros, existem. Para análise séria, o hospedeiro dedicado e descartável continua sendo a resposta correta.
+
+> **Nota sobre a família RHEL.** A pilha é a mesma; muda o empacotamento. O grupo de pacotes é instalado com `sudo dnf group install "Virtualization Host"`, o daemon monolítico `libvirtd` foi dividido em daemons modulares (`virtqemud`, `virtnetworkd`, `virtstoraged`) a partir do RHEL 9, e o SELinux atua via `svirt`, atribuindo um rótulo distinto a cada VM — o que impede um QEMU comprometido de tocar nos discos de outra máquina. Um sintoma comum ao mover um `.qcow2` para `/var/lib/libvirt/images/` na mão é a VM não iniciar por rótulo errado; `restorecon -Rv /var/lib/libvirt/images/` resolve.
+
+## 🧪 Laboratório
+
+Roteiro numa máquina com Linux e virtualização habilitada. Se o seu Kali já é uma VM, habilite antes a virtualização aninhada no hospedeiro real. O passo 10 remove tudo.
+
+1. **Confirme que o hardware e o kernel estão prontos.**
+
+   ```bash
+   grep -oE 'vmx|svm' /proc/cpuinfo | sort -u
+   lsmod | grep -E '^kvm'
+   sudo apt install -y cpu-checker && sudo kvm-ok
+   cat /sys/module/kvm_intel/parameters/nested 2>/dev/null \
+     || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null
+   ```
+
+   Esperado: `vmx` ou `svm` presente, módulos `kvm` e `kvm_intel`/`kvm_amd` carregados, e `kvm-ok` respondendo que a aceleração pode ser usada. Se `kvm-ok` reclamar, o problema quase sempre está no firmware UEFI.
+
+2. **Instale a pilha e valide a conexão da libvirt.**
+
+   ```bash
+   sudo apt install -y qemu-system-x86 qemu-utils libvirt-daemon-system \
+                       libvirt-clients virtinst genisoimage
+   sudo systemctl enable --now libvirtd
+   sudo usermod -aG libvirt,kvm "$USER"
+   virsh -c qemu:///system nodeinfo
+   virsh -c qemu:///system net-list --all
+   ```
+
+   Esperado: `nodeinfo` mostra CPUs, memória e arquitetura do hospedeiro; a rede `default` aparece definida. Até relogar, use `sudo virsh` — o grupo novo só vale em sessão nova.
+
+3. **Crie a rede isolada.**
+
+   ```bash
+   cat > /tmp/lab-isolada.xml <<'EOF'
+   <network>
+     <name>lab-isolada</name>
+     <bridge name='virbr-lab' stp='on' delay='0'/>
+     <ip address='10.99.0.1' netmask='255.255.255.0'>
+       <dhcp><range start='10.99.0.100' end='10.99.0.200'/></dhcp>
+     </ip>
+   </network>
+   EOF
+   sudo virsh net-define /tmp/lab-isolada.xml
+   sudo virsh net-start lab-isolada && sudo virsh net-autostart lab-isolada
+   ip -brief addr show virbr-lab
+   sudo virsh net-dumpxml lab-isolada | grep -c '<forward' || echo "sem forward: rede isolada"
+   ```
+
+   Esperado: a bridge `virbr-lab` existe com o endereço `10.99.0.1`, e não há elemento `<forward>` — o que garante que os convidados não terão rota para fora.
+
+4. **Prepare o disco base e um disco derivado.**
+
+   ```bash
+   cd /tmp
+   wget -q https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2 -O base-debian.qcow2
+   sudo mv base-debian.qcow2 /var/lib/libvirt/images/
+   sudo qemu-img create -f qcow2 -F qcow2 \
+     -b /var/lib/libvirt/images/base-debian.qcow2 \
+     /var/lib/libvirt/images/srv1.qcow2 20G
+   sudo qemu-img info /var/lib/libvirt/images/srv1.qcow2
+   sudo du -h /var/lib/libvirt/images/*.qcow2
+   ```
+
+   Esperado: o `qemu-img info` mostra tamanho virtual de 20 GB, `backing file` apontando para a base, e o `du` revela que o disco derivado ocupa poucos kilobytes. Dez VMs derivadas custariam praticamente o mesmo espaço de uma.
+
+5. **Gere a configuração inicial com cloud-init.**
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -f ~/.ssh/lab_ed25519 <<< y >/dev/null
+   cat > /tmp/user-data <<EOF
+   #cloud-config
+   hostname: srv1
+   users:
+     - name: lab
+       sudo: ALL=(ALL) NOPASSWD:ALL
+       shell: /bin/bash
+       ssh_authorized_keys:
+         - $(cat ~/.ssh/lab_ed25519.pub)
+   EOF
+   printf 'instance-id: srv1\nlocal-hostname: srv1\n' > /tmp/meta-data
+   genisoimage -output /tmp/seed.iso -volid cidata -joliet -rock /tmp/user-data /tmp/meta-data
+   sudo mv /tmp/seed.iso /var/lib/libvirt/images/
+   ```
+
+   Esperado: um ISO de poucos megabytes. Nenhuma senha foi definida — o acesso será exclusivamente por chave, como o @sec-cap081 recomenda.
+
+6. **Crie e inicie a VM.**
+
+   ```bash
+   sudo virt-install --name srv1 --memory 1024 --vcpus 1 \
+     --disk /var/lib/libvirt/images/srv1.qcow2,bus=virtio \
+     --disk /var/lib/libvirt/images/seed.iso,device=cdrom \
+     --import --os-variant debian12 \
+     --network network=lab-isolada,model=virtio \
+     --graphics none --console pty,target_type=serial --noautoconsole
+   sudo virsh list --all
+   sleep 45
+   sudo virsh domifaddr srv1
+   ```
+
+   Esperado: a VM aparece como `running` e, depois de alguns segundos, `domifaddr` mostra um endereço na faixa `10.99.0.100-200`. Se o endereço não aparecer, o convidado ainda está no boot — repita o comando.
+
+7. **Acesse o convidado e comprove o isolamento da rede.**
+
+   ```bash
+   ip_srv=$(sudo virsh domifaddr srv1 | awk '/ipv4/{print $4}' | cut -d/ -f1)
+   ssh -i ~/.ssh/lab_ed25519 -o StrictHostKeyChecking=no lab@"$ip_srv" \
+       'hostname; ip -brief addr; ping -c2 -W2 1.1.1.1 || echo "SEM internet: rede isolada, correto"'
+   ```
+
+   Esperado: o hostname é `srv1`, a interface tem endereço `10.99.0.x`, e o ping para a internet **falha**. Essa falha é o resultado desejado — é a prova de que a rede não tem saída.
+
+8. **Faça um snapshot, quebre a VM de propósito e reverta.**
+
+   ```bash
+   sudo virsh snapshot-create-as srv1 limpo "estado inicial funcional"
+   sudo virsh snapshot-list srv1
+   ssh -i ~/.ssh/lab_ed25519 lab@"$ip_srv" 'sudo mv /etc/ssh/sshd_config /etc/ssh/sshd_config.bak; sudo systemctl restart ssh || true'
+   ssh -o ConnectTimeout=5 -i ~/.ssh/lab_ed25519 lab@"$ip_srv" 'echo ainda funciona' || echo "quebrado, como planejado"
+   sudo virsh snapshot-revert srv1 limpo
+   sleep 20
+   ssh -o ConnectTimeout=5 -i ~/.ssh/lab_ed25519 lab@"$ip_srv" 'echo restaurado; ls /etc/ssh/sshd_config'
+   ```
+
+   Esperado: a quebra derruba o acesso e a reversão o traz de volta em segundos, com o arquivo original no lugar. **Este passo é o motivo de existir o laboratório.**
+
+9. **Meça e ajuste a VM em execução.**
+
+   ```bash
+   sudo virsh domstats srv1 --balloon --vcpu | head -12
+   sudo virsh dominfo srv1
+   sudo virsh setmem srv1 1536M --live 2>/dev/null || echo "requer memoria maxima maior"
+   sudo virsh dumpxml srv1 | grep -A2 '<interface\|<disk'
+   ```
+
+   Esperado: o XML confirma `type='virtio'` no disco e na interface — a escolha de desempenho descrita acima — e a rede `lab-isolada` como origem da interface.
+
+10. **Remova o laboratório.**
+
+    ```bash
+    sudo virsh destroy srv1
+    sudo virsh snapshot-delete srv1 limpo 2>/dev/null
+    sudo virsh undefine srv1 --remove-all-storage --nvram
+    sudo virsh net-destroy lab-isolada && sudo virsh net-undefine lab-isolada
+    sudo rm -f /var/lib/libvirt/images/seed.iso
+    sudo virsh list --all; sudo virsh net-list --all
+    ls /var/lib/libvirt/images/
+    ```
+
+    Esperado: nenhuma VM e nenhuma rede `lab-isolada` restante. A imagem base permanece — é ela que torna barato repetir o laboratório inteiro amanhã, e o `undefine` do disco derivado não a tocou.
+
+## Resumo
+
+- **VM traz o próprio kernel; contêiner compartilha o do hospedeiro.** Aplicação que você controla vai para contêiner; código não confiável, outro sistema operacional ou kernel que você pretende travar vai para máquina virtual.
+- **Três peças, três papéis:** KVM é o módulo que usa as extensões da CPU, QEMU é o processo que emula os periféricos, libvirt é a camada de gerência que guarda a definição em XML e cuida de redes e snapshots.
+- **Sem VT-x/AMD-V habilitado — ou sem virtualização aninhada, quando o hospedeiro já é uma VM — o QEMU emula por software** e fica dez a vinte vezes mais lento. `kvm-ok` dá o veredito.
+- **`qcow2` com disco derivado é o formato do laboratório:** aloca sob demanda, aceita snapshot e permite que dez VMs partam da mesma base ocupando o espaço de uma.
+- **Imagem de nuvem mais cloud-init substituem a instalação manual**, tornando a criação de VMs declarativa e repetível.
+- **O modo de rede define o risco.** `isolated` para alvos vulneráveis, `nat` para uso geral, `bridge` só quando a VM precisa mesmo ser um host da LAN. A ausência de `<forward/>` no XML é o que garante o isolamento.
+- **Snapshot é o que torna o laboratório utilizável** — quebrar e voltar em segundos —, mas não é backup: depende do disco original e não sobrevive à falha do hospedeiro.
+- **No Kali, alvo deliberadamente vulnerável nasce e morre em rede isolada**, análise de malware exige VM com snapshot e sem compartilhamentos, e adaptador Wi-Fi USB exige passagem direta do dispositivo ao convidado.
