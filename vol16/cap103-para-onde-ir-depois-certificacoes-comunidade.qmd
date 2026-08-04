@@ -1,3 +1,397 @@
 # Para onde ir depois: certificações, comunidade e prática contínua {#sec-cap103}
 
-*(em elaboracao)*
+Cento e dois capítulos atrás, a primeira pergunta era o que significa "Linux". Agora você já montou volumes lógicos, escreveu scripts que tratam os próprios erros, filtrou pacotes com nftables, construiu contêineres na mão com `unshare` e rastreou um binário que não tinha fonte. O manual acaba aqui. O aprendizado, não — e a diferença entre quem consolida tudo isso e quem esquece metade em seis meses não é talento, é o que acontece nas semanas seguintes.
+
+Este capítulo final é o mais curto em conceito novo e o mais consequente em prática. Ele faz três coisas: recapitula o mapa do que foi percorrido, para que você saiba nomear o que sabe; apresenta os caminhos plausíveis a partir daqui — certificação, especialização, comunidade —; e monta, no laboratório, a estrutura concreta de estudo continuado que sustenta tudo isso.
+
+## O mapa do que você percorreu
+
+Vale olhar o caminho inteiro de uma vez, porque a sensação de "não sei nada" costuma vir de não ter uma lista do que se sabe.
+
+| Fase | Volumes | O que ficou |
+|---|---|---|
+| 1 — Fundamentos | 1 a 4 | shell, FHS, arquivos, permissões, usuários (@sec-cap005, @sec-cap020, @sec-cap022) |
+| 2 — Administração | 5 a 8 | processos, pacotes, systemd, armazenamento (@sec-cap029, @sec-cap041, @sec-cap048) |
+| 3 — Shell scripting | 9 a 12 | do primeiro script a código robusto e depurável (@sec-cap057, @sec-cap067, @sec-cap071) |
+| 4 — Redes e segurança | 13 a 15 | pilha de rede, firewall, hardening, automação (@sec-cap083, @sec-cap085, @sec-cap094) |
+| 5 — Fronteira | 16 | kernel, contêineres, virtualização, compilação, observabilidade |
+
+: O mapa do manual, por fase {#tbl-mapa-manual}
+
+Um teste honesto de consolidação: escolha cinco linhas dessa tabela e, sem consultar, escreva de memória o comando principal de cada uma e o que ele responde. O que não sair é exatamente a sua lista de revisão — e ela é curta, o que costuma ser uma surpresa agradável.
+
+## Três trilhas, e o que cada uma exige a mais
+
+O conhecimento deste manual é a base comum de três carreiras que divergem depois dele.
+
+::: {#fig-trilhas}
+```{.tikz}
+%%| filename: trilhas
+%%| alt: Tres trilhas de especializacao partindo da base comum do manual, com temas e certificacoes de cada uma
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,minimum width=3.9cm,minimum height=1.05cm},
+    ds/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=5pt,minimum width=3.9cm,minimum height=2.5cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.8mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!16,minimum width=7.4cm] (base) at (0,4.6)
+    {\textbf{base comum: este manual}\\\tiny shell, sistema, scripting, redes, segurança};
+
+  \node[bx,draw=manualgreen,fill=manualgreen!14]  (t1) at (-4.6,2.9) {\textbf{infraestrutura}\\\tiny sysadmin, SRE, DevOps};
+  \node[bx,draw=manualyellow,fill=manualyellow!24](t2) at (0,2.9)    {\textbf{segurança}\\\tiny ofensiva e defensiva};
+  \node[bx,draw=manualred,fill=manualred!14]      (t3) at (4.6,2.9)  {\textbf{desenvolvimento}\\\tiny sistemas e plataforma};
+
+  \draw[fl] (base) -- (t1);
+  \draw[fl] (base) -- (t2);
+  \draw[fl] (base) -- (t3);
+
+  \node[ds,draw=manualgreen,fill=manualgreen!6] (d1) at (-4.6,0.7)
+    {Ansible, Terraform\\Kubernetes\\CI/CD e observabilidade\\alta disponibilidade\\[4pt]\tiny LPIC-1/2, LFCS, RHCSA};
+  \node[ds,draw=manualyellow,fill=manualyellow!8] (d2) at (0,0.7)
+    {teste de intrusão\\resposta a incidente\\análise de malware\\forense e detecção\\[4pt]\tiny KLCP, eJPT, OSCP, GCIH};
+  \node[ds,draw=manualred,fill=manualred!6] (d3) at (4.6,0.7)
+    {C e Rust, Go\\programação de sistemas\\eBPF, contribuição\\empacotamento\\[4pt]\tiny sem certificação relevante};
+
+  \draw[fl] (t1) -- (d1);
+  \draw[fl] (t2) -- (d2);
+  \draw[fl] (t3) -- (d3);
+
+  \node[nt,text width=13.0cm,anchor=north] at (0,-1.0)
+    {As trilhas não são exclusivas e o trânsito entre elas é comum --- quem faz segurança ofensiva precisa da infraestrutura para entender o alvo, e quem opera infraestrutura precisa da segurança para não construir o problema. O que muda é a profundidade exigida em cada eixo e o tipo de prova que o mercado aceita: na primeira coluna, certificações têm peso real em processos seletivos; na terceira, o que conta é código público e histórico de contribuição.};
+\end{tikzpicture}
+```
+As três trilhas que partem da base comum, com temas e credenciais de cada uma.
+:::
+
+## Certificações: quais existem e o que provam
+
+Certificação não ensina — ela **atesta** e, principalmente, **organiza**: o edital de objetivos é um roteiro de estudo pronto, gratuito e revisado. Mesmo sem intenção de fazer a prova, baixar a lista de objetivos e usá-la como checklist é um dos melhores usos possíveis dessas instituições.
+
+| Certificação | Foco | Formato | Observação |
+|---|---|---|---|
+| Linux Essentials (LPI) | conceitos iniciais | múltipla escolha | boa para primeira credencial |
+| LPIC-1 / LPIC-2 | administração, dois níveis | múltipla escolha, 2 provas cada | neutra de distribuição, sem validade obrigatória de renovação curta |
+| CompTIA Linux+ | administração | múltipla escolha e desempenho | reconhecida na América do Norte |
+| LFCS / LFCE (Linux Foundation) | administração | **prática**, em terminal real | mede execução, não memória |
+| RHCSA / RHCE (Red Hat) | administração RHEL | **prática** | a mais exigente da família RHEL; alto peso de mercado |
+| KLCP (OffSec) | Kali especificamente | múltipla escolha | o material oficial é o livro *Kali Linux Revealed*, gratuito |
+| eJPT (INE) | intrusão, nível inicial | prática, com relatório | entrada acessível na segurança ofensiva |
+| PNPT (TCM) | intrusão + relatório | prática, 5 dias | ênfase forte em relatório profissional |
+| OSCP (OffSec) | intrusão | prática, 24 h + relatório | a referência da área; exige preparo longo |
+| Security+ / GCIH | defesa e resposta | múltipla escolha | comum em exigência de contrato e de governo |
+
+: Certificações relevantes para quem parte deste manual {#tbl-certificacoes}
+
+Três conselhos que economizam dinheiro:
+
+- **Prova prática vale mais do que múltipla escolha**, tanto para você quanto para quem contrata. LFCS, RHCSA e OSCP medem o que você faz num terminal; é mais difícil e é o ponto.
+- **Comece pelo edital, não pelo curso.** Os objetivos da LPIC-1 e da RHCSA são públicos. Percorra a lista marcando o que já sabe — depois deste manual, a maior parte estará marcada — e estude só os buracos.
+- **Certificação sem prática caduca rápido.** Uma credencial que você não exerce vira linha morta no currículo em dois anos. A prática continuada da seção seguinte é o que dá sustentação a ela.
+
+## Prática deliberada: o que realmente fixa
+
+O padrão que separa quem retém de quem esquece tem quatro passos, e todos aparecem neste manual.
+
+::: {#fig-ciclo-pratica}
+```{.tikz}
+%%| filename: ciclo-pratica
+%%| alt: Ciclo de pratica deliberada com quatro etapas conectadas em circulo
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=5pt,minimum width=3.5cm,minimum height=1.3cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.9mm]},very thick,manualgray}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!14]     (c) at (0,2.4)    {\textbf{1. construir}\\\tiny algo que você usa\\\tiny de verdade};
+  \node[bx,draw=manualred,fill=manualred!12]       (q) at (4.3,0)    {\textbf{2. quebrar}\\\tiny de propósito,\\\tiny com snapshot antes};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (d) at (0,-2.4)   {\textbf{3. documentar}\\\tiny o que quebrou\\\tiny e como você viu};
+  \node[bx,draw=manualgreen,fill=manualgreen!14]   (e) at (-4.3,0)   {\textbf{4. ensinar}\\\tiny explicar a alguém\\\tiny ou escrever em público};
+
+  \draw[fl] (c) to[bend left=22] (q);
+  \draw[fl] (q) to[bend left=22] (d);
+  \draw[fl] (d) to[bend left=22] (e);
+  \draw[fl] (e) to[bend left=22] (c);
+
+  \node[nt,text width=5.8cm,anchor=west] at (6.6,1.5)
+    {\textbf{Por que funciona:} \tiny construir cria contexto; quebrar cria a memória do sintoma, que é o que você vai reencontrar no trabalho real; documentar transforma o episódio em conhecimento recuperável; ensinar expõe as lacunas que você não sabia que tinha.};
+  \node[nt,text width=5.8cm,anchor=west] at (6.6,-1.6)
+    {\textbf{O que não funciona:} \tiny assistir a vídeo sem digitar, ler documentação sem exercitar, e colecionar cursos comprados que não foram concluídos.};
+\end{tikzpicture}
+```
+O ciclo de prática deliberada que sustenta o aprendizado depois do manual.
+:::
+
+Onde exercitar, sem depender de ideia própria:
+
+| Recurso | O que é | Custo |
+|---|---|---|
+| OverTheWire (Bandit) | 30 níveis de shell por SSH, autorizados | gratuito |
+| TryHackMe | trilhas guiadas, do básico ao avançado | tem camada gratuita |
+| Hack The Box | máquinas para explorar, mais difícil | tem camada gratuita |
+| VulnHub | imagens de VM vulneráveis para baixar | gratuito |
+| Exercism / Advent of Code | exercícios de programação, inclusive em Bash | gratuito |
+| CTFtime | calendário de competições de captura de bandeira | gratuito |
+| Laboratório próprio | o que o @sec-cap100 construiu | seu tempo |
+
+: Onde praticar depois do manual {#tbl-onde-praticar}
+
+O laboratório próprio é o mais valioso dos sete, e o mais ignorado. Ele é o único em que você projeta o problema — e projetar o problema é a habilidade que nenhuma plataforma treina.
+
+## Fontes que continuam servindo depois deste livro
+
+```bash
+man 7 man                 # como o proprio sistema de manuais funciona
+man -k rede | head        # busca por palavra-chave: o que existe sobre um tema
+apropos socket | head
+info coreutils            # documentacao longa dos utilitarios basicos
+zless /usr/share/doc/<pacote>/README.Debian.gz    # notas especificas da distro
+```
+
+A documentação instalada na sua máquina é subutilizada, e é a única que corresponde exatamente à versão que você tem. Fora dela:
+
+- **`kernel.org/doc`** — documentação oficial do kernel, incluindo `admin-guide`, útil desde o @sec-cap098.
+- **Debian Administrator's Handbook** — livre, e a referência da base sobre a qual o Kali é construído.
+- **Arch Wiki** — a melhor documentação prática de Linux que existe, mesmo para quem não usa Arch.
+- **Kali Linux Revealed** — o livro oficial do Kali, gratuito, e material do KLCP.
+- **LWN.net** — jornalismo técnico sério sobre kernel e ecossistema.
+- **The Linux Programming Interface** (Kerrisk) — a referência definitiva das chamadas de sistema, complemento natural do @sec-cap102.
+- **ShellCheck e o wiki dele** — cada aviso tem uma página explicando o porquê (@sec-cap072).
+
+## Comunidade: consumir, participar, contribuir
+
+Há uma progressão natural, e pular etapas costuma frustrar.
+
+**Consumir** é o primeiro degrau: listas de discussão, fóruns da distribuição, Matrix e IRC, releases notes. **Participar** vem quando você responde a uma dúvida que sabe responder, ou reporta um bug bem escrito — e reportar bem é uma habilidade específica:
+
+```bash
+# o que um relatorio util precisa conter
+uname -a; lsb_release -a 2>/dev/null; cat /etc/os-release | head -3
+apt policy <pacote>                 # versao exata instalada
+journalctl -b -u <servico> --no-pager | tail -50
+reportbug <pacote>                  # ferramenta oficial do Debian; monta o relatorio
+```
+
+Um relatório com versão exata, passos de reprodução, comportamento esperado, comportamento observado e log é aceito e resolvido; um relatório dizendo "não funciona" é fechado. A diferença é meia hora de trabalho seu.
+
+**Contribuir** é o terceiro degrau, e as portas de entrada são mais largas do que parecem: tradução, documentação, triagem de bugs, empacotamento, teste de versões candidatas. Correção de código não é o caminho mais acessível nem o mais necessário. Todo o Git do @sec-cap095 existe para este momento — clonar, ramificar, propor mudança.
+
+## Um plano de doze meses que funciona
+
+Uma sugestão concreta, ajustável ao seu ritmo:
+
+- **Meses 1 a 2 — consolidar.** Refaça de memória os laboratórios dos volumes que ficaram fracos. Monte o laboratório virtual permanente do @sec-cap100 e coloque os seus dotfiles num repositório (@sec-cap097).
+- **Meses 3 a 5 — escolher uma trilha e um alvo.** Baixe o edital de uma certificação da @tbl-certificacoes e trate-o como lista de tarefas. Em paralelo, complete os 30 níveis do Bandit.
+- **Meses 6 a 8 — construir algo público.** Um script que resolve um problema seu, com README, tratamento de erro (@sec-cap071) e testes. Publique. É o item que mais pesa numa conversa técnica.
+- **Meses 9 a 10 — prestar a prova**, se decidiu por uma.
+- **Meses 11 a 12 — contribuir e ensinar.** Um bug reportado, uma tradução, um artigo explicando algo que você quebrou e consertou.
+
+Nada disso funciona sem a peça mais chata: **um horário fixo**. Duas horas em dois dias marcados na semana batem seis horas de sábado esporádico com folga, e é a mesma lógica do `cron` do @sec-cap094 — o que é agendado acontece.
+
+## 🐉 No Kali
+
+- **O KLCP é a credencial específica do Kali, e o material é gratuito.** *Kali Linux Revealed* está publicado em `kali.org/docs` e cobre exatamente a distribuição: instalação, `kali-tweaks`, metapacotes, persistência e customização. Depois deste manual, é leitura rápida e fecha as lacunas do que é específico da distribuição em relação ao Debian.
+- **O caminho da segurança ofensiva tem uma ordem que evita frustração.** eJPT ou PNPT antes de OSCP; muitas horas de máquinas fáceis antes de máquinas difíceis; e, sobretudo, escrever relatório desde o primeiro exercício. A parte que reprova candidatos na OSCP com mais frequência não é a exploração — é o relatório e a gestão de tempo. Praticar relatório é praticar a profissão; praticar só exploração é praticar o hobby.
+- **Autorização é a linha que define a carreira, e ela não muda com o nível técnico.** Tudo o que este manual mostrou de ofensivo pressupõe laboratório próprio ou autorização escrita e delimitada. Acessar sistema de terceiros sem autorização é crime pela Lei 12.737/2012, com pena prevista, e "eu só estava testando" não é defesa. Plataformas como Hack The Box e TryHackMe existem justamente para dar alvos legítimos; o laboratório do @sec-cap100 existe para o resto. Um profissional se distingue tanto pela competência quanto pela disciplina de escopo.
+- **Contribuir com o Kali é acessível.** O rastreador de bugs em `bugs.kali.org` aceita relatórios de pacote e sugestões de ferramenta; o processo de empacotamento é documentado e usa a mesma base Debian que o @sec-cap035 descreveu. Empacotar uma ferramenta que você usa e que ainda não está no repositório é uma contribuição concreta, visível e ao alcance de quem terminou este livro.
+- **Mantenha o Kali como ferramenta, não como sistema principal, se essa for a sua realidade.** O Kali é otimizado para trabalho de segurança e rolling por definição; usá-lo como estação de trabalho diária significa aceitar atualizações que quebram e um conjunto de ferramentas com privilégio que você não usa todo dia. A configuração madura é uma máquina estável de trabalho — Debian, Fedora, Ubuntu — e o Kali em VM ou contêiner, reconstruído a partir de dotfiles quando precisar. É o fechamento natural do @sec-cap097 e do @sec-cap099.
+
+> **Nota sobre a família RHEL.** Se a trilha escolhida for infraestrutura corporativa, vale investir na família RHEL em algum momento: RHCSA é prática, exigente e tem peso de mercado alto no Brasil e no exterior. O caminho gratuito de estudo existe — Rocky Linux, AlmaLinux e o Fedora oferecem ambiente compatível, e a Red Hat disponibiliza assinatura de desenvolvedor sem custo para uso individual. As diferenças que este manual foi anotando ao longo dos capítulos (`dnf`, `firewalld`, SELinux, `dracut`, `systemctl` com as mesmas semânticas) são exatamente o conteúdo dessa prova.
+
+## 🧪 Laboratório
+
+Este último roteiro não ensina comando novo: ele monta, com o que você já sabe, a estrutura que sustenta os próximos meses. Ao final você terá um repositório de estudo versionado, um inventário do seu ambiente, um plano de revisão agendado e um laboratório reprodutível.
+
+1. **Crie o repositório de estudo.**
+
+   ```bash
+   mkdir -p ~/estudo-linux/{notas,scripts,labs} && cd ~/estudo-linux
+   git init -b main
+   printf '# Estudo continuado — Linux\n\nRegistro de prática, falhas e soluções.\n' > README.md
+   printf '*.log\n*.qcow2\nsegredos.env\n' > .gitignore
+   git add . && git commit -m "estrutura inicial do repositorio de estudo"
+   git log --oneline
+   ```
+
+   Esperado: um repositório com três diretórios e o primeiro commit. É o @sec-cap095 aplicado ao seu próprio aprendizado — e o `.gitignore` já exclui o que nunca deve ser versionado (@sec-cap097).
+
+2. **Gere o inventário do seu ambiente.**
+
+   ```bash
+   cat > scripts/inventario.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   echo "# Inventario — $(date -I)"
+   echo "## Sistema"
+   printf -- "- kernel: %s\n- distro: %s\n" "$(uname -r)" "$(. /etc/os-release; echo "$PRETTY_NAME")"
+   echo "## Ferramentas dos volumes 13 a 16"
+   for f in nmap tcpdump nft ssh git vim tmux docker podman virsh qemu-system-x86_64 \
+            strace ltrace perf bpftrace gcc make cmake shellcheck jq dkms; do
+       if command -v "$f" >/dev/null 2>&1; then echo "- [x] $f"; else echo "- [ ] $f (ausente)"; fi
+   done
+   EOF
+   chmod +x scripts/inventario.sh
+   shellcheck scripts/inventario.sh && echo "shellcheck limpo"
+   ./scripts/inventario.sh | tee notas/inventario.md
+   ```
+
+   Esperado: uma lista marcada do que existe e do que falta na sua máquina. Os itens desmarcados são a sua lista de instalação — e o script passa no ShellCheck (@sec-cap072) porque foi escrito com `set -euo pipefail` (@sec-cap071) desde o início.
+
+3. **Escreva a checklist de revisão a partir do mapa do manual.**
+
+   ```bash
+   cat > notas/revisao.md <<'EOF'
+   # Checklist de revisao — marcar o que consigo fazer SEM consultar
+
+   - [ ] criar volume logico, estender e montar no boot (vol 8)
+   - [ ] escrever script com trap, set -euo pipefail e getopts (vol 9-12)
+   - [ ] extrair campo com awk e transformar com sed num pipeline (vol 11)
+   - [ ] abrir porta no nftables e conferir com ss (vol 13)
+   - [ ] gerar par de chaves, restringir sshd e testar (vol 13-14)
+   - [ ] criar unit systemd com timer e ver no journal (vol 7, 15)
+   - [ ] carregar modulo, ler /sys e ajustar sysctl persistente (cap 98)
+   - [ ] isolar processo com unshare e limitar com cgroup (cap 99)
+   - [ ] criar VM em rede isolada e reverter snapshot (cap 100)
+   - [ ] compilar com biblioteca externa e resolver "undefined reference" (cap 101)
+   - [ ] achar arquivo ausente com strace e perfilar com perf stat (cap 102)
+   EOF
+   git add . && git commit -m "inventario e checklist de revisao"
+   grep -c '^- \[ \]' notas/revisao.md
+   ```
+
+   Esperado: onze itens pendentes. A cada semana, marque o que conseguir fazer de memória e faça commit — o histórico do Git vira o registro do seu progresso.
+
+4. **Agende a revisão semanal.**
+
+   ```bash
+   cat > scripts/lembrete-estudo.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   repo="$HOME/estudo-linux"
+   pendentes=$(grep -c '^- \[ \]' "$repo/notas/revisao.md" || true)
+   printf '%s | pendentes: %s\n' "$(date -Is)" "$pendentes" >> "$repo/notas/historico.log"
+   EOF
+   chmod +x scripts/lembrete-estudo.sh
+   mkdir -p ~/.config/systemd/user
+   cat > ~/.config/systemd/user/estudo.service <<EOF
+   [Unit]
+   Description=Registro semanal do estudo
+   [Service]
+   Type=oneshot
+   ExecStart=%h/estudo-linux/scripts/lembrete-estudo.sh
+   EOF
+   cat > ~/.config/systemd/user/estudo.timer <<'EOF'
+   [Unit]
+   Description=Revisao semanal
+   [Timer]
+   OnCalendar=Sun 19:00
+   Persistent=true
+   [Install]
+   WantedBy=timers.target
+   EOF
+   systemctl --user daemon-reload
+   systemctl --user enable --now estudo.timer
+   systemctl --user list-timers estudo.timer --no-pager
+   systemctl --user start estudo.service && cat notas/historico.log
+   ```
+
+   Esperado: o timer aparece com o próximo disparo agendado, e a execução manual já grava a primeira linha no histórico. É o @sec-cap043 e o @sec-cap094 a serviço da sua própria disciplina — sem `sudo`, porque timer de usuário basta.
+
+5. **Reconstrua um laboratório completo integrando três capítulos deste volume.**
+
+   ```bash
+   sudo docker run -d --name alvo-lab -p 127.0.0.1:8080:80 \
+     --memory=128m --pids-limit=60 --cap-drop=ALL nginx:alpine
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/
+   pid=$(sudo docker inspect -f '{{.State.Pid}}' alvo-lab)
+   sudo ls /proc/"$pid"/ns/ | tr '\n' ' '; echo
+   sudo strace -c -p "$pid" -f 2>/dev/null & sleep 3; sudo pkill strace
+   ```
+
+   Esperado: `200` como código de resposta, os namespaces do contêiner listados, e o rastreio confirmando que o processo é observável do hospedeiro. Note a publicação em `127.0.0.1:8080` — a regra do @sec-cap099 que impede o alvo de aparecer na sua rede.
+
+6. **Pratique num alvo legítimo e externo.**
+
+   ```bash
+   ssh bandit0@bandit.labs.overthewire.org -p 2220   # senha: bandit0
+   # dentro: ls; cat readme    -> a senha do nivel seguinte
+   ```
+
+   Esperado: acesso ao primeiro nível do Bandit, um laboratório público e explicitamente autorizado para prática. Os trinta níveis cobrem navegação, permissões, `find`, redirecionamento, `ssh`, compressão e processamento de texto — ou seja, os volumes 2 a 11 deste manual, sob a forma de desafio. Registre em `notas/` a senha e o raciocínio de cada nível.
+
+7. **Baixe um edital de certificação e use como checklist.**
+
+   ```bash
+   mkdir -p notas/certificacao
+   cat > notas/certificacao/plano.md <<'EOF'
+   # Plano de certificacao
+
+   Alvo escolhido: ____________________  (LFCS | LPIC-1 | RHCSA | KLCP | eJPT)
+   Data pretendida: ___/___/______
+
+   ## Objetivos do edital
+   - [ ] colar aqui a lista oficial e marcar o que ja domino
+
+   ## Lacunas identificadas
+   - [ ]
+   EOF
+   git add notas/ scripts/ && git commit -m "plano de estudo, laboratorio e agendamento"
+   ```
+
+   Esperado: um arquivo a preencher com a lista oficial da prova escolhida. Preenchê-lo é o exercício — a maior parte dos itens já estará marcada, e o que sobrar é o seu roteiro real.
+
+8. **Escreva a primeira nota de falha, no formato que serve para o futuro.**
+
+   ```bash
+   cat > notas/2026-01-primeiro-registro.md <<'EOF'
+   # Sintoma
+   (o que foi observado, com a mensagem exata)
+
+   # Ambiente
+   kernel, distro, versao do pacote
+
+   # Investigacao
+   comandos usados e o que cada um mostrou
+
+   # Causa
+   a explicacao, nao o remendo
+
+   # Solucao e prevencao
+   o que foi feito e o que impede a repeticao
+   EOF
+   git add notas/ && git commit -m "modelo de nota de falha"
+   ls notas/
+   ```
+
+   Esperado: um modelo pronto. Toda vez que algo quebrar — na sua máquina, no laboratório, no trabalho —, copie este arquivo e preencha. Em um ano você terá um acervo pessoal mais útil do que qualquer curso, porque é feito dos seus erros.
+
+9. **Publique o repositório.**
+
+   ```bash
+   git remote add origin git@github.com:SEU-USUARIO/estudo-linux.git
+   git push -u origin main
+   git log --oneline --stat | head -20
+   ```
+
+   Esperado: repositório publicado. Se preferir mantê-lo privado, mantenha — mas o hábito de publicar o que estuda cria a superfície pública que, mais tarde, vale mais do que um currículo.
+
+10. **Desmonte o laboratório temporário e deixe o permanente de pé.**
+
+    ```bash
+    sudo docker rm -f alvo-lab
+    sudo docker ps -a | tail -2
+    systemctl --user list-timers estudo.timer --no-pager
+    cat ~/estudo-linux/notas/historico.log
+    ```
+
+    Esperado: o contêiner de teste some, e o timer de estudo permanece ativo, com o próximo domingo agendado. É essa a assimetria correta: o laboratório é descartável, a estrutura de estudo não.
+
+## Resumo
+
+- **Você percorreu cinco fases e dezesseis volumes**, do primeiro comando ao kernel. Nomear o que se sabe é parte de saber; a @tbl-mapa-manual serve de inventário.
+- **Três trilhas partem daqui** — infraestrutura, segurança e desenvolvimento de sistemas. Elas não são exclusivas, e o que muda é a profundidade exigida e o tipo de prova que cada mercado aceita.
+- **Certificação não ensina, atesta e organiza.** Mesmo sem prestar a prova, o edital de objetivos é um roteiro de estudo pronto e gratuito. Provas práticas — LFCS, RHCSA, OSCP — valem mais do que múltipla escolha.
+- **O ciclo que fixa conhecimento é construir, quebrar, documentar e ensinar.** Assistir a vídeo sem digitar não fixa; colecionar curso não concluído menos ainda.
+- **O laboratório próprio é o recurso mais valioso e o mais ignorado**, porque é o único em que você projeta o problema em vez de resolver o de outra pessoa.
+- **A documentação instalada na sua máquina corresponde exatamente à versão que você tem** — `man -k`, `apropos` e `/usr/share/doc` continuam servindo depois deste livro.
+- **Na comunidade, a progressão é consumir, participar, contribuir.** Um bug bem reportado — versão exata, reprodução, esperado, observado, log — é contribuição real e ao seu alcance hoje.
+- **Horário fixo bate volume esporádico.** O que é agendado acontece; foi verdade para o `cron` e é verdade para você.
+- **A autorização é a linha que define a carreira em segurança**, e ela não muda com o nível técnico: laboratório próprio ou permissão escrita, sempre.
