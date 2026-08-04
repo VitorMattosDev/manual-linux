@@ -26,6 +26,41 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
 </style>
 
 
@@ -928,8 +963,27 @@ ul.task-list li input[type="checkbox"] {
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Índice</h2>
+   
+  <ul>
+  <li><a href="#o-que-é-dotfile-e-o-que-merece-versionamento" id="toc-o-que-é-dotfile-e-o-que-merece-versionamento" class="nav-link active" data-scroll-target="#o-que-é-dotfile-e-o-que-merece-versionamento"><span class="header-section-number">97.1</span> O que é dotfile, e o que merece versionamento</a></li>
+  <li><a href="#três-estratégias-do-simples-ao-completo" id="toc-três-estratégias-do-simples-ao-completo" class="nav-link" data-scroll-target="#três-estratégias-do-simples-ao-completo"><span class="header-section-number">97.2</span> Três estratégias, do simples ao completo</a>
+  <ul class="collapse">
+  <li><a href="#repositório-com-links-simbólicos" id="toc-repositório-com-links-simbólicos" class="nav-link" data-scroll-target="#repositório-com-links-simbólicos"><span class="header-section-number">97.2.1</span> Repositório com links simbólicos</a></li>
+  <li><a href="#repositório-bare-apontado-para-o-home" id="toc-repositório-bare-apontado-para-o-home" class="nav-link" data-scroll-target="#repositório-bare-apontado-para-o-home"><span class="header-section-number">97.2.2</span> Repositório <em>bare</em> apontado para o home</a></li>
+  <li><a href="#gerenciadores-dedicados" id="toc-gerenciadores-dedicados" class="nav-link" data-scroll-target="#gerenciadores-dedicados"><span class="header-section-number">97.2.3</span> Gerenciadores dedicados</a></li>
+  </ul></li>
+  <li><a href="#segredos-nunca-vão-no-repositório" id="toc-segredos-nunca-vão-no-repositório" class="nav-link" data-scroll-target="#segredos-nunca-vão-no-repositório"><span class="header-section-number">97.3</span> Segredos nunca vão no repositório</a></li>
+  <li><a href="#máquina-específico-sem-duplicar-arquivo" id="toc-máquina-específico-sem-duplicar-arquivo" class="nav-link" data-scroll-target="#máquina-específico-sem-duplicar-arquivo"><span class="header-section-number">97.4</span> Máquina-específico sem duplicar arquivo</a></li>
+  <li><a href="#o-espectro-de-reprodutibilidade" id="toc-o-espectro-de-reprodutibilidade" class="nav-link" data-scroll-target="#o-espectro-de-reprodutibilidade"><span class="header-section-number">97.5</span> O espectro de reprodutibilidade</a></li>
+  <li><a href="#testar-a-reprodutibilidade-ou-não-acreditar-nela" id="toc-testar-a-reprodutibilidade-ou-não-acreditar-nela" class="nav-link" data-scroll-target="#testar-a-reprodutibilidade-ou-não-acreditar-nela"><span class="header-section-number">97.6</span> Testar a reprodutibilidade, ou não acreditar nela</a></li>
+  <li><a href="#no-kali" id="toc-no-kali" class="nav-link" data-scroll-target="#no-kali"><span class="header-section-number">97.7</span> 🐉 No Kali</a></li>
+  <li><a href="#laboratório" id="toc-laboratório" class="nav-link" data-scroll-target="#laboratório"><span class="header-section-number">97.8</span> 🧪 Laboratório</a></li>
+  <li><a href="#resumo" id="toc-resumo" class="nav-link" data-scroll-target="#resumo"><span class="header-section-number">97.9</span> Resumo</a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -953,9 +1007,1391 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
-<p><em>(em elaboracao)</em></p>
+<p>A VM tinha três anos. Dentro dela, quarenta aliases refinados um a um, um <code>.vimrc</code> ajustado ao longo de dezenas de sessões, uma configuração de <code>tmux</code> que ninguém mais entendia mas funcionava perfeitamente, e um punhado de scripts em <code>~/bin</code> que resolviam problemas específicos daquele ambiente. O disco do hospedeiro falhou numa terça-feira. O snapshot mais recente era de quatro meses antes.</p>
+<p>O que se perdeu não foi o Kali — reinstalar leva vinte minutos. O que se perdeu foram três anos de decisões acumuladas, cada uma pequena, todas invisíveis, nenhuma documentada em lugar nenhum a não ser nos próprios arquivos. Esse conjunto é o que se chama de <strong>dotfiles</strong>, e o problema que ele expõe é maior do que backup: é que o ambiente de trabalho de uma pessoa costuma ser a única coisa da infraestrutura que não é reproduzível.</p>
+<p>Este capítulo fecha o volume juntando o que veio antes. A configuração de shell do <a href="cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.html" class="quarto-xref"><span>Capítulo 92</span></a>, o prompt e os plugins do <a href="cap093-zsh-plugins-e-o-prompt-do-kali.html" class="quarto-xref"><span>Capítulo 93</span></a>, as tarefas agendadas do <a href="cap094-automatizando-tarefas-com-cron-e-scripts.html" class="quarto-xref"><span>Capítulo 94</span></a>, o Git do <a href="cap095-controle-de-versao-com-git-na-linha-de-comando.html" class="quarto-xref"><span>Capítulo 95</span></a> e a configuração de editor do <a href="cap096-editores-no-terminal-vim-e-nano.html" class="quarto-xref"><span>Capítulo 96</span></a> são todos dotfiles. Versioná-los e conseguir reconstruí-los numa máquina limpa é o que transforma configuração pessoal em ativo.</p>
+<section id="o-que-é-dotfile-e-o-que-merece-versionamento" class="level2" data-number="97.1">
+<h2 data-number="97.1" class="anchored" data-anchor-id="o-que-é-dotfile-e-o-que-merece-versionamento"><span class="header-section-number">97.1</span> O que é dotfile, e o que merece versionamento</h2>
+<p>Dotfile é qualquer arquivo de configuração no seu diretório pessoal cujo nome começa com ponto — a convenção que o faz não aparecer num <code>ls</code> comum. Na prática o termo cobre também <code>~/.config/</code>, que é onde o padrão XDG concentrou a configuração moderna.</p>
+<p>Vale a pena separar o que existe no seu home em quatro categorias:</p>
+<div id="tbl-o-que-versionar" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-tbl figure">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="tbl-o-que-versionar-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Tabela&nbsp;97.1: O que vai e o que não vai para o repositório de dotfiles
+</figcaption>
+<div aria-describedby="tbl-o-que-versionar-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Categoria</th>
+<th>Exemplos</th>
+<th>Versionar?</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Configuração escrita por você</td>
+<td><code>.zshrc</code>, <code>.vimrc</code>, <code>.tmux.conf</code>, <code>.gitconfig</code></td>
+<td><strong>sim</strong>, é o núcleo</td>
+</tr>
+<tr class="even">
+<td>Estado gerado pelo programa</td>
+<td><code>.zsh_history</code>, <code>.cache/</code>, <code>.local/state/</code></td>
+<td>não; muda toda hora</td>
+</tr>
+<tr class="odd">
+<td>Segredo</td>
+<td><code>.ssh/id_*</code>, <code>.gnupg/</code>, tokens, <code>.netrc</code></td>
+<td><strong>nunca</strong>, em nenhuma hipótese</td>
+</tr>
+<tr class="even">
+<td>Dados de aplicação</td>
+<td><code>.mozilla/</code>, <code>.msf4/</code>, <code>.local/share/</code></td>
+<td>não; é dado, não configuração</td>
+</tr>
+</tbody>
+</table>
+</div>
+</figure>
+</div>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Aviso
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><strong>A regra é lista de inclusão, nunca lista de exclusão.</strong> Dar <code>git init</code> no home e ir adicionando um <code>.gitignore</code> conforme aparecem problemas é o caminho garantido para vazar <code>.ssh/id_ed25519</code> ou <code>.zsh_history</code> cheio de comandos com senha. O <code>.gitignore</code> protege apenas do que você lembrou de listar, e você não vai lembrar de tudo. A abordagem correta é o inverso: um <code>.gitignore</code> com <code>*</code> na primeira linha, e cada arquivo adicionado explicitamente com <code>git add -f</code>. Assim o padrão é “não versionado” e a exceção é deliberada — o que inverte quem paga o preço do esquecimento.</p>
+</div>
+</div>
+</section>
+<section id="três-estratégias-do-simples-ao-completo" class="level2" data-number="97.2">
+<h2 data-number="97.2" class="anchored" data-anchor-id="três-estratégias-do-simples-ao-completo"><span class="header-section-number">97.2</span> Três estratégias, do simples ao completo</h2>
+<section id="repositório-com-links-simbólicos" class="level3" data-number="97.2.1">
+<h3 data-number="97.2.1" class="anchored" data-anchor-id="repositório-com-links-simbólicos"><span class="header-section-number">97.2.1</span> Repositório com links simbólicos</h3>
+<p>O modelo mais comum: os arquivos vivem num repositório em <code>~/.dotfiles</code>, e o home tem links simbólicos (<a href="../vol03/cap016-links-simbolicos-e-hard-links.html" class="quarto-xref"><span>Capítulo 16</span></a>) apontando para lá.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">~/.dotfiles/</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> zsh/.zshrc</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> vim/.vimrc</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> tmux/.tmux.conf</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> git/.gitconfig</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="ex">└──</span> instalar.sh</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O script de instalação cria os links:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co">#!/usr/bin/env bash</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="bu">set</span> <span class="at">-euo</span> pipefail</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="va">raiz</span><span class="op">=</span><span class="st">"</span><span class="va">$(</span><span class="bu">cd</span> <span class="st">"</span><span class="va">$(</span><span class="fu">dirname</span> <span class="st">"</span><span class="va">$0</span><span class="st">"</span><span class="va">)</span><span class="st">"</span> <span class="kw">&amp;&amp;</span> <span class="bu">pwd</span><span class="va">)</span><span class="st">"</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="fu">ligar()</span> <span class="kw">{</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="bu">local</span> <span class="va">origem</span><span class="op">=</span><span class="st">"</span><span class="va">$raiz</span><span class="st">/</span><span class="va">$1</span><span class="st">"</span> <span class="va">destino</span><span class="op">=</span><span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$2</span><span class="st">"</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">[[</span> <span class="ot">-e</span> <span class="va">$origem</span> <span class="kw">]]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">"ausente: </span><span class="va">$origem</span><span class="st">"</span> <span class="op">&gt;&amp;</span><span class="dv">2</span><span class="kw">;</span> <span class="cf">return</span> <span class="dv">1</span><span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="kw">[[</span> <span class="ot">-e</span> <span class="va">$destino</span> <span class="kw">&amp;&amp;</span> <span class="ot">!</span> <span class="ot">-L</span> <span class="va">$destino</span> <span class="kw">]];</span> <span class="cf">then</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>        <span class="fu">mv</span> <span class="at">--</span> <span class="st">"</span><span class="va">$destino</span><span class="st">"</span> <span class="st">"</span><span class="va">$destino</span><span class="st">.pre-dotfiles"</span>     <span class="co"># preserva o que ja existia</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>        <span class="bu">echo</span> <span class="st">"guardado: </span><span class="va">$destino</span><span class="st">.pre-dotfiles"</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">fi</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    <span class="fu">mkdir</span> <span class="at">-p</span> <span class="at">--</span> <span class="st">"</span><span class="va">$(</span><span class="fu">dirname</span> <span class="st">"</span><span class="va">$destino</span><span class="st">"</span><span class="va">)</span><span class="st">"</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ln</span> <span class="at">-sfn</span> <span class="at">--</span> <span class="st">"</span><span class="va">$origem</span><span class="st">"</span> <span class="st">"</span><span class="va">$destino</span><span class="st">"</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>    <span class="bu">echo</span> <span class="st">"ligado: </span><span class="va">$destino</span><span class="st"> -&gt; </span><span class="va">$origem</span><span class="st">"</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="kw">}</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="ex">ligar</span> zsh/.zshrc      .zshrc</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a><span class="ex">ligar</span> vim/.vimrc      .vimrc</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a><span class="ex">ligar</span> tmux/.tmux.conf .tmux.conf</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a><span class="ex">ligar</span> git/.gitconfig  .gitconfig</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A vantagem é que editar o arquivo no home é editar o arquivo no repositório — <code>git status</code> já mostra a mudança, sem passo de sincronização. O <code>mv</code> do arquivo pré-existente é o detalhe que distingue um script educado de um que apaga a configuração da máquina nova sem avisar.</p>
+<p>O <strong>GNU Stow</strong> automatiza exatamente esse padrão, se a estrutura de diretórios espelhar o home:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install stow</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> ~/.dotfiles <span class="kw">&amp;&amp;</span> <span class="ex">stow</span> zsh vim tmux git      <span class="co"># cria todos os links</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">stow</span> <span class="at">-D</span> vim                                   <span class="co"># desfaz os links do vim</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="repositório-bare-apontado-para-o-home" class="level3" data-number="97.2.2">
+<h3 data-number="97.2.2" class="anchored" data-anchor-id="repositório-bare-apontado-para-o-home"><span class="header-section-number">97.2.2</span> Repositório <em>bare</em> apontado para o home</h3>
+<p>Uma alternativa engenhosa que dispensa links: manter o diretório <code>.git</code> separado e dizer ao Git que a árvore de trabalho é o próprio home.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> init <span class="at">--bare</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/.dotfiles-git"</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="bu">alias</span> dot=<span class="st">'git --git-dir=$HOME/.dotfiles-git --work-tree=$HOME'</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">dot</span> config status.showUntrackedFiles no      <span class="co"># ESSENCIAL: nao lista o home inteiro</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">dot</span> add <span class="at">-f</span> ~/.zshrc ~/.vimrc ~/.tmux.conf</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">dot</span> commit <span class="at">-m</span> <span class="st">"dotfiles iniciais"</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">dot</span> remote add origin git@servidor:dotfiles.git</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">dot</span> push <span class="at">-u</span> origin main</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O <code>status.showUntrackedFiles no</code> é obrigatório: sem ele, <code>dot status</code> tenta listar todo o seu diretório pessoal. E <code>dot add</code> exige <code>-f</code> para cada arquivo, o que na prática já implementa a lista de inclusão do quadro de aviso.</p>
+<p>A vantagem é não haver links nem cópia — o arquivo real é o arquivo versionado. A desvantagem é que um <code>git</code> digitado por engano dentro do home, sem o alias, se comporta de forma inesperada.</p>
+</section>
+<section id="gerenciadores-dedicados" class="level3" data-number="97.2.3">
+<h3 data-number="97.2.3" class="anchored" data-anchor-id="gerenciadores-dedicados"><span class="header-section-number">97.2.3</span> Gerenciadores dedicados</h3>
+<p><code>chezmoi</code> e <code>yadm</code> resolvem os dois problemas que as abordagens caseiras não cobrem bem: <strong>variação por máquina</strong> e <strong>segredos</strong>.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install chezmoi        <span class="co"># ou: sh -c "$(curl -fsLS get.chezmoi.io)"</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">chezmoi</span> init <span class="at">--apply</span> git@servidor:dotfiles.git</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="ex">chezmoi</span> add ~/.zshrc            <span class="co"># traz um arquivo para o controle</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="ex">chezmoi</span> edit ~/.zshrc           <span class="co"># edita a fonte</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="ex">chezmoi</span> diff                    <span class="co"># o que mudaria no home</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="ex">chezmoi</span> apply                   <span class="co"># aplica</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O <code>chezmoi</code> trata os arquivos como modelos, o que permite um único <code>.gitconfig</code> que rende conteúdo diferente por máquina:</p>
+<pre><code>[user]
+    name = Seu Nome
+{{ if eq .chezmoi.hostname "kali-lab" }}
+    email = lab@exemplo.local
+{{ else }}
+    email = voce@empresa.com
+{{ end }}</code></pre>
+<p>E integra com gerenciadores de segredo (<code>pass</code>, <code>age</code>, Bitwarden), de modo que o repositório guarda a <em>referência</em> ao segredo, nunca o segredo.</p>
+<div id="tbl-estrategias-dotfiles" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-tbl figure">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="tbl-estrategias-dotfiles-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Tabela&nbsp;97.2: Comparação entre as estratégias de gerenciamento de dotfiles
+</figcaption>
+<div aria-describedby="tbl-estrategias-dotfiles-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Estratégia</th>
+<th>Melhor para</th>
+<th>Custo</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Links simbólicos + script</td>
+<td>começar; controle total</td>
+<td>você escreve o script</td>
+</tr>
+<tr class="even">
+<td>GNU Stow</td>
+<td>mesma coisa, sem escrever script</td>
+<td>estrutura de diretórios rígida</td>
+</tr>
+<tr class="odd">
+<td>Repositório <em>bare</em></td>
+<td>não gostar de links</td>
+<td><code>git</code> sem alias no home confunde</td>
+</tr>
+<tr class="even">
+<td><code>chezmoi</code> / <code>yadm</code></td>
+<td>várias máquinas e segredos</td>
+<td>aprender a ferramenta</td>
+</tr>
+</tbody>
+</table>
+</div>
+</figure>
+</div>
+</section>
+</section>
+<section id="segredos-nunca-vão-no-repositório" class="level2" data-number="97.3">
+<h2 data-number="97.3" class="anchored" data-anchor-id="segredos-nunca-vão-no-repositório"><span class="header-section-number">97.3</span> Segredos nunca vão no repositório</h2>
+<p>Vale repetir o que o <a href="cap095-controle-de-versao-com-git-na-linha-de-comando.html" class="quarto-xref"><span>Capítulo 95</span></a> estabeleceu, porque em dotfiles a tentação é maior: chave privada, token de API, senha de banco e <code>.netrc</code> <strong>não entram no Git</strong>, nem em repositório privado. Repositório privado vira público por engano com frequência incômoda, e um commit é permanente mesmo depois de removido.</p>
+<p>As alternativas, em ordem de simplicidade:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. arquivo local, fora do repositorio, carregado se existir</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="kw">[[</span> <span class="ot">-r</span> ~/.zshrc.local <span class="kw">]]</span> <span class="kw">&amp;&amp;</span> <span class="bu">source</span> ~/.zshrc.local</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. gerenciador de senhas na linha de comando, com GPG (@sec-cap086)</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install pass</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="ex">pass</span> init <span class="st">"SUA-CHAVE-GPG"</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="ex">pass</span> insert api/servico</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">TOKEN</span><span class="op">=</span><span class="va">$(</span><span class="ex">pass</span> show api/servico<span class="va">)</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="co"># 3. criptografia por arquivo dentro do repositorio</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install age</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="ex">age</span> <span class="at">-e</span> <span class="at">-r</span> <span class="st">"chave-publica"</span> <span class="at">-o</span> segredo.age segredo.env</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O padrão do <code>~/.zshrc.local</code> é o de melhor relação custo-benefício e resolve 90% dos casos: o repositório guarda a estrutura, a máquina guarda o segredo, e a linha que carrega um se existir é a única ponte.</p>
+</section>
+<section id="máquina-específico-sem-duplicar-arquivo" class="level2" data-number="97.4">
+<h2 data-number="97.4" class="anchored" data-anchor-id="máquina-específico-sem-duplicar-arquivo"><span class="header-section-number">97.4</span> Máquina-específico sem duplicar arquivo</h2>
+<p>Nem tudo é igual em todas as máquinas. O padrão que evita manter três versões do mesmo <code>.zshrc</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># no ~/.zshrc versionado</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="cf">case</span> <span class="st">"</span><span class="va">$(</span><span class="fu">hostname</span><span class="va">)</span><span class="st">"</span> <span class="kw">in</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="ss">kali-lab</span><span class="kw">)</span>  <span class="bu">export</span> <span class="va">PROMPT_COR</span><span class="op">=</span>red   <span class="cf">;;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    <span class="ss">servidor</span><span class="pp">*</span><span class="kw">)</span> <span class="bu">export</span> <span class="va">PROMPT_COR</span><span class="op">=</span>green <span class="cf">;;</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="cf">esac</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="kw">[[</span> <span class="ot">-f</span> /etc/os-release <span class="kw">]]</span> <span class="kw">&amp;&amp;</span> <span class="bu">.</span> /etc/os-release</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a><span class="cf">case</span> <span class="st">"</span><span class="va">${ID</span><span class="op">:-</span><span class="va">}</span><span class="st">"</span> <span class="kw">in</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    <span class="ss">kali</span><span class="kw">|</span><span class="ss">debian</span><span class="kw">|</span><span class="ss">ubuntu</span><span class="kw">)</span> <span class="bu">alias</span> instalar=<span class="st">'sudo apt install'</span>  <span class="cf">;;</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    <span class="ss">fedora</span><span class="kw">|</span><span class="ss">rhel</span><span class="kw">|</span><span class="ss">centos</span><span class="kw">)</span> <span class="bu">alias</span> instalar=<span class="st">'sudo dnf install'</span>  <span class="cf">;;</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="cf">esac</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="bu">command</span> <span class="at">-v</span> bat <span class="op">&gt;</span>/dev/null <span class="kw">&amp;&amp;</span> <span class="bu">alias</span> cat=<span class="st">'bat --paging=never'</span>   <span class="co"># so se existir</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O último padrão — testar se o comando existe antes de criar o alias — é o que faz um dotfile sobreviver a máquinas onde nem tudo está instalado. Um <code>.zshrc</code> que assume ferramentas presentes cospe erro na abertura de todo terminal da máquina que não as tem.</p>
+</section>
+<section id="o-espectro-de-reprodutibilidade" class="level2" data-number="97.5">
+<h2 data-number="97.5" class="anchored" data-anchor-id="o-espectro-de-reprodutibilidade"><span class="header-section-number">97.5</span> O espectro de reprodutibilidade</h2>
+<p>Dotfiles são o primeiro degrau, não o único. Vale saber onde eles ficam no espectro, e o que cada degrau acima acrescenta.</p>
+<div id="fig-espectro-reprodutibilidade" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-espectro-reprodutibilidade-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xlink="http://www.w3.org/1999/xlink" width="472.51202pt" height="283.428154pt" viewbox="-68.014948 -68.014946 472.51202 283.428154">
+<defs>
+<path id="tz_espectro_reprodutibilidade_g0-12" d="M2.908095-3.124284C2.901121-3.11731 2.901121-3.110336 2.901121-3.096389H1.638854V-3.737983C1.638854-4.553923 2.726775-4.560897 2.894147-4.560897C2.977833-4.560897 3.20797-4.560897 3.417186-4.456289C3.319552-4.407472 3.180075-4.267995 3.180075-4.02391C3.180075-3.737983 3.396264-3.528767 3.675218-3.528767C3.96812-3.528767 4.177335-3.731009 4.177335-4.030884C4.177335-4.393524 3.870486-4.881694 2.970859-4.881694C2.064259-4.881694 .850809-4.637609 .850809-3.758904V-3.096389H.27198V-2.705853H.850809V-.390535H.383562V0C.404483 0 .948443-.027895 1.26924-.027895C1.610959-.027895 2.133998 0 2.154919 0V-.390535H1.687671V-2.705853H3.159153C3.326526-2.705853 3.368369-2.705853 3.368369-2.461768V-.390535H2.901121V0C2.922042 0 3.466002-.027895 3.7868-.027895C4.128518-.027895 4.651557 0 4.672478 0V-.390535H4.20523V-3.166127L2.908095-3.124284Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-47" d="M3.940224-4.818929C3.982067-4.909589 3.982067-4.96538 3.982067-4.972354C3.982067-5.118804 3.870486-5.230386 3.724035-5.230386C3.563636-5.230386 3.500872-5.090909 3.472976-5.035118L.564882 1.332005C.523039 1.422665 .523039 1.478456 .523039 1.48543C.523039 1.63188 .63462 1.743462 .781071 1.743462C.941469 1.743462 1.004234 1.603985 1.03213 1.548194L3.940224-4.818929Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-65" d="M3.758904-4.714321C3.668244-4.909589 3.584558-4.909589 3.375342-4.909589C3.159153-4.909589 3.075467-4.909589 2.984807-4.714321L1.108842-.516065C1.066999-.432379 1.060025-.425405 .885679-.404483C.753176-.390535 .683437-.390535 .564882-.390535H.355666V0C.383562 0 .913574-.027895 1.227397-.027895C1.534247-.027895 2.182814 0 2.217684 0V-.390535C2.196762-.390535 1.617933-.390535 1.617933-.446326C1.617933-.4533 1.645828-.509091 1.652802-.523039L2.02939-1.366874H4.156413L4.595766-.390535H3.96812V0C4.33076-.027895 4.867746-.027895 5.23736-.027895C5.669738-.027895 6.290411-.006974 6.388045 0V-.390535H5.697634L3.758904-4.714321ZM3.089415-3.737983L3.982067-1.75741H2.203736L3.089415-3.737983Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-71" d="M5.969614-1.527273H6.590286V-1.917808C6.485679-1.910834 5.837111-1.889913 5.404732-1.889913C5.125778-1.889913 4.839851-1.896887 4.553923-1.896887C4.351681-1.896887 4.002989-1.903861 3.800747-1.917808V-1.527273H4.916563V-.878705C4.916563-.697385 4.916563-.306849 3.870486-.306849C3.556663-.306849 2.789539-.334745 2.238605-.801993C1.910834-1.080946 1.659776-1.520299 1.659776-2.399004C1.659776-3.103362 1.820174-3.612453 2.189788-3.961146C2.650062-4.38655 3.340473-4.47721 3.772852-4.47721C4.553923-4.47721 5.293151-4.002989 5.467497-3.103362C5.495392-2.956912 5.502366-2.93599 5.697634-2.93599H5.746451C5.948692-2.93599 5.969614-2.956912 5.969614-3.159153V-4.644583C5.969614-4.78406 5.969614-4.867746 5.809215-4.867746C5.725529-4.867746 5.711582-4.860772 5.641843-4.798007L5.174595-4.393524C4.470237-4.867746 3.828643-4.867746 3.605479-4.867746C1.590037-4.867746 .523039-3.737983 .523039-2.39203C.523039-1.26924 1.325031 .083686 3.668244 .083686C4.044832 .083686 4.853798 .069738 5.209465-.292902C5.369863-.18132 5.788294 0 5.844085 0C5.969614 0 5.969614-.118555 5.969614-.223163V-1.527273Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-94" d="M2.252553-4.839851L1.025156-3.989041L1.262267-3.619427L2.252553-4.191283L3.242839-3.619427L3.47995-3.989041L2.252553-4.839851Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-97" d="M3.682192-2.057285C3.682192-2.629141 3.221918-3.159153 1.966625-3.159153C1.562142-3.159153 .585803-3.159153 .585803-2.468742C.585803-2.161893 .808966-1.980573 1.066999-1.980573C1.373848-1.980573 1.555168-2.196762 1.555168-2.461768C1.555168-2.615193 1.492403-2.719801 1.471482-2.740722C1.457534-2.761644 1.45056-2.775592 1.45056-2.789539C1.45056-2.824408 1.896887-2.838356 1.945704-2.838356C2.433873-2.838356 2.796513-2.643088 2.796513-2.050311V-1.862017C2.454795-1.862017 .285928-1.834122 .285928-.801993C.285928-.153425 1.053051 .041843 1.750436 .041843C2.489664 .041843 2.817435-.292902 2.93599-.474222C2.93599-.174346 3.124284 0 3.696139 0H4.107597C4.2401 0 4.351681 0 4.351681-.195268S4.247073-.390535 4.100623-.390535C3.682192-.390535 3.682192-.446326 3.682192-.606725V-2.057285ZM2.796513-.955417C2.796513-.808966 2.796513-.606725 2.524533-.439352C2.259527-.278954 1.931756-.278954 1.889913-.278954C1.499377-.278954 1.164633-.495143 1.164633-.808966C1.164633-1.380822 2.099128-1.569116 2.796513-1.590037V-.955417Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-98" d="M1.687671-4.839851L.383562-4.78406V-4.393524C.795019-4.393524 .850809-4.393524 .850809-4.121544V0H1.164633C1.276214 0 1.283188-.006974 1.318057-.034869C1.380822-.111582 1.520299-.306849 1.583064-.383562C2.050311 .013948 2.510585 .041843 2.740722 .041843C3.940224 .041843 4.672478-.63462 4.672478-1.555168C4.672478-2.399004 4.051806-3.138232 2.838356-3.138232C2.39203-3.138232 2.001494-3.019676 1.687671-2.824408V-4.839851ZM1.736488-2.378082C1.931756-2.615193 2.30137-2.817435 2.740722-2.817435C3.703113-2.817435 3.703113-1.994521 3.703113-1.569116C3.703113-1.136737 3.703113-.278954 2.657036-.278954C2.280448-.278954 1.966625-.4533 1.736488-.781071V-2.378082Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-99" d="M3.731009-.795019C3.731009-.920548 3.612453-.920548 3.507846-.920548C3.347447-.920548 3.333499-.913574 3.284682-.808966C3.180075-.578829 2.956912-.313823 2.419925-.313823C1.297136-.313823 1.297136-1.290162 1.297136-1.57609C1.297136-2.099128 1.380822-2.803487 2.315318-2.803487C2.357161-2.803487 2.75467-2.796513 2.75467-2.768618C2.75467-2.75467 2.747696-2.747696 2.740722-2.740722C2.726775-2.719801 2.66401-2.615193 2.66401-2.461768C2.66401-2.175841 2.873225-1.980573 3.145205-1.980573C3.431133-1.980573 3.633375-2.175841 3.633375-2.468742C3.633375-3.138232 2.698879-3.159153 2.294396-3.159153C.739228-3.159153 .327771-2.196762 .327771-1.548194C.327771-.732254 .934496 .041843 2.252553 .041843C2.594271 .041843 2.949938-.013948 3.228892-.174346C3.626401-.411457 3.731009-.753176 3.731009-.795019Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-100" d="M2.84533-4.78406V-4.393524C3.256787-4.393524 3.312578-4.393524 3.312578-4.121544V-2.84533C2.880199-3.110336 2.489664-3.138232 2.259527-3.138232C1.011208-3.138232 .327771-2.426899 .327771-1.54122C.327771-.676463 .976339 .041843 2.168867 .041843C2.615193 .041843 2.984807-.097634 3.263761-.292902V.041843L4.616687 0V-.390535C4.20523-.390535 4.14944-.390535 4.14944-.662516V-4.839851L2.84533-4.78406ZM3.263761-.808966C3.103362-.578829 2.761644-.278954 2.252553-.278954C1.297136-.278954 1.297136-1.115816 1.297136-1.527273C1.297136-1.959651 1.297136-2.817435 2.343213-2.817435C2.929016-2.817435 3.242839-2.426899 3.263761-2.399004V-.808966Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-101" d="M3.598506-1.45056C3.744956-1.45056 3.84259-1.45056 3.84259-1.659776C3.84259-1.862017 3.793773-2.385056 3.459029-2.726775C3.082441-3.103362 2.566376-3.159153 2.182814-3.159153C.892653-3.159153 .278954-2.39203 .278954-1.569116C.278954-.739228 .920548 .041843 2.30137 .041843C2.552428 .041843 2.956912 .013948 3.305604-.174346C3.717061-.390535 3.84259-.72528 3.84259-.795019C3.84259-.948443 3.689166-.948443 3.619427-.948443C3.493898-.948443 3.459029-.941469 3.403238-.829888C3.152179-.313823 2.517559-.313823 2.399004-.313823C1.297136-.313823 1.262267-1.129763 1.248319-1.45056H3.598506ZM1.248319-1.743462C1.255293-2.015442 1.290162-2.838356 2.189788-2.838356S3.138232-2.043337 3.152179-1.743462H1.248319Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-103" d="M1.659776-.620672C1.415691-.620672 1.318057-.620672 1.199502-.718306C1.129763-.774097 1.039103-.878705 1.039103-1.046077C1.039103-1.08792 1.039103-1.164633 1.08792-1.227397C1.45056-1.053051 1.855044-1.053051 2.001494-1.053051C3.180075-1.053051 3.528767-1.66675 3.528767-2.092154C3.528767-2.447821 3.312578-2.684932 3.249813-2.740722C3.361395-2.782565 3.521793-2.831382 3.668244-2.84533C3.654296-2.810461 3.647323-2.75467 3.647323-2.712827C3.647323-2.461768 3.856538-2.357161 3.996015-2.357161C4.156413-2.357161 4.351681-2.475716 4.351681-2.712827C4.351681-2.929016 4.177335-3.180075 3.828643-3.180075C3.542715-3.180075 3.228892-3.068493 3.019676-2.915068C2.608219-3.138232 2.168867-3.138232 2.001494-3.138232C.864757-3.138232 .481196-2.545455 .481196-2.099128C.481196-1.701619 .72528-1.478456 .850809-1.373848C.690411-1.17858 .627646-.976339 .627646-.760149C.627646-.502117 .72528-.27198 .9066-.09066C.662516-.034869 .278954 .139477 .278954 .502117C.278954 .920548 .767123 1.401743 2.252553 1.401743C3.535741 1.401743 4.226152 1.03213 4.226152 .481196C4.226152 .341719 4.20523-.160399 3.626401-.432379C3.20797-.620672 2.747696-.620672 2.036364-.620672H1.659776ZM2.001494-1.373848C1.311083-1.373848 1.311083-1.820174 1.311083-2.092154C1.311083-2.371108 1.311083-2.817435 2.001494-2.817435C2.698879-2.817435 2.698879-2.378082 2.698879-2.099128C2.698879-1.8132 2.698879-1.373848 2.001494-1.373848ZM2.461768 .132503C2.636115 .132503 3.542715 .132503 3.542715 .502117C3.542715 .732254 3.249813 1.080946 2.252553 1.080946C1.297136 1.080946 .962391 .753176 .962391 .495143C.962391 .132503 1.443587 .132503 1.534247 .132503H2.461768Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-104" d="M4.267995-2.099128C4.267995-2.956912 3.717061-3.138232 3.075467-3.138232C2.30137-3.138232 1.910834-2.719801 1.750436-2.48269V-4.839851L.446326-4.78406V-4.393524C.857783-4.393524 .913574-4.393524 .913574-4.121544V-.390535H.446326V0C.4533 0 1.018182-.027895 1.352927-.027895C1.694645-.027895 2.259527 0 2.266501 0V-.390535H1.799253V-1.736488C1.799253-2.545455 2.524533-2.817435 2.942964-2.817435C3.249813-2.817435 3.382316-2.657036 3.382316-2.154919V-.390535H2.915068V0C2.922042 0 3.486924-.027895 3.821669-.027895C4.163387-.027895 4.728269 0 4.735243 0V-.390535H4.267995V-2.099128Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-105" d="M1.827148-4.274969C1.827148-4.609714 1.555168-4.846824 1.262267-4.846824C.927522-4.846824 .690411-4.574844 .690411-4.281943C.690411-3.947198 .962391-3.710087 1.255293-3.710087C1.590037-3.710087 1.827148-3.982067 1.827148-4.274969ZM.488169-3.082441V-2.691905C.885679-2.691905 .934496-2.691905 .934496-2.419925V-.390535H.467248V0C.481196 0 1.03213-.027895 1.345953-.027895C1.63188-.027895 1.910834-.020922 2.196762 0V-.390535H1.771357V-3.138232L.488169-3.082441Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-108" d="M1.771357-4.839851L.467248-4.78406V-4.393524C.878705-4.393524 .934496-4.393524 .934496-4.121544V-.390535H.467248V0C.488169 0 1.03213-.027895 1.352927-.027895C1.694645-.027895 2.217684 0 2.238605 0V-.390535H1.771357V-4.839851Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-109" d="M6.750685-2.099128C6.750685-2.970859 6.171856-3.138232 5.558157-3.138232C4.888667-3.138232 4.463263-2.824408 4.233126-2.48269C4.05878-3.089415 3.459029-3.138232 3.082441-3.138232C2.245579-3.138232 1.84807-2.650062 1.708593-2.412951V-3.138232L.446326-3.082441V-2.691905C.857783-2.691905 .913574-2.691905 .913574-2.419925V-.390535H.446326V0C.4533 0 1.018182-.027895 1.352927-.027895C1.694645-.027895 2.259527 0 2.266501 0V-.390535H1.799253V-1.736488C1.799253-2.559402 2.545455-2.817435 2.942964-2.817435C3.256787-2.817435 3.38929-2.66401 3.38929-2.147945V-.390535H2.922042V0C2.929016 0 3.493898-.027895 3.828643-.027895C4.170361-.027895 4.735243 0 4.742217 0V-.390535H4.274969V-1.736488C4.274969-2.559402 5.021171-2.817435 5.41868-2.817435C5.732503-2.817435 5.865006-2.66401 5.865006-2.147945V-.390535H5.397758V0C5.404732 0 5.969614-.027895 6.304359-.027895C6.646077-.027895 7.210959 0 7.217933 0V-.390535H6.750685V-2.099128Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-110" d="M4.267995-2.099128C4.267995-2.956912 3.717061-3.138232 3.075467-3.138232C2.231631-3.138232 1.841096-2.636115 1.708593-2.412951V-3.138232L.446326-3.082441V-2.691905C.857783-2.691905 .913574-2.691905 .913574-2.419925V-.390535H.446326V0C.4533 0 1.018182-.027895 1.352927-.027895C1.694645-.027895 2.259527 0 2.266501 0V-.390535H1.799253V-1.736488C1.799253-2.545455 2.524533-2.817435 2.942964-2.817435C3.249813-2.817435 3.382316-2.657036 3.382316-2.154919V-.390535H2.915068V0C2.922042 0 3.486924-.027895 3.821669-.027895C4.163387-.027895 4.728269 0 4.735243 0V-.390535H4.267995V-2.099128Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-111" d="M4.226152-1.520299C4.226152-2.350187 3.619427-3.159153 2.252553-3.159153C.871731-3.159153 .278954-2.343213 .278954-1.520299C.278954-.704359 .899626 .041843 2.252553 .041843C3.612453 .041843 4.226152-.711333 4.226152-1.520299ZM2.252553-.313823C1.248319-.313823 1.248319-1.004234 1.248319-1.603985C1.248319-2.161893 1.248319-2.838356 2.252553-2.838356S3.256787-2.161893 3.256787-1.603985C3.256787-1.004234 3.256787-.313823 2.252553-.313823Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-112" d="M2.203736 .962391H1.736488V-.258032C1.910834-.139477 2.252553 .041843 2.740722 .041843C3.940224 .041843 4.672478-.63462 4.672478-1.555168C4.672478-2.399004 4.065753-3.138232 2.880199-3.138232C2.517559-3.138232 2.092154-3.068493 1.687671-2.817435V-3.138232L.383562-3.082441V-2.691905C.502117-2.691905 .641594-2.691905 .732254-2.677958C.850809-2.657036 .850809-2.580324 .850809-2.447821V.962391H.383562V1.352927C.390535 1.352927 .955417 1.325031 1.290162 1.325031C1.63188 1.325031 2.196762 1.352927 2.203736 1.352927V.962391ZM1.736488-2.231631C1.736488-2.364134 1.743462-2.371108 1.841096-2.461768C2.175841-2.75467 2.587298-2.782565 2.733748-2.782565C3.326526-2.782565 3.703113-2.308344 3.703113-1.555168C3.703113-.648568 3.180075-.278954 2.650062-.278954S1.820174-.655542 1.736488-.774097V-2.231631Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-114" d="M1.687671-1.464508C1.687671-2.092154 1.973599-2.782565 2.601245-2.817435C2.594271-2.810461 2.503611-2.691905 2.503611-2.517559C2.503611-2.245579 2.698879-2.043337 2.977833-2.043337S3.452055-2.245579 3.452055-2.517559C3.452055-2.901121 3.061519-3.138232 2.629141-3.138232C2.127024-3.138232 1.792279-2.803487 1.603985-2.371108H1.597011V-3.138232L.383562-3.082441V-2.691905C.795019-2.691905 .850809-2.691905 .850809-2.419925V-.390535H.383562V0C.411457 0 .948443-.027895 1.276214-.027895C1.548194-.027895 2.224658 0 2.273474 0V-.390535H1.687671V-1.464508Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-115" d="M3.012702-2.93599C3.012702-3.075467 3.012702-3.159153 2.84533-3.159153C2.796513-3.159153 2.775592-3.159153 2.66401-3.103362C2.650062-3.096389 2.559402-3.054545 2.531507-3.054545C2.524533-3.054545 2.510585-3.054545 2.48269-3.068493C2.196762-3.159153 1.903861-3.159153 1.75741-3.159153C1.555168-3.159153 1.129763-3.159153 .781071-2.970859C.383562-2.747696 .327771-2.385056 .327771-2.224658C.327771-1.471482 1.248319-1.332005 1.736488-1.255293C2.161893-1.192528 2.670984-1.115816 2.670984-.753176C2.670984-.278954 1.980573-.278954 1.8132-.278954C1.150685-.278954 .9066-.578829 .774097-.955417C.732254-1.073973 .72528-1.08792 .550934-1.08792C.348692-1.08792 .327771-1.066999 .327771-.864757V-.18132C.327771-.041843 .327771 .041843 .488169 .041843C.550934 .041843 .564882 .041843 .711333-.048817C.753176-.069738 .864757-.132503 .9066-.160399C1.26924 .041843 1.645828 .041843 1.806227 .041843C2.036364 .041843 3.235866 .041843 3.235866-.990286C3.235866-1.311083 3.068493-1.534247 2.908095-1.66675C2.580324-1.93873 2.280448-1.987547 1.701619-2.078207C1.30411-2.140971 .892653-2.203736 .892653-2.48269C.892653-2.873225 1.590037-2.873225 1.736488-2.873225C2.524533-2.873225 2.552428-2.552428 2.57335-2.385056C2.587298-2.245579 2.629141-2.231631 2.789539-2.231631C2.991781-2.231631 3.012702-2.252553 3.012702-2.454795V-2.93599Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-116" d="M1.708593-2.705853H2.84533V-3.096389H1.708593V-4.428394H1.26924C1.262267-3.779826 .934496-3.047572 .195268-3.02665V-2.705853H.822914V-.843836C.822914-.153425 1.387796 .041843 1.994521 .041843C2.545455 .041843 2.991781-.278954 2.991781-.843836V-1.206476H2.552428V-.871731C2.552428-.390535 2.259527-.313823 2.12005-.313823C1.715567-.313823 1.708593-.655542 1.708593-.843836V-2.705853Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-117" d="M2.915068-3.082441V-2.691905C3.326526-2.691905 3.382316-2.691905 3.382316-2.419925V-1.129763C3.382316-.550934 2.93599-.278954 2.405978-.278954C1.806227-.278954 1.799253-.432379 1.799253-.767123V-3.138232L.446326-3.082441V-2.691905C.857783-2.691905 .913574-2.691905 .913574-2.419925V-.843836C.913574-.034869 1.687671 .041843 2.287422 .041843C2.517559 .041843 3.033624 .041843 3.431133-.4533V.041843L4.735243 0V-.390535C4.323786-.390535 4.267995-.390535 4.267995-.662516V-3.138232L2.915068-3.082441Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-119" d="M5.78132-2.57335C5.830137-2.670984 5.837111-2.677958 5.955666-2.691905C6.060274-2.705853 6.116065-2.705853 6.255542-2.705853V-3.096389C6.067248-3.082441 5.87198-3.068493 5.683686-3.068493C5.439601-3.068493 5.202491-3.075467 4.958406-3.096389V-2.705853C5.167621-2.705853 5.223412-2.691905 5.334994-2.66401L4.519054-.774097L3.682192-2.705853H4.030884V-3.096389C4.009963-3.096389 3.500872-3.068493 3.20797-3.068493C2.998755-3.068493 2.712827-3.075467 2.503611-3.096389V-2.705853H2.922042C2.998755-2.545455 2.998755-2.531507 2.998755-2.510585S2.977833-2.440847 2.970859-2.426899L2.329265-.948443L1.562142-2.705853H1.917808V-3.096389C1.617933-3.082441 1.311083-3.068493 1.011208-3.068493C.746202-3.068493 .27198-3.096389 .230137-3.096389V-2.705853H.648568L1.75741-.146451C1.841096 .041843 1.945704 .041843 2.106102 .041843C2.259527 .041843 2.378082 .041843 2.461768-.146451L3.242839-1.959651L4.02391-.153425C4.107597 .041843 4.212204 .041843 4.379577 .041843C4.539975 .041843 4.644583 .041843 4.728269-.146451L5.78132-2.57335Z"></path>
+<path id="tz_espectro_reprodutibilidade_g0-122" d="M3.514819-2.740722C3.584558-2.817435 3.584558-2.859278 3.584558-2.915068C3.584558-3.096389 3.466002-3.096389 3.340473-3.096389H.495143L.397509-1.868991H.836862C.892653-2.622167 1.21345-2.775592 1.862017-2.775592H2.440847L.36264-.383562C.278954-.292902 .278954-.278954 .278954-.195268C.278954 0 .390535 0 .523039 0H3.472976L3.612453-1.415691H3.173101C3.103362-.662516 2.880199-.355666 2.057285-.355666H1.429639L3.514819-2.740722Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-12" d="M2.719801-3.02665C2.643088-3.019676 2.608219-3.019676 2.594271-3.012702S2.566376-3.005729 2.468742-3.005729H1.3599V-3.765878C1.3599-4.456289 2.078207-4.714321 2.559402-4.714321C2.796513-4.714321 3.033624-4.665504 3.214944-4.519054C2.963885-4.463263 2.942964-4.267995 2.942964-4.184309C2.942964-3.96812 3.11731-3.84259 3.284682-3.84259C3.410212-3.84259 3.626401-3.926276 3.626401-4.198257C3.626401-4.581818 3.235866-4.909589 2.587298-4.909589C1.862017-4.909589 .864757-4.581818 .864757-3.772852V-3.005729H.265006V-2.75467H.864757V-.550934C.864757-.251059 .795019-.251059 .341719-.251059V0C.355666 0 .843836-.027895 1.12279-.027895C1.387796-.027895 1.645828-.020922 1.910834 0V-.251059C1.457534-.251059 1.387796-.251059 1.387796-.550934V-2.75467H2.775592C3.061519-2.75467 3.11731-2.684932 3.11731-2.378082V-.550934C3.11731-.251059 3.047572-.251059 2.594271-.251059V0C2.608219 0 3.096389-.027895 3.375342-.027895C3.640349-.027895 3.898381-.020922 4.163387 0V-.251059C3.710087-.251059 3.640349-.251059 3.640349-.550934V-3.089415L2.719801-3.02665Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-16" d="M1.436613-3.075467L.411457-2.998755V-2.747696C.850809-2.747696 .913574-2.705853 .913574-2.364134V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.404483 0 .892653-.027895 1.171606-.027895C1.415691-.027895 1.66675-.020922 1.910834 0V-.251059C1.506351-.251059 1.436613-.251059 1.436613-.54396V-3.075467Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-19" d="M1.799253-3.528767C2.343213-3.926276 2.768618-4.219178 2.901121-4.323786C3.012702-4.400498 3.075467-4.449315 3.075467-4.581818S2.956912-4.867746 2.789539-4.867746C2.677958-4.867746 2.622167-4.804981 2.552428-4.728269L1.638854-3.710087L1.799253-3.528767Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-24" d="M2.259527 .139477H1.708593V.481196C2.175841 .488169 2.350187 .662516 2.350187 .850809C2.350187 1.12279 1.987547 1.227397 1.311083 1.227397H1.060025V1.422665H1.401743C1.408717 1.422665 1.966625 1.422665 2.322291 1.345953C2.608219 1.283188 2.901121 1.164633 2.901121 .850809C2.901121 .571856 2.691905 .390535 2.259527 .320797V.139477Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-44" d="M1.415691-.111582C1.415691 .083686 1.415691 .669489 .871731 1.164633C.843836 1.192528 .822914 1.21345 .822914 1.248319C.822914 1.290162 .871731 1.352927 .920548 1.352927C1.011208 1.352927 1.610959 .801993 1.610959-.041843C1.610959-.460274 1.45056-.801993 1.12279-.801993C.878705-.801993 .72528-.613699 .72528-.397509C.72528-.230137 .836862 0 1.129763 0C1.30411 0 1.408717-.104608 1.415691-.111582Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-45" d="M2.189788-1.262267V-1.736488H.139477V-1.262267H2.189788Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-46" d="M1.527273-.397509C1.527273-.641594 1.332005-.801993 1.129763-.801993C.885679-.801993 .72528-.606725 .72528-.404483C.72528-.160399 .920548 0 1.12279 0C1.366874 0 1.527273-.195268 1.527273-.397509Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-58" d="M1.527273-2.601245C1.527273-2.84533 1.332005-3.005729 1.129763-3.005729C.885679-3.005729 .72528-2.810461 .72528-2.608219C.72528-2.364134 .920548-2.203736 1.12279-2.203736C1.366874-2.203736 1.527273-2.399004 1.527273-2.601245ZM1.527273-.397509C1.527273-.641594 1.332005-.801993 1.129763-.801993C.885679-.801993 .72528-.606725 .72528-.404483C.72528-.160399 .920548 0 1.12279 0C1.366874 0 1.527273-.195268 1.527273-.397509Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-65" d="M3.131258-4.811955C3.089415-4.923537 3.068493-4.972354 2.93599-4.972354S2.782565-4.923537 2.740722-4.811955L1.129763-.732254C1.060025-.557908 .941469-.251059 .313823-.251059V0C.550934-.020922 .795019-.027895 1.03213-.027895C1.311083-.027895 1.827148 0 1.868991 0V-.251059C1.562142-.251059 1.366874-.390535 1.366874-.585803C1.366874-.641594 1.373848-.655542 1.401743-.72528L1.736488-1.583064H3.717061L4.121544-.564882C4.135492-.530012 4.156413-.481196 4.156413-.446326C4.156413-.251059 3.779826-.251059 3.591532-.251059V0C3.940224-.013948 4.38655-.027895 4.630635-.027895C4.958406-.027895 5.481445-.006974 5.558157 0V-.251059H5.41868C4.951432-.251059 4.902615-.320797 4.825903-.516065L3.131258-4.811955ZM2.726775-4.100623L3.619427-1.834122H1.834122L2.726775-4.100623Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-67" d="M5.188543-4.721295C5.188543-4.839851 5.188543-4.902615 5.090909-4.902615C5.063014-4.902615 5.028144-4.902615 4.972354-4.818929L4.60274-4.288917C4.309838-4.581818 3.828643-4.902615 3.159153-4.902615C1.694645-4.902615 .488169-3.772852 .488169-2.385056C.488169-.969365 1.715567 .139477 3.159153 .139477C4.393524 .139477 5.188543-.781071 5.188543-1.63188C5.188543-1.708593 5.181569-1.764384 5.069988-1.764384C5.028144-1.764384 4.958406-1.764384 4.951432-1.673724C4.895641-.550934 3.947198-.111582 3.256787-.111582C2.510585-.111582 1.234371-.564882 1.234371-2.378082C1.234371-4.267995 2.587298-4.651557 3.242839-4.651557C3.93325-4.651557 4.756164-4.191283 4.937484-2.991781C4.951432-2.908095 5.014197-2.908095 5.063014-2.908095C5.188543-2.908095 5.188543-2.949938 5.188543-3.089415V-4.721295Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-79" d="M5.620922-2.357161C5.620922-3.75193 4.47721-4.902615 3.054545-4.902615C1.624907-4.902615 .488169-3.75193 .488169-2.357161C.488169-.990286 1.624907 .139477 3.054545 .139477S5.620922-.990286 5.620922-2.357161ZM3.054545-.09066C2.238605-.09066 1.234371-.753176 1.234371-2.468742C1.234371-4.086675 2.259527-4.679452 3.054545-4.679452S4.87472-4.086675 4.87472-2.468742C4.87472-.753176 3.870486-.09066 3.054545-.09066Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-94" d="M1.980573-4.839851L.941469-3.912329L1.094894-3.731009L1.980573-4.42142L2.866252-3.731009L3.019676-3.912329L1.980573-4.839851Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-97" d="M3.110336-1.868991C3.110336-2.238605 3.110336-2.503611 2.789539-2.761644C2.503611-2.998755 2.168867-3.110336 1.75741-3.110336C1.094894-3.110336 .627646-2.859278 .627646-2.433873C.627646-2.21071 .781071-2.092154 .962391-2.092154C1.150685-2.092154 1.290162-2.231631 1.290162-2.419925C1.290162-2.538481 1.234371-2.684932 1.046077-2.740722C1.297136-2.915068 1.701619-2.915068 1.743462-2.915068C2.133998-2.915068 2.559402-2.657036 2.559402-2.071233V-1.855044C2.175841-1.841096 1.715567-1.820174 1.206476-1.63188C.578829-1.401743 .383562-1.018182 .383562-.704359C.383562-.104608 1.108842 .069738 1.603985 .069738C2.161893 .069738 2.489664-.244085 2.636115-.516065C2.66401-.230137 2.852304 .034869 3.173101 .034869C3.187049 .034869 3.863512 .034869 3.863512-.627646V-1.011208H3.626401V-.63462C3.626401-.564882 3.626401-.230137 3.368369-.230137S3.110336-.557908 3.110336-.648568V-1.868991ZM2.559402-.983313C2.559402-.313823 1.973599-.125529 1.659776-.125529C1.30411-.125529 .969365-.36264 .969365-.704359C.969365-1.08792 1.30411-1.624907 2.559402-1.673724V-.983313Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-98" d="M1.387796-4.839851L.341719-4.763138V-4.51208C.81594-4.51208 .864757-4.456289 .864757-4.107597V0H1.101868L1.345953-.425405C1.610959-.076712 1.994521 .069738 2.364134 .069738C3.284682 .069738 4.072727-.620672 4.072727-1.506351C4.072727-2.357161 3.354421-3.075467 2.440847-3.075467C2.022416-3.075467 1.638854-2.908095 1.387796-2.657036V-4.839851ZM1.415691-2.336239C1.610959-2.657036 1.987547-2.880199 2.405978-2.880199C2.796513-2.880199 3.075467-2.657036 3.214944-2.447821C3.354421-2.245579 3.438107-1.973599 3.438107-1.513325C3.438107-1.352927 3.438107-.829888 3.152179-.502117C2.873225-.188294 2.531507-.125529 2.329265-.125529C1.771357-.125529 1.492403-.564882 1.415691-.711333V-2.336239Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-99" d="M2.712827-2.782565C2.587298-2.726775 2.517559-2.615193 2.517559-2.475716C2.517559-2.287422 2.650062-2.147945 2.84533-2.147945C3.033624-2.147945 3.180075-2.266501 3.180075-2.489664C3.180075-3.110336 2.21071-3.110336 2.015442-3.110336C.969365-3.110336 .320797-2.308344 .320797-1.506351C.320797-.627646 1.066999 .069738 1.980573 .069738C3.019676 .069738 3.263761-.753176 3.263761-.836862S3.173101-.920548 3.145205-.920548C3.054545-.920548 3.047572-.899626 3.012702-.801993C2.859278-.369614 2.489664-.153425 2.064259-.153425C1.583064-.153425 .955417-.509091 .955417-1.513325C.955417-2.399004 1.387796-2.887173 2.036364-2.887173C2.127024-2.887173 2.461768-2.887173 2.712827-2.782565Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-100" d="M2.48269-4.763138V-4.51208C2.949938-4.51208 3.005729-4.463263 3.005729-4.121544V-2.677958C2.747696-2.929016 2.412951-3.075467 2.02939-3.075467C1.101868-3.075467 .320797-2.378082 .320797-1.499377C.320797-.627646 1.060025 .069738 1.945704 .069738C2.517559 .069738 2.859278-.237111 2.977833-.36264V.069738L4.051806 0V-.251059C3.584558-.251059 3.528767-.299875 3.528767-.641594V-4.839851L2.48269-4.763138ZM2.977833-.732254C2.796513-.404483 2.440847-.125529 1.987547-.125529C1.597011-.125529 1.318057-.355666 1.17858-.557908C1.039103-.767123 .955417-1.046077 .955417-1.492403C.955417-1.652802 .955417-2.175841 1.241345-2.503611C1.520299-2.817435 1.862017-2.880199 2.064259-2.880199C2.399004-2.880199 2.698879-2.726775 2.894147-2.475716C2.977833-2.364134 2.977833-2.357161 2.977833-2.224658V-.732254Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-101" d="M3.068493-1.590037C3.214944-1.590037 3.263761-1.590037 3.263761-1.743462C3.263761-2.357161 2.922042-3.110336 1.882939-3.110336C.969365-3.110336 .27198-2.385056 .27198-1.527273C.27198-.641594 1.046077 .069738 1.973599 .069738C2.915068 .069738 3.263761-.683437 3.263761-.836862C3.263761-.864757 3.249813-.934496 3.145205-.934496C3.054545-.934496 3.040598-.892653 3.019676-.822914C2.803487-.258032 2.273474-.153425 2.022416-.153425C1.694645-.153425 1.380822-.299875 1.171606-.564882C.913574-.892653 .9066-1.318057 .9066-1.590037H3.068493ZM.913574-1.771357C.990286-2.75467 1.617933-2.915068 1.882939-2.915068C2.740722-2.915068 2.768618-1.945704 2.775592-1.771357H.913574Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-102" d="M1.436613-2.75467H2.308344V-3.005729H1.408717V-3.7868C1.408717-4.42142 1.785305-4.714321 2.085181-4.714321C2.147945-4.714321 2.217684-4.700374 2.287422-4.679452C2.189788-4.623661 2.133998-4.51208 2.133998-4.400498C2.133998-4.212204 2.266501-4.079701 2.454795-4.079701S2.775592-4.212204 2.775592-4.400498C2.775592-4.700374 2.475716-4.909589 2.092154-4.909589C1.54122-4.909589 .913574-4.519054 .913574-3.7868V-3.005729H.313823V-2.75467H.913574V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.425405 0 .899626-.027895 1.185554-.027895C1.48543-.027895 1.792279-.013948 2.092154 0V-.251059H1.952677C1.436613-.251059 1.436613-.327771 1.436613-.564882V-2.75467Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-103" d="M1.004234-1.241345C1.108842-1.17858 1.3599-1.025156 1.764384-1.025156C2.48269-1.025156 3.005729-1.506351 3.005729-2.050311C3.005729-2.322291 2.880199-2.538481 2.712827-2.719801C3.02665-2.942964 3.29863-2.949938 3.417186-2.949938C3.38929-2.922042 3.354421-2.894147 3.354421-2.782565C3.354421-2.643088 3.459029-2.559402 3.577584-2.559402C3.675218-2.559402 3.800747-2.629141 3.800747-2.789539S3.668244-3.145205 3.38929-3.145205C3.284682-3.145205 2.908095-3.124284 2.580324-2.824408C2.371108-2.977833 2.078207-3.075467 1.771357-3.075467C1.053051-3.075467 .530012-2.594271 .530012-2.050311C.530012-1.778331 .669489-1.527273 .864757-1.345953C.808966-1.283188 .655542-1.053051 .655542-.781071C.655542-.690411 .676463-.36264 .948443-.160399C.63462-.055791 .27198 .174346 .27198 .536986C.27198 1.046077 1.039103 1.429639 1.980573 1.429639C2.866252 1.429639 3.689166 1.080946 3.689166 .523039C3.689166 .313823 3.605479-.062765 3.221918-.27198C2.810461-.488169 2.399004-.488169 1.72254-.488169C1.569116-.488169 1.318057-.488169 1.262267-.495143C1.039103-.54396 .913574-.753176 .913574-.955417C.913574-1.129763 .962391-1.185554 1.004234-1.241345ZM1.771357-1.234371C1.08792-1.234371 1.08792-1.903861 1.08792-2.050311C1.08792-2.161893 1.08792-2.440847 1.227397-2.622167C1.325031-2.740722 1.513325-2.866252 1.764384-2.866252C2.447821-2.866252 2.447821-2.196762 2.447821-2.050311C2.447821-1.93873 2.447821-1.659776 2.308344-1.478456C2.21071-1.3599 2.022416-1.234371 1.771357-1.234371ZM1.771357-.020922C2.39203-.020922 3.263761-.020922 3.263761 .530012C3.263761 .899626 2.712827 1.220423 1.980573 1.220423S.697385 .892653 .697385 .530012C.697385 .285928 .920548-.013948 1.366874-.020922H1.771357Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-104" d="M3.591532-2.113076C3.591532-2.719801 3.291656-3.075467 2.545455-3.075467C1.924782-3.075467 1.583064-2.705853 1.429639-2.440847H1.422665V-4.839851L.376588-4.763138V-4.51208C.843836-4.51208 .899626-4.463263 .899626-4.121544V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-2.113076Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-105" d="M1.471482-4.302864C1.471482-4.505106 1.30411-4.700374 1.066999-4.700374C.857783-4.700374 .669489-4.533001 .669489-4.302864C.669489-4.051806 .871731-3.898381 1.066999-3.898381C1.290162-3.898381 1.471482-4.072727 1.471482-4.302864ZM.411457-2.998755V-2.747696C.850809-2.747696 .913574-2.705853 .913574-2.364134V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.404483 0 .892653-.027895 1.171606-.027895C1.415691-.027895 1.66675-.020922 1.910834 0V-.251059C1.506351-.251059 1.436613-.251059 1.436613-.54396V-3.075467L.411457-2.998755Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-106" d="M1.694645-4.29589C1.694645-4.539975 1.499377-4.700374 1.297136-4.700374C1.053051-4.700374 .892653-4.505106 .892653-4.302864C.892653-4.05878 1.08792-3.898381 1.290162-3.898381C1.534247-3.898381 1.694645-4.093649 1.694645-4.29589ZM.592777-2.998755V-2.747696C1.108842-2.747696 1.171606-2.698879 1.171606-2.357161V.334745C1.171606 .599751 1.115816 1.227397 .648568 1.227397C.627646 1.227397 .460274 1.227397 .299875 1.157659C.313823 1.150685 .474222 1.066999 .474222 .857783C.474222 .669489 .334745 .530012 .146451 .530012C-.055791 .530012-.188294 .669489-.188294 .864757C-.188294 1.241345 .230137 1.422665 .655542 1.422665C1.220423 1.422665 1.694645 .983313 1.694645 .320797V-3.075467L.592777-2.998755Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-108" d="M1.436613-4.839851L.390535-4.763138V-4.51208C.857783-4.51208 .913574-4.463263 .913574-4.121544V-.550934C.913574-.251059 .843836-.251059 .390535-.251059V0C.404483 0 .892653-.027895 1.171606-.027895C1.436613-.027895 1.694645-.020922 1.959651 0V-.251059C1.506351-.251059 1.436613-.251059 1.436613-.550934V-4.839851Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-109" d="M5.732503-2.113076C5.732503-2.719801 5.432628-3.075467 4.686426-3.075467C4.135492-3.075467 3.758904-2.775592 3.57061-2.426899C3.431133-2.922042 3.054545-3.075467 2.545455-3.075467C1.973599-3.075467 1.603985-2.761644 1.408717-2.399004H1.401743V-3.075467L.376588-2.998755V-2.747696C.843836-2.747696 .899626-2.698879 .899626-2.357161V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-1.806227C3.591532-2.538481 4.170361-2.880199 4.630635-2.880199C5.118804-2.880199 5.181569-2.496638 5.181569-2.140971V-.550934C5.181569-.251059 5.111831-.251059 4.658531-.251059V0C4.672478 0 5.160648-.027895 5.453549-.027895C5.711582-.027895 6.192777-.006974 6.255542 0V-.251059C5.802242-.251059 5.732503-.251059 5.732503-.550934V-2.113076Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-110" d="M3.591532-2.113076C3.591532-2.719801 3.291656-3.075467 2.545455-3.075467C1.973599-3.075467 1.603985-2.761644 1.408717-2.399004H1.401743V-3.075467L.376588-2.998755V-2.747696C.843836-2.747696 .899626-2.698879 .899626-2.357161V-.550934C.899626-.251059 .829888-.251059 .376588-.251059V0C.390535 0 .878705-.027895 1.171606-.027895C1.429639-.027895 1.910834-.006974 1.973599 0V-.251059C1.520299-.251059 1.45056-.251059 1.45056-.550934V-1.806227C1.45056-2.538481 2.02939-2.880199 2.489664-2.880199C2.977833-2.880199 3.040598-2.496638 3.040598-2.140971V-.550934C3.040598-.251059 2.970859-.251059 2.517559-.251059V0C2.531507 0 3.019676-.027895 3.312578-.027895C3.57061-.027895 4.051806-.006974 4.11457 0V-.251059C3.66127-.251059 3.591532-.251059 3.591532-.550934V-2.113076Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-111" d="M3.689166-1.48543C3.689166-2.357161 2.942964-3.110336 1.980573-3.110336S.27198-2.357161 .27198-1.48543C.27198-.620672 1.039103 .069738 1.980573 .069738S3.689166-.620672 3.689166-1.48543ZM1.980573-.153425C1.72254-.153425 1.345953-.237111 1.115816-.578829C.927522-.864757 .9066-1.227397 .9066-1.548194C.9066-1.84807 .913574-2.259527 1.157659-2.559402C1.332005-2.761644 1.624907-2.915068 1.980573-2.915068C2.39203-2.915068 2.684932-2.719801 2.838356-2.503611C3.033624-2.231631 3.054545-1.882939 3.054545-1.548194S3.033624-.843836 2.831382-.557908C2.643088-.292902 2.322291-.153425 1.980573-.153425Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-112" d="M1.93873 1.101868C1.48543 1.101868 1.415691 1.101868 1.415691 .801993V-.334745C1.45056-.299875 1.778331 .069738 2.364134 .069738C3.284682 .069738 4.072727-.620672 4.072727-1.506351C4.072727-2.364134 3.361395-3.075467 2.475716-3.075467C2.078207-3.075467 1.673724-2.929016 1.387796-2.650062V-3.075467L.341719-2.998755V-2.747696C.829888-2.747696 .864757-2.712827 .864757-2.419925V.801993C.864757 1.101868 .795019 1.101868 .341719 1.101868V1.352927C.355666 1.352927 .843836 1.325031 1.136737 1.325031C1.39477 1.325031 1.875965 1.345953 1.93873 1.352927V1.101868ZM1.415691-2.322291C1.624907-2.670984 2.02939-2.852304 2.399004-2.852304C2.984807-2.852304 3.438107-2.238605 3.438107-1.506351C3.438107-.711333 2.915068-.125529 2.322291-.125529C1.708593-.125529 1.436613-.662516 1.415691-.704359V-2.322291Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-113" d="M3.528767-3.075467H3.319552L3.068493-2.468742C2.852304-2.803487 2.503611-3.075467 2.008468-3.075467C1.108842-3.075467 .320797-2.39203 .320797-1.499377C.320797-.627646 1.066999 .069738 1.945704 .069738C2.503611 .069738 2.803487-.230137 2.977833-.404483V.801993C2.977833 1.101868 2.908095 1.101868 2.454795 1.101868V1.352927C2.468742 1.352927 2.956912 1.325031 3.249813 1.325031C3.507846 1.325031 3.989041 1.345953 4.051806 1.352927V1.101868C3.598506 1.101868 3.528767 1.101868 3.528767 .801993V-3.075467ZM3.005729-1.004234C3.005729-.878705 3.005729-.850809 2.901121-.669489C2.691905-.327771 2.343213-.125529 1.987547-.125529C1.408717-.125529 .955417-.753176 .955417-1.492403C.955417-2.308344 1.506351-2.852304 2.064259-2.852304C2.650062-2.852304 3.005729-2.280448 3.005729-1.889913V-1.004234Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-114" d="M1.387796-1.590037C1.387796-2.175841 1.659776-2.880199 2.322291-2.880199C2.259527-2.831382 2.203736-2.740722 2.203736-2.629141C2.203736-2.399004 2.385056-2.308344 2.517559-2.308344C2.684932-2.308344 2.838356-2.419925 2.838356-2.629141C2.838356-2.866252 2.615193-3.075467 2.287422-3.075467C1.93873-3.075467 1.555168-2.859278 1.345953-2.329265H1.338979V-3.075467L.341719-2.998755V-2.747696C.808966-2.747696 .864757-2.698879 .864757-2.357161V-.550934C.864757-.251059 .795019-.251059 .341719-.251059V0C.376588 0 .850809-.027895 1.136737-.027895C1.436613-.027895 1.743462-.013948 2.043337 0V-.251059H1.903861C1.387796-.251059 1.387796-.327771 1.387796-.564882V-1.590037Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-115" d="M2.643088-2.929016C2.643088-3.047572 2.643088-3.110336 2.545455-3.110336C2.510585-3.110336 2.496638-3.110336 2.405978-3.02665C2.39203-3.019676 2.322291-2.956912 2.280448-2.922042C2.071233-3.068493 1.806227-3.110336 1.548194-3.110336C.550934-3.110336 .313823-2.587298 .313823-2.238605C.313823-2.015442 .411457-1.834122 .578829-1.694645C.843836-1.464508 1.108842-1.415691 1.54122-1.345953C1.889913-1.283188 2.454795-1.185554 2.454795-.718306C2.454795-.446326 2.266501-.125529 1.597011-.125529S.683437-.564882 .557908-1.039103C.536986-1.129763 .530012-1.157659 .432379-1.157659C.313823-1.157659 .313823-1.108842 .313823-.969365V-.111582C.313823 .006974 .313823 .069738 .411457 .069738C.474222 .069738 .606725-.076712 .746202-.230137C1.053051 .055791 1.429639 .069738 1.597011 .069738C2.503611 .069738 2.838356-.418431 2.838356-.913574C2.838356-1.17858 2.719801-1.387796 2.538481-1.555168C2.273474-1.799253 1.952677-1.855044 1.708593-1.896887C1.150685-1.994521 .697385-2.078207 .697385-2.447821C.697385-2.670984 .885679-2.942964 1.548194-2.942964C2.357161-2.942964 2.39203-2.378082 2.405978-2.175841C2.412951-2.099128 2.496638-2.099128 2.524533-2.099128C2.643088-2.099128 2.643088-2.147945 2.643088-2.280448V-2.929016Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-116" d="M1.401743-2.75467H2.489664V-3.005729H1.401743V-4.288917H1.164633C1.157659-3.66127 .871731-2.970859 .202242-2.949938V-2.75467H.850809V-.871731C.850809-.09066 1.436613 .069738 1.827148 .069738C2.294396 .069738 2.615193-.327771 2.615193-.878705V-1.262267H2.378082V-.885679C2.378082-.411457 2.154919-.153425 1.882939-.153425C1.401743-.153425 1.401743-.739228 1.401743-.864757V-2.75467Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-117" d="M2.517559-2.998755V-2.747696C2.984807-2.747696 3.040598-2.698879 3.040598-2.357161V-1.164633C3.040598-.550934 2.643088-.125529 2.113076-.125529C1.478456-.125529 1.45056-.425405 1.45056-.781071V-3.075467L.376588-2.998755V-2.747696C.899626-2.747696 .899626-2.726775 .899626-2.106102V-1.060025C.899626-.578829 .899626 .069738 2.064259 .069738C2.217684 .069738 2.726775 .069738 3.061519-.516065H3.068493V.069738L4.11457 0V-.251059C3.647323-.251059 3.591532-.299875 3.591532-.641594V-3.075467L2.517559-2.998755Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-118" d="M3.305604-2.322291C3.500872-2.747696 3.849564-2.75467 3.961146-2.75467V-3.005729C3.7868-2.991781 3.605479-2.977833 3.431133-2.977833C3.242839-2.977833 2.984807-2.984807 2.796513-3.005729V-2.75467C3.089415-2.740722 3.089415-2.510585 3.089415-2.489664C3.089415-2.454795 3.082441-2.385056 3.033624-2.287422L2.245579-.564882L1.380822-2.461768C1.380822-2.468742 1.338979-2.545455 1.338979-2.594271C1.338979-2.75467 1.57609-2.75467 1.694645-2.75467V-3.005729C1.680697-3.005729 1.185554-2.977833 .899626-2.977833C.690411-2.977833 .418431-2.984807 .216189-3.005729V-2.75467C.599751-2.75467 .683437-2.740722 .788045-2.503611L1.889913-.076712C1.924782 .006974 1.966625 .069738 2.085181 .069738C2.217684 .069738 2.245579 .006974 2.280448-.069738L3.305604-2.322291Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-122" d="M3.075467-2.761644C3.124284-2.824408 3.138232-2.84533 3.138232-2.894147C3.138232-3.005729 3.054545-3.005729 2.942964-3.005729H.460274L.376588-1.841096H.613699C.662516-2.57335 .822914-2.810461 1.617933-2.810461H2.440847L.334745-.265006C.27198-.188294 .27198-.160399 .27198-.125529C.27198 0 .341719 0 .467248 0H3.033624L3.159153-1.352927H2.922042C2.852304-.536986 2.705853-.223163 1.834122-.223163H.976339L3.075467-2.761644Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-124" d="M7.824658-1.75741V-1.952677H.111582V-1.75741H7.824658Z"></path>
+<path id="tz_espectro_reprodutibilidade_g1-126" d="M3.124284-4.6934C2.922042-4.47721 2.719801-4.372603 2.524533-4.372603C2.343213-4.372603 2.133998-4.47721 2.078207-4.51208C1.827148-4.630635 1.680697-4.6934 1.527273-4.6934C1.241345-4.6934 1.136737-4.581818 .697385-4.135492L.836862-3.996015C1.039103-4.212204 1.241345-4.316812 1.436613-4.316812C1.617933-4.316812 1.827148-4.212204 1.882939-4.177335C2.133998-4.05878 2.280448-3.996015 2.433873-3.996015C2.719801-3.996015 2.824408-4.107597 3.263761-4.553923L3.124284-4.6934Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-19" d="M2.450809-3.048568C2.510585-3.088418 2.580324-3.138232 2.580324-3.242839S2.495641-3.476961 2.351183-3.476961C2.271482-3.476961 2.236613-3.442092 2.1868-3.39726L1.414695-2.665006L1.544209-2.500623L2.450809-3.048568Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-24" d="M1.912827 .109589H1.469489V.353674C1.65878 .353674 1.987547 .37858 1.987547 .607721C1.987547 .737235 1.867995 .816936 1.569116 .851806C1.339975 .881694 1.175592 .861768 .951432 .876712V1.041096C1.270237 1.021171 1.484433 1.046077 1.833126 1.001245C2.276463 .946451 2.430884 .806974 2.430884 .607721C2.430884 .358655 2.206725 .249066 1.912827 .214197V.109589Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-43" d="M2.699875-1.105853H4.433375C4.498132-1.105853 4.632628-1.105853 4.632628-1.24533S4.498132-1.384807 4.433375-1.384807H2.699875V-3.118306C2.699875-3.188045 2.699875-3.32254 2.560399-3.32254S2.420922-3.188045 2.420922-3.118306V-1.384807H.682441C.617684-1.384807 .483188-1.384807 .483188-1.24533S.617684-1.105853 .682441-1.105853H2.420922V.627646C2.420922 .697385 2.420922 .83188 2.560399 .83188S2.699875 .697385 2.699875 .627646V-1.105853Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-94" d="M1.693649-3.457036L.856787-2.804483L.976339-2.635118L1.693649-3.123288L2.405978-2.635118L2.535492-2.804483L1.693649-3.457036Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-97" d="M2.60523-1.479452C2.60523-1.957659 2.102117-2.231631 1.484433-2.231631C1.180573-2.231631 .60274-2.216687 .60274-1.793275C.60274-1.608966 .742217-1.524284 .86675-1.524284C1.001245-1.524284 1.13076-1.618929 1.13076-1.788294C1.13076-1.907846 1.061021-1.982565 1.016189-2.012453C1.180573-2.067248 1.419676-2.067248 1.474471-2.067248C1.897883-2.067248 2.161893-1.833126 2.161893-1.474471V-1.344956C1.678705-1.32005 1.409714-1.305106 1.026152-1.17061C.697385-1.05604 .408468-.846824 .408468-.523039C.408468-.054795 .986301 .054795 1.384807 .054795C1.768369 .054795 2.067248-.099626 2.221669-.353674C2.241594-.179328 2.356164 .029888 2.610212 .029888C2.645081 .029888 3.212951 .029888 3.212951-.448319V-.722291H3.003736V-.458281C3.003736-.408468 3.003736-.18929 2.804483-.18929S2.60523-.408468 2.60523-.458281V-1.479452ZM2.161893-.707347C2.161893-.159402 1.564134-.109589 1.439601-.109589C1.145704-.109589 .86675-.26401 .86675-.523039C.86675-.687422 .971357-1.145704 2.161893-1.195517V-.707347Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-99" d="M2.236613-2.007472C2.166874-1.957659 2.127024-1.877958 2.127024-1.788294C2.127024-1.62391 2.251557-1.524284 2.391034-1.524284C2.510585-1.524284 2.655044-1.603985 2.655044-1.793275C2.655044-2.216687 2.102117-2.231631 1.753425-2.231631C.777086-2.231631 .358655-1.574097 .358655-1.075965C.358655-.458281 .941469 .054795 1.693649 .054795C2.555417 .054795 2.724782-.552927 2.724782-.597758C2.724782-.667497 2.650062-.667497 2.620174-.667497C2.540473-.667497 2.535492-.652553 2.510585-.592777C2.34122-.179328 1.977584-.124533 1.758406-.124533C1.330012-.124533 .856787-.41345 .856787-1.080946C.856787-1.300125 .901619-1.574097 1.085928-1.783313C1.325031-2.052304 1.618929-2.052304 1.77335-2.052304C1.92279-2.052304 2.062267-2.052304 2.236613-2.007472Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-100" d="M2.102117-3.402242V-3.183064C2.470735-3.183064 2.515567-3.148194 2.515567-2.90411V-1.932752C2.405978-2.027397 2.136986-2.201743 1.723537-2.201743C.976339-2.201743 .358655-1.69863 .358655-1.070984C.358655-.468244 .921544 .054795 1.663761 .054795C2.072229 .054795 2.356164-.124533 2.495641-.244085V.054795L3.352428 0V-.219178C2.983811-.219178 2.938979-.254047 2.938979-.498132V-3.457036L2.102117-3.402242ZM2.495641-.542964C2.256538-.174346 1.88792-.109589 1.693649-.109589C1.444583-.109589 1.195517-.209215 1.031133-.428394C.871731-.632628 .856787-.916563 .856787-1.070984C.856787-1.205479 .86675-1.534247 1.080946-1.763387C1.255293-1.942715 1.514321-2.03736 1.758406-2.03736C1.902864-2.03736 2.256538-2.007472 2.495641-1.668742V-.542964Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-101" d="M2.575342-1.120797C2.67995-1.120797 2.724782-1.120797 2.724782-1.240349C2.724782-1.574097 2.545455-2.231631 1.613948-2.231631C.856787-2.231631 .323786-1.688667 .323786-1.09589C.323786-.463263 .931507 .054795 1.688667 .054795C2.480697 .054795 2.724782-.498132 2.724782-.592777C2.724782-.67746 2.645081-.67746 2.620174-.67746C2.545455-.67746 2.535492-.657534 2.505604-.587796C2.366127-.244085 1.997509-.124533 1.718555-.124533C1.315068-.124533 1.090909-.348692 1.016189-.433375C.821918-.672478 .821918-.986301 .821918-1.120797H2.575342ZM.83188-1.275218C.891656-1.932752 1.374844-2.067248 1.608966-2.067248C2.30137-2.067248 2.336239-1.419676 2.34122-1.275218H.83188Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-102" d="M1.255293-1.927771H1.96264V-2.146949H1.235367V-2.684932C1.235367-3.153176 1.544209-3.347447 1.77335-3.347447C1.808219-3.347447 1.907846-3.337484 1.907846-3.32254L1.897883-3.312578C1.867995-3.28269 1.818182-3.222914 1.818182-3.118306C1.818182-2.978829 1.917808-2.864259 2.072229-2.864259C2.236613-2.864259 2.331258-2.978829 2.331258-3.123288C2.331258-3.337484 2.117061-3.511831 1.783313-3.511831C1.344956-3.511831 .83188-3.232877 .83188-2.689913V-2.146949H.348692V-1.927771H.83188V-.418431C.83188-.26401 .83188-.219178 .508095-.219178H.418431V0C.627646-.014944 .851806-.019925 1.061021-.019925C1.32005-.019925 1.564134-.009963 1.77335 0V-.219178H1.638854C1.255293-.219178 1.255293-.268991 1.255293-.423412V-1.927771Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-103" d="M2.291407-1.937733C2.530511-2.082192 2.75467-2.087173 2.834371-2.092154C2.819427-2.072229 2.794521-2.042341 2.794521-1.972603C2.794521-1.872976 2.859278-1.788294 2.978829-1.788294S3.163138-1.872976 3.163138-1.972603C3.163138-2.102117 3.058531-2.256538 2.819427-2.256538C2.699875-2.256538 2.435866-2.231631 2.171856-2.027397C2.057285-2.097136 1.833126-2.201743 1.524284-2.201743C.936488-2.201743 .52802-1.853051 .52802-1.469489C.52802-1.215442 .712329-1.031133 .787049-.971357C.667497-.826899 .637609-.67746 .637609-.56787C.637609-.303861 .806974-.139477 .851806-.104608C.60274-.039851 .313823 .119552 .313823 .383562C.313823 .777086 .971357 1.026152 1.693649 1.026152C2.361146 1.026152 3.073474 .806974 3.073474 .373599C3.073474 .14944 2.94396-.089664 2.699875-.209215C2.366127-.368618 2.047323-.368618 1.514321-.368618C1.389788-.368618 1.17061-.368618 1.145704-.373599C.9066-.41345 .851806-.607721 .851806-.702366C.851806-.801993 .901619-.881694 .916563-.881694C.926526-.881694 .936488-.876712 .951432-.871731C1.150685-.767123 1.344956-.737235 1.519303-.737235C2.107098-.737235 2.515567-1.085928 2.515567-1.469489C2.515567-1.708593 2.351183-1.882939 2.291407-1.937733ZM1.524284-.901619C1.085928-.901619 .966376-1.190535 .966376-1.469489C.966376-1.743462 1.085928-2.03736 1.519303-2.03736C1.957659-2.03736 2.07721-1.748443 2.07721-1.469489C2.07721-1.195517 1.957659-.901619 1.524284-.901619ZM1.529265 .009963C2.027397 .009963 2.729763 .009963 2.729763 .383562C2.729763 .627646 2.286426 .861768 1.693649 .861768C1.120797 .861768 .657534 .64259 .657534 .37858C.657534 .224159 .83188 .009963 1.205479 .009963H1.529265Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-105" d="M1.260274-3.068493C1.260274-3.232877 1.125778-3.372354 .956413-3.372354C.801993-3.372354 .652553-3.252802 .652553-3.068493C.652553-2.889166 .801993-2.764633 .956413-2.764633C1.125778-2.764633 1.260274-2.90411 1.260274-3.068493ZM.433375-2.146949V-1.927771C.787049-1.927771 .826899-1.892902 .826899-1.648817V-.418431C.826899-.26401 .826899-.219178 .503113-.219178H.41345V0C.617684-.014944 .826899-.019925 1.031133-.019925C1.220423-.019925 1.439601-.014944 1.62391 0V-.219178C1.290162-.219178 1.250311-.219178 1.250311-.418431V-2.201743L.433375-2.146949Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-108" d="M1.250311-3.457036L.41345-3.402242V-3.183064C.782067-3.183064 .826899-3.148194 .826899-2.90411V-.418431C.826899-.26401 .826899-.219178 .503113-.219178H.41345V0C.622665-.014944 .826899-.019925 1.036115-.019925S1.454545-.014944 1.663761 0V-.219178H1.574097C1.250311-.219178 1.250311-.26401 1.250311-.418431V-3.457036Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-109" d="M4.722291-1.504359C4.722291-2.117061 4.254047-2.201743 3.880448-2.201743C3.392279-2.201743 3.108344-1.957659 2.968867-1.738481C2.844334-2.196762 2.336239-2.201743 2.15193-2.201743C1.638854-2.201743 1.349938-1.927771 1.225405-1.713574V-2.201743L.408468-2.146949V-1.927771C.777086-1.927771 .821918-1.892902 .821918-1.648817V-.418431C.821918-.26401 .821918-.219178 .498132-.219178H.408468V0C.622665-.014944 .83188-.019925 1.046077-.019925C1.255293-.019925 1.469489-.014944 1.678705 0V-.219178H1.589041C1.265255-.219178 1.265255-.26401 1.265255-.418431V-1.285181C1.265255-1.838107 1.77335-2.03736 2.097136-2.03736C2.460772-2.03736 2.550436-1.833126 2.550436-1.50934V-.418431C2.550436-.26401 2.550436-.219178 2.22665-.219178H2.136986V0C2.351183-.014944 2.560399-.019925 2.774595-.019925C2.983811-.019925 3.198007-.014944 3.407223 0V-.219178H3.317559C2.993773-.219178 2.993773-.26401 2.993773-.418431V-1.285181C2.993773-1.838107 3.501868-2.03736 3.825654-2.03736C4.18929-2.03736 4.278954-1.833126 4.278954-1.50934V-.418431C4.278954-.26401 4.278954-.219178 3.955168-.219178H3.865504V0C4.079701-.014944 4.288917-.019925 4.503113-.019925C4.712329-.019925 4.926526-.014944 5.135741 0V-.219178H5.046077C4.722291-.219178 4.722291-.26401 4.722291-.418431V-1.504359Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-110" d="M2.988792-1.504359C2.988792-2.052304 2.615193-2.201743 2.15193-2.201743C1.618929-2.201743 1.339975-1.907846 1.225405-1.713574V-2.201743L.408468-2.146949V-1.927771C.777086-1.927771 .821918-1.892902 .821918-1.648817V-.418431C.821918-.26401 .821918-.219178 .498132-.219178H.408468V0C.622665-.014944 .83188-.019925 1.046077-.019925C1.255293-.019925 1.469489-.014944 1.678705 0V-.219178H1.589041C1.265255-.219178 1.265255-.26401 1.265255-.418431V-1.285181C1.265255-1.84807 1.783313-2.03736 2.092154-2.03736C2.460772-2.03736 2.545455-1.828144 2.545455-1.50934V-.418431C2.545455-.26401 2.545455-.219178 2.221669-.219178H2.132005V0C2.346202-.014944 2.555417-.019925 2.769614-.019925C2.978829-.019925 3.193026-.014944 3.402242 0V-.219178H3.312578C2.988792-.219178 2.988792-.26401 2.988792-.418431V-1.504359Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-111" d="M3.063512-1.061021C3.063512-1.683686 2.475716-2.231631 1.693649-2.231631S.323786-1.683686 .323786-1.061021C.323786-.463263 .916563 .054795 1.693649 .054795C2.475716 .054795 3.063512-.463263 3.063512-1.061021ZM1.693649-.124533C.821918-.124533 .821918-.86675 .821918-1.110834C.821918-1.334994 .821918-2.067248 1.693649-2.067248S2.56538-1.334994 2.56538-1.110834C2.56538-.86675 2.56538-.124533 1.693649-.124533Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-112" d="M1.648817 .747198H1.559153C1.235367 .747198 1.235367 .702366 1.235367 .547945V-.229141C1.449564-.039851 1.718555 .054795 2.002491 .054795C2.759651 .054795 3.372354-.4533 3.372354-1.075965C3.372354-1.673724 2.824408-2.201743 2.087173-2.201743C1.693649-2.201743 1.384807-2.062267 1.215442-1.917808V-2.201743L.37858-2.146949V-1.927771C.737235-1.927771 .79203-1.927771 .79203-1.713574V.547945C.79203 .702366 .79203 .747198 .468244 .747198H.37858V.966376C.592777 .951432 .801993 .946451 1.016189 .946451C1.225405 .946451 1.439601 .951432 1.648817 .966376V.747198ZM1.235367-1.653798C1.449564-1.957659 1.828144-2.022416 2.027397-2.022416C2.520548-2.022416 2.874222-1.579078 2.874222-1.075965C2.874222-.533001 2.460772-.109589 1.967621-.109589C1.743462-.109589 1.479452-.204234 1.305106-.428394C1.235367-.513076 1.235367-.523039 1.235367-.617684V-1.653798Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-113" d="M2.938979-2.201743H2.749689L2.570361-1.778331C2.356164-2.057285 2.057285-2.201743 1.713574-2.201743C.971357-2.201743 .358655-1.69863 .358655-1.070984C.358655-.4533 .946451 .054795 1.65878 .054795C1.972603 .054795 2.276463-.064757 2.495641-.283935V.547945C2.495641 .702366 2.495641 .747198 2.171856 .747198H2.082192V.966376C2.296389 .951432 2.505604 .946451 2.719801 .946451C2.929016 .946451 3.143213 .951432 3.352428 .966376V.747198H3.262765C2.938979 .747198 2.938979 .702366 2.938979 .547945V-2.201743ZM2.515567-.737235C2.515567-.647572 2.515567-.617684 2.425903-.493151C2.201743-.179328 1.877958-.109589 1.69863-.109589C1.220423-.109589 .856787-.552927 .856787-1.070984C.856787-1.608966 1.280199-2.022416 1.758406-2.022416C2.206725-2.022416 2.515567-1.638854 2.515567-1.349938V-.737235Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-114" d="M1.215442-1.115816C1.215442-1.579078 1.479452-2.027397 1.952677-2.03736C1.947696-2.032379 1.882939-1.967621 1.882939-1.858032C1.882939-1.678705 2.022416-1.603985 2.132005-1.603985C2.256538-1.603985 2.386052-1.688667 2.386052-1.858032C2.386052-2.047323 2.206725-2.201743 1.942715-2.201743C1.693649-2.201743 1.374844-2.072229 1.180573-1.653798H1.175592V-2.201743L.37858-2.146949V-1.927771C.747198-1.927771 .79203-1.892902 .79203-1.648817V-.418431C.79203-.26401 .79203-.219178 .468244-.219178H.37858V0C.587796-.014944 .811955-.019925 1.021171-.019925C1.280199-.019925 1.524284-.009963 1.733499 0V-.219178H1.599004C1.215442-.219178 1.215442-.268991 1.215442-.423412V-1.115816Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-115" d="M2.22665-2.092154C2.22665-2.176837 2.22665-2.231631 2.146949-2.231631C2.122042-2.231631 2.102117-2.22665 2.062267-2.196762C2.042341-2.176837 1.952677-2.097136 1.932752-2.097136C1.927771-2.097136 1.917808-2.097136 1.88792-2.117061C1.77335-2.181818 1.589041-2.231631 1.339975-2.231631C.518057-2.231631 .348692-1.853051 .348692-1.62391C.348692-1.155666 .926526-1.066002 1.384807-.996264C1.673724-.951432 2.132005-.881694 2.132005-.542964C2.132005-.368618 1.987547-.109589 1.384807-.109589C1.046077-.109589 .71731-.234122 .56787-.762142C.542964-.851806 .537983-.86675 .4533-.86675C.348692-.86675 .348692-.826899 .348692-.722291V-.084682C.348692 0 .348692 .054795 .428394 .054795C.468244 .054795 .473225 .049813 .56787-.044832L.697385-.169365C.946451 .049813 1.260274 .054795 1.384807 .054795C2.216687 .054795 2.381071-.37858 2.381071-.627646C2.381071-.851806 2.256538-1.016189 2.067248-1.135741C1.867995-1.260274 1.718555-1.280199 1.300125-1.344956C.98132-1.39477 .597758-1.454545 .597758-1.718555C.597758-1.892902 .79203-2.082192 1.334994-2.082192C1.748443-2.082192 1.987547-1.917808 2.017435-1.574097C2.022416-1.499377 2.027397-1.469489 2.122042-1.469489C2.22665-1.469489 2.22665-1.504359 2.22665-1.608966V-2.092154Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-116" d="M1.225405-1.927771H2.107098V-2.146949H1.225405V-3.063512H1.016189C1.011208-2.595268 .762142-2.107098 .254047-2.092154V-1.927771H.782067V-.627646C.782067-.059776 1.250311 .054795 1.559153 .054795C1.932752 .054795 2.211706-.219178 2.211706-.627646V-.901619H2.002491V-.64259C2.002491-.268991 1.783313-.124533 1.608966-.124533C1.225405-.124533 1.225405-.523039 1.225405-.627646V-1.927771Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-117" d="M2.132005-2.146949V-1.927771C2.500623-1.927771 2.545455-1.892902 2.545455-1.648817V-.836862C2.545455-.37858 2.201743-.109589 1.793275-.109589C1.285181-.109589 1.265255-.313823 1.265255-.56787V-2.201743L.408468-2.146949V-1.927771C.79203-1.927771 .821918-1.88792 .821918-1.633873V-.547945C.86675 .009963 1.429639 .054795 1.753425 .054795C2.171856 .054795 2.41594-.134496 2.56538-.368618V.054795L3.402242 0V-.219178C3.033624-.219178 2.988792-.254047 2.988792-.498132V-2.201743L2.132005-2.146949Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-118" d="M2.75467-1.628892C2.839352-1.793275 2.968867-1.92279 3.277709-1.927771V-2.146949C3.148194-2.136986 3.01868-2.127024 2.844334-2.127024C2.839352-2.127024 2.515567-2.132005 2.336239-2.146949V-1.927771C2.470735-1.92279 2.555417-1.863014 2.555417-1.748443C2.555417-1.69863 2.535492-1.653798 2.530511-1.648817L1.897883-.41345L1.215442-1.743462C1.205479-1.763387 1.190535-1.793275 1.190535-1.823163C1.190535-1.927771 1.3599-1.927771 1.459527-1.927771V-2.146949C1.230386-2.132005 .871731-2.127024 .836862-2.127024C.637609-2.127024 .488169-2.127024 .278954-2.146949V-1.927771C.577833-1.927771 .647572-1.927771 .722291-1.778331L1.603985-.059776C1.638854 .009963 1.663761 .054795 1.778331 .054795S1.917808 .004981 1.952677-.059776L2.75467-1.628892Z"></path>
+<path id="tz_espectro_reprodutibilidade_g2-126" d="M2.620174-3.367372C2.470735-3.232877 2.321295-3.153176 2.15193-3.153176C2.012453-3.153176 1.853051-3.212951 1.738481-3.257783C1.529265-3.342466 1.419676-3.367372 1.32005-3.367372C1.085928-3.367372 .946451-3.237858 .797011-3.0934C.747198-3.053549 .662516-2.968867 .657534-2.963885L.767123-2.844334C.916563-2.978829 1.066002-3.058531 1.235367-3.058531C1.374844-3.058531 1.534247-2.998755 1.648817-2.953923C1.858032-2.86924 1.967621-2.844334 2.067248-2.844334C2.30137-2.844334 2.440847-2.973848 2.590286-3.118306C2.6401-3.158157 2.724782-3.242839 2.729763-3.247821L2.620174-3.367372Z"></path>
+</defs>
+<g id="tz_espectro_reprodutibilidade_page1">
+<g stroke-miterlimit="10" transform="translate(7.386394,102.462217)scale(0.996264,-0.996264)">
+<g fill="#000" stroke="#000">
+<g stroke-width="0.4">
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#e5f0fc">
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#e5f0fc">
+<path d="M40.10185 17.78296H-40.10185C-42.31102 17.78296-44.10185 15.99213-44.10185 13.78296V-13.78296C-44.10185-15.99213-42.31102-17.78296-40.10185-17.78296H40.10185C42.31102-17.78296 44.10185-15.99213 44.10185-13.78296V13.78296C44.10185 15.99213 42.31102 17.78296 40.10185 17.78296ZM-44.10185-17.78296"></path>
+</g>
+</g>
+</g>
+<g transform="translate(-36.71927,-5.94444)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="15.452384" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-100"></use>
+<use x="20.461372" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="24.974997" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="28.497888" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-12"></use>
+<use x="33.562211" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-108"></use>
+<use x="36.094369" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="40.225408" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-115"></use>
+<use x="46.825367" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-110"></use>
+<use x="51.834355" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="59.375506" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-71"></use>
+<use x="66.429603" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="68.961761" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="7.386394" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="10.119247" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-117"></use>
+<use x="13.855299" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="19.597744" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="22.641929" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="26.03205" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="29.768102" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-102"></use>
+<use x="31.947458" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="33.953851" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-103"></use>
+<use x="37.343972" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-117"></use>
+<use x="41.080024" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="43.778278" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="47.168399" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-24"></use>
+<use x="47.168412" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="50.212598" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-126"></use>
+<use x="50.2126" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="53.602721" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="59.345166" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-112"></use>
+<use x="63.254183" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="66.298369" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="69.031222" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="71.764074" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="75.154195" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="78.544316" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-108"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#ddebfb">
+<g stroke-width="0.8">
+<g stroke="#2780e3">
+<g fill="#ddebfb">
+<path d="M128.30553 54.7716H48.10182C45.89265 54.7716 44.10182 52.98077 44.10182 50.7716V23.20569C44.10182 20.99652 45.89265 19.20569 48.10182 19.20569H128.30553C130.5147 19.20569 132.30553 20.99652 132.30553 23.20569V50.7716C132.30553 52.98077 130.5147 54.7716 128.30553 54.7716ZM44.10182 19.20569"></path>
+</g>
+</g>
+</g>
+<g transform="translate(50.13463,31.0442)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="7.386394" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-115"></use>
+<use x="10.958827" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-99"></use>
+<use x="14.977082" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-114"></use>
+<use x="18.704771" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="21.236929" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-112"></use>
+<use x="26.245917" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="32.796335" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-100"></use>
+<use x="37.805323" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="44.963888" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-98"></use>
+<use x="50.220544" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="54.981836" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="59.495461" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="63.018352" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-115"></use>
+<use x="66.590785" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="70.113677" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-114"></use>
+<use x="73.841366" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-97"></use>
+<use x="78.23114" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-112"></use>
+<use x="15.078982" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="22.551086" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-112"></use>
+<use x="26.287138" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="29.677259" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="32.721444" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="36.111565" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-116"></use>
+<use x="38.80982" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="41.854005" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="46.939182" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="52.335691" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="55.068544" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="58.11273" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="60.810984" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-118"></use>
+<use x="64.374068" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="66.380461" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-24"></use>
+<use x="66.380474" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="69.42466" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="72.814781" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#3fb618">
+<g fill="#e5f5df">
+<g stroke-width="0.8">
+<g stroke="#3fb618">
+<g fill="#e5f5df">
+<path d="M216.50877 91.76025H136.30507C134.0959 91.76025 132.30507 89.96942 132.30507 87.76025V60.19434C132.30507 57.98517 134.0959 56.19434 136.30507 56.19434H216.50877C218.71794 56.19434 220.50877 57.98517 220.50877 60.19434V87.76025C220.50877 89.96942 218.71794 91.76025 216.50877 91.76025ZM132.30507 56.19434"></path>
+</g>
+</g>
+</g>
+<g transform="translate(139.60089,63.8384)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="14.050308" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-99"></use>
+<use x="17.82088" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-104"></use>
+<use x="22.829869" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="26.960907" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-122"></use>
+<use x="30.979162" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-109"></use>
+<use x="38.464974" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="42.978599" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="48.538283" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-47"></use>
+<use x="56.079434" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-115"></use>
+<use x="59.651867" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="63.174759" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="67.440701" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-119"></use>
+<use x="8.060897" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="15.533001" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-118"></use>
+<use x="18.750153" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="22.140274" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="24.838529" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="26.844922" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="30.235043" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-24"></use>
+<use x="30.235056" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="33.279241" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-126"></use>
+<use x="33.279243" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="36.669364" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="42.411809" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-112"></use>
+<use x="46.320827" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="49.710948" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="54.761526" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-109"></use>
+<use x="60.227237" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-19"></use>
+<use x="60.227239" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="63.61736" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-113"></use>
+<use x="67.180444" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-117"></use>
+<use x="70.916495" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="72.922888" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="76.65894" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="7.386394" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="14.858498" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="17.591351" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="20.635536" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-103"></use>
+<use x="24.025657" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="26.723912" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="29.768097" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-100"></use>
+<use x="33.504149" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="36.89427" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="41.979447" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="44.677701" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="47.721887" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-102"></use>
+<use x="49.901243" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="52.945428" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="55.643683" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="58.687868" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="62.42392" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="65.468105" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="67.474498" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="70.864619" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-100"></use>
+<use x="74.600671" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="77.990792" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#ff7518">
+<g fill="#ffdec8">
+<g stroke-width="0.8">
+<g stroke="#ff7518">
+<g fill="#ffdec8">
+<path d="M304.71245 128.74847H224.50874C222.29958 128.74847 220.50874 126.95764 220.50874 124.74847V97.18256C220.50874 94.97339 222.29958 93.18256 224.50874 93.18256H304.71245C306.92162 93.18256 308.71245 94.97339 308.71245 97.18256V124.74847C308.71245 126.95764 306.92162 128.74847 304.71245 128.74847ZM220.50874 93.18256"></path>
+</g>
+</g>
+</g>
+<g transform="translate(236.69353,101.02107)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="20.431469" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-65"></use>
+<use x="27.181153" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-110"></use>
+<use x="32.190141" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-115"></use>
+<use x="35.762574" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="38.294732" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-98"></use>
+<use x="43.30372" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-108"></use>
+<use x="45.835878" y="86.521993" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="7.386394" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="14.858498" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-118"></use>
+<use x="18.421582" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-19"></use>
+<use x="18.421584" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="21.811705" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="24.509959" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="26.516352" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="29.906473" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="34.99165" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-109"></use>
+<use x="40.45736" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-19"></use>
+<use x="40.457362" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="43.847483" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-113"></use>
+<use x="47.410567" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-117"></use>
+<use x="51.146619" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="53.153012" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="56.889064" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="60.279185" y="94.492105" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="11.727825" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="19.199929" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="21.206322" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-100"></use>
+<use x="24.942374" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="27.986559" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-109"></use>
+<use x="33.45227" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-112"></use>
+<use x="37.361288" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="40.751409" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-116"></use>
+<use x="43.276682" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-94"></use>
+<use x="43.449665" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="46.49385" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="50.229902" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-99"></use>
+<use x="53.274088" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="55.280481" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g stroke="#d7433b">
+<g fill="#fae5e4">
+<g stroke-width="0.8">
+<g stroke="#d7433b">
+<g fill="#fae5e4">
+<path d="M394.19984 165.73714H311.42784C309.21867 165.73714 307.42784 163.9463 307.42784 161.73714V134.17122C307.42784 131.96205 309.21867 130.17122 311.42784 130.17122H394.19984C396.40901 130.17122 398.19984 131.96205 398.19984 134.17122V161.73714C398.19984 163.9463 396.40901 165.73714 394.19984 165.73714ZM307.42784 130.17122"></path>
+</g>
+</g>
+</g>
+<g transform="translate(311.42784,141.9403)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#000">
+<g stroke="none">
+<use x="7.386394" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="9.918552" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-109"></use>
+<use x="17.404364" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-97"></use>
+<use x="21.794138" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-103"></use>
+<use x="26.307763" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="30.438802" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-109"></use>
+<use x="40.95214" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="45.465764" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-117"></use>
+<use x="53.502279" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-99"></use>
+<use x="57.520534" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-111"></use>
+<use x="62.034158" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-110"></use>
+<use x="66.795464" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-116"></use>
+<use x="70.127056" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-94"></use>
+<use x="70.318358" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="74.449397" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-105"></use>
+<use x="76.981555" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-110"></use>
+<use x="81.990543" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-101"></use>
+<use x="86.121582" y="94.492105" href="#tz_espectro_reprodutibilidade_g0-114"></use>
+<use x="20.09589" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-43"></use>
+<use x="27.567993" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+<use x="33.310438" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="36.043291" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="38.049684" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-115"></use>
+<use x="40.782537" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-116"></use>
+<use x="43.480792" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="46.524977" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-109"></use>
+<use x="51.990688" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-97"></use>
+<use x="57.733132" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="59.739525" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-110"></use>
+<use x="63.302596" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-116"></use>
+<use x="66.000851" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-101"></use>
+<use x="69.045036" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-105"></use>
+<use x="71.051429" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-114"></use>
+<use x="73.749684" y="102.462217" href="#tz_espectro_reprodutibilidade_g2-111"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M43.36679 18.18295L40.50455 16.99278" fill="none"></path>
+<g transform="matrix(0.92328,0.38397,-0.38397,0.92328,40.50453,16.99277)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M131.57019 55.1716L128.70807 53.98143" fill="none"></path>
+<g transform="matrix(0.92328,0.38397,-0.38397,0.92328,128.70805,53.98141)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M219.77371 92.16025L216.91104 90.97073" fill="none"></path>
+<g transform="matrix(0.92337,0.38374,-0.38374,0.92337,216.91104,90.97072)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M307.97711 129.14847L305.11499 127.95831" fill="none"></path>
+<g transform="matrix(0.92328,0.38397,-0.38397,0.92328,305.11497,127.9583)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M-54.06003-39.83366H376.54509" fill="none"></path>
+<g transform="translate(376.54509,-39.83366)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g fill="#6c757d" stroke="#6c757d">
+</g>
+<g transform="translate(106.61708,-53.91862)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#6c757d">
+<g stroke="none">
+<g fill="#6c757d">
+<use x="7.386394" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="10.928686" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="14.084926" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-102"></use>
+<use x="16.554853" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="20.526094" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="23.639437" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-24"></use>
+<use x="23.63944" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="27.181731" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="33.837363" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="38.237552" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="44.464236" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="51.009168" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="54.980409" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="59.166116" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="63.566305" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="66.679648" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="70.22194" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="74.622129" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-24"></use>
+<use x="74.622132" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="78.164424" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-126"></use>
+<use x="78.164427" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="82.135667" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="88.791299" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="95.017983" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="98.131326" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="100.386771" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="104.358012" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="106.613458" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="111.013647" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="114.555938" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-122"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g stroke-width="0.8">
+<g fill="#6c757d" stroke="#6c757d">
+<path d="M-54.06003-39.83366V165.99496" fill="none"></path>
+<g transform="matrix(0.0,1.0,-1.0,0.0,-54.06003,165.99496)">
+<g stroke-dasharray="none" stroke-dashoffset="0.0">
+ <g stroke-linejoin="miter">
+ <path d="M3.07225 0C2.69496 .09538 1.03653 .63591 0 1.22414V-1.22414C1.03653-.63591 2.69496-.09538 3.07225 0Z"></path>
+ </g>
+ </g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g fill="#6c757d" stroke="#6c757d">
+</g>
+<g transform="matrix(0.0,1.0,-1.0,0.0,-67.49002,22.45161)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#6c757d">
+<g stroke="none">
+<g fill="#6c757d">
+<use x="7.386394" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-12"></use>
+<use x="11.897279" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="16.297468" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="19.83976" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="22.095205" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="24.350651" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="28.75084" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="32.722081" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="37.12227" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="43.348953" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="47.749142" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="54.404774" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="57.518117" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="61.060409" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="65.460598" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="68.573942" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="72.759649" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="77.159838" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="81.560027" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-24"></use>
+<use x="81.56003" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="85.102322" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-126"></use>
+<use x="85.102325" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="89.073565" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+<g fill="#6c757d" stroke="#6c757d">
+<g fill="#6c757d" stroke="#6c757d">
+</g>
+<g transform="translate(-22.76236,-76.68048)">
+<g stroke="none" transform="scale(-1.00375,1.00375)translate(7.386394,102.462217)scale(-1,-1)">
+<g fill="#6c757d">
+<g stroke="none">
+<g fill="#6c757d">
+<use x="7.386394" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-67"></use>
+<use x="13.073429" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="17.04467" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="21.444859" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="28.063292" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="32.463481" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="36.005773" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="39.977014" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="43.090357" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="47.061597" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="54.108979" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="57.222322" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="60.764614" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="65.164803" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="68.278146" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="72.463853" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="76.864043" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="81.264232" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-122"></use>
+<use x="87.453716" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="93.998649" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="97.969889" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="100.225335" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="106.028768" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="112.218253" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="115.760545" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="120.160734" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="123.316975" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="126.430318" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="133.048751" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="139.593684" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="143.564924" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="145.82037" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="148.97661" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-46"></use>
+<use x="155.203278" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-79"></use>
+<use x="163.966455" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="167.508747" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="170.62209" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="173.735433" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="180.353866" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="183.896158" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="187.867399" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="194.197849" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="198.598038" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="207.575682" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="207.790167" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="213.979651" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="218.37984" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="222.78003" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="225.035475" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="229.006716" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="234.767252" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="239.167441" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="241.422886" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="244.53623" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="248.078521" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="251.191864" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="257.810298" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="262.210487" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="266.181727" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="269.29507" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="275.913504" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="282.531937" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="285.64528" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="289.61652" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="294.231176" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="298.202417" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-58"></use>
+<use x="304.429085" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="308.829274" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="315.374207" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="321.99264" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="324.248086" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="330.793018" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="334.764259" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="338.735499" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="342.277791" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="351.469916" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="355.870106" y="102.462217" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="7.386394" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="10.928686" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="14.899926" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="19.085634" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="21.984495" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-94"></use>
+<use x="22.198979" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="25.741271" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="27.996717" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="32.396906" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="35.939198" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="41.699734" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="44.813077" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="48.355369" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="52.755558" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="55.868901" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="60.054608" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="64.454797" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="68.854986" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-122"></use>
+<use x="75.044471" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="81.662904" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="85.634145" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="91.964595" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-98"></use>
+<use x="96.364784" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="98.62023" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="102.162522" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="106.348229" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="109.461572" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="115.651057" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="120.265713" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="123.808004" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="126.921348" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-102"></use>
+<use x="129.391274" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="132.933566" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="135.189012" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="138.302355" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="142.273595" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="148.818528" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="152.36082" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="156.546527" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="159.65987" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="165.849355" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="171.824357" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="172.038842" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="178.228327" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="182.414034" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="182.628519" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="186.17081" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="189.327051" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="192.483292" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="194.738737" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="201.28367" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="207.902103" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="212.302292" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="216.273533" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="219.386876" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="226.005309" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="229.547601" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="233.518841" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="237.91903" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-12"></use>
+<use x="242.429915" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="246.401156" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="250.801345" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="253.914688" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="257.885928" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-24"></use>
+<use x="257.885931" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="261.428223" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-126"></use>
+<use x="261.428226" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="265.399466" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="272.0179" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="276.203601" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="280.60379" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="286.793275" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-118"></use>
+<use x="290.764514" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="294.950222" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="298.278031" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-94"></use>
+<use x="298.492516" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="304.682001" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="309.08219" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-106"></use>
+<use x="311.552117" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="315.952306" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="319.108546" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="322.221889" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="328.840323" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="331.953666" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="336.139373" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="340.539562" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="347.157995" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="351.558185" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="353.81363" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="357.784871" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-46"></use>
+<use x="364.011539" y="110.43233" href="#tz_espectro_reprodutibilidade_g1-79"></use>
+<use x="7.386394" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="12.00105" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="15.97229" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="20.157998" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="23.271341" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="29.889774" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="34.289963" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="40.479448" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="44.021739" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="48.207441" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="52.60763" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="54.863076" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="56.260624" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="57.118524" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-16"></use>
+<use x="59.37397" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-98"></use>
+<use x="63.774159" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="66.887502" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="69.142948" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="75.761381" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="80.16157" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="84.132811" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="87.246154" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="93.864587" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="98.264776" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="104.809709" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="111.428142" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="114.970434" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="118.126675" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="121.240018" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="125.211258" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-24"></use>
+<use x="125.211261" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="128.753553" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-126"></use>
+<use x="128.753556" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="132.724796" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="139.343229" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="143.743419" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="149.932903" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="153.046246" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="156.159589" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="160.13083" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-98"></use>
+<use x="164.531019" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="168.502259" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="170.757705" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-104"></use>
+<use x="175.157894" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="181.776328" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="186.390983" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="189.933275" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="193.089516" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="196.245756" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="200.216997" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="204.188237" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="209.090876" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-12"></use>
+<use x="213.601761" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="217.144052" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="223.762486" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="227.304777" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="231.490485" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="234.603828" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="237.717171" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="243.906655" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="250.525089" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="253.681329" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="257.223621" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="261.194861" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="265.595051" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="269.99524" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="274.395429" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="281.013862" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="287.203347" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="293.82178" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="296.935123" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="300.477415" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="303.590758" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="307.13305" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="310.675341" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="312.930787" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="316.04413" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="322.662563" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="327.062753" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="330.605044" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="334.576285" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="337.689628" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="341.660868" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="348.70825" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-124"></use>
+<use x="359.297917" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="363.698107" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="367.669347" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="370.78269" y="118.402442" href="#tz_espectro_reprodutibilidade_g1-45"></use>
+<use x="7.386394" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-12"></use>
+<use x="11.897279" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="14.152724" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="17.695016" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="23.49845" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-118"></use>
+<use x="27.469689" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="31.011981" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="34.125324" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="37.281565" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="39.53701" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="43.508251" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="47.90844" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="51.87968" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="56.27987" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="60.25111" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="66.054543" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="72.599476" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="76.570717" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="78.826162" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="84.629596" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="89.029785" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="98.22191" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="101.378151" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="104.920443" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="108.033786" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="110.289231" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="114.689421" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="120.449956" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="124.635658" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="129.035847" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="135.225332" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="137.480777" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="141.880967" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="145.037207" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="148.15055" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="152.121791" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="154.377236" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="160.99567" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="164.96691" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="170.770343" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="175.170533" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="179.141773" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="182.684065" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="186.655305" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="189.768648" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="193.31094" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="196.467181" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-46"></use>
+<use x="202.693849" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-65"></use>
+<use x="208.574615" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="212.974804" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="216.131045" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="218.38649" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-98"></use>
+<use x="222.786679" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-108"></use>
+<use x="225.042125" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="231.23161" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="237.421094" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="239.67654" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="246.221473" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="250.192713" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-103"></use>
+<use x="254.163953" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="257.706245" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="262.106434" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="267.909868" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="271.45216" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="275.637867" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="278.75121" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="281.864553" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="285.835793" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="295.027919" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="299.21362" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="303.61381" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="307.58505" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="311.985239" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="316.385428" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="323.003862" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="326.975102" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="332.778535" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="339.323468" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="339.323471" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="343.294711" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="347.480413" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="351.880602" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="354.136048" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="358.536237" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="362.507477" y="126.372554" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="7.386394" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="11.786583" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="15.757824" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="18.914064" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="22.070305" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="26.041545" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="35.233671" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="41.852104" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="45.008345" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="48.550636" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="54.311172" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-118"></use>
+<use x="58.496894" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-19"></use>
+<use x="58.496897" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="62.468137" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="65.58148" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="67.836926" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="71.808166" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="74.964407" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-44"></use>
+<use x="79.867045" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="83.838286" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="90.885668" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-113"></use>
+<use x="95.071369" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="99.471558" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="103.442799" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="107.842988" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="112.243177" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="118.861611" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="122.832851" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="127.23304" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="130.346383" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="133.459726" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="140.07816" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="144.692815" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="148.235107" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="151.391348" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="154.547588" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="158.518829" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="165.137262" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="169.537451" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="172.650794" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="176.193086" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-99"></use>
+<use x="179.735378" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="181.990824" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="185.147064" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="191.765498" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="194.878841" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="198.421132" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-112"></use>
+<use x="202.821322" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="205.934665" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="210.120372" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-100"></use>
+<use x="214.520561" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-117"></use>
+<use x="218.92075" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-122"></use>
+<use x="222.463042" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="224.718488" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-114"></use>
+<use x="230.479024" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="237.097457" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="243.642389" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="247.184681" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-115"></use>
+<use x="250.340922" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="256.885854" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-111"></use>
+<use x="263.504288" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-97"></use>
+<use x="267.475528" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-109"></use>
+<use x="273.805979" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-98"></use>
+<use x="278.206168" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-105"></use>
+<use x="280.461614" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="284.003905" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-110"></use>
+<use x="288.189613" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-116"></use>
+<use x="291.302956" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-101"></use>
+<use x="294.845248" y="134.342666" href="#tz_espectro_reprodutibilidade_g1-46"></use>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</svg>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-espectro-reprodutibilidade-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figura&nbsp;97.1: Os degraus de reprodutibilidade de um ambiente, do dotfile à imagem completa.
+</figcaption>
+</figure>
+</div>
+<p>Como a <a href="#fig-espectro-reprodutibilidade" class="quarto-xref">Figura&nbsp;<span>97.1</span></a> indica, o segundo degrau é barato e rende muito. Um script de bootstrap captura o que os dotfiles não capturam: os pacotes.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># gerar a lista do que voce instalou explicitamente (@sec-cap034)</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">apt-mark</span> showmanual <span class="op">&gt;</span> pacotes-manuais.txt</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="co"># reinstalar tudo numa maquina nova</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt update</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="fu">xargs</span> <span class="at">-a</span> pacotes-manuais.txt sudo apt install <span class="at">-y</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O <code>apt-mark showmanual</code> é a peça que quase ninguém conhece: ele lista apenas o que foi instalado por decisão sua, ignorando as centenas de dependências. É a diferença entre uma lista de 120 linhas útil e um despejo de 2.000 pacotes.</p>
+<p>Um bootstrap completo tem quatro partes, nesta ordem:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co">#!/usr/bin/env bash</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="bu">set</span> <span class="at">-euo</span> pipefail</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. pacotes</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt update <span class="kw">&amp;&amp;</span> <span class="fu">xargs</span> <span class="at">-a</span> <span class="st">"</span><span class="va">$(</span><span class="fu">dirname</span> <span class="st">"</span><span class="va">$0</span><span class="st">"</span><span class="va">)</span><span class="st">/pacotes-manuais.txt"</span> sudo apt install <span class="at">-y</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. dotfiles</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone git@servidor:dotfiles.git ~/.dotfiles <span class="kw">&amp;&amp;</span> <span class="ex">~/.dotfiles/instalar.sh</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 3. ajustes do sistema que nao sao dotfile</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> timedatectl set-timezone America/Sao_Paulo</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="co"># 4. verificacao: o ambiente esta como esperado?</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="bu">command</span> <span class="at">-v</span> vim tmux git zsh <span class="op">&gt;</span>/dev/null <span class="kw">&amp;&amp;</span> <span class="bu">echo</span> <span class="st">"ferramentas presentes"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="testar-a-reprodutibilidade-ou-não-acreditar-nela" class="level2" data-number="97.6">
+<h2 data-number="97.6" class="anchored" data-anchor-id="testar-a-reprodutibilidade-ou-não-acreditar-nela"><span class="header-section-number">97.6</span> Testar a reprodutibilidade, ou não acreditar nela</h2>
+<p>Um repositório de dotfiles que nunca foi aplicado numa máquina limpa é uma hipótese, não um backup. O teste real:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># em um conteiner descartavel (@sec-cap038 e o Volume 16)</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> run <span class="at">--rm</span> <span class="at">-it</span> kalilinux/kali-rolling bash</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="co"># dentro: apt update &amp;&amp; apt install -y git &amp;&amp; git clone ... &amp;&amp; ./instalar.sh</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Ou, sem contêiner, um usuário novo na própria máquina:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash teste-dotfiles</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> <span class="at">-u</span> teste-dotfiles <span class="at">-i</span> bash <span class="at">-c</span> <span class="st">'git clone ... ~/.dotfiles &amp;&amp; ~/.dotfiles/instalar.sh'</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel <span class="at">-r</span> teste-dotfiles</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>O que esse teste sempre revela na primeira vez: alguma dependência que você tinha instalado e esqueceu de listar, algum caminho absoluto com o seu nome de usuário dentro, e alguma linha que assume uma ferramenta presente. É melhor descobrir isso num contêiner de teste do que na máquina nova, no dia em que a antiga morreu.</p>
+</section>
+<section id="no-kali" class="level2" data-number="97.7">
+<h2 data-number="97.7" class="anchored" data-anchor-id="no-kali"><span class="header-section-number">97.7</span> 🐉 No Kali</h2>
+<ul>
+<li><strong>A VM do Kali é descartável por natureza, e isso é uma vantagem — se os dotfiles estiverem fora dela.</strong> O fluxo saudável é tratar a VM como algo que se joga fora e recria: <code>git clone</code> dos dotfiles, script de bootstrap, e em quinze minutos o ambiente está de volta. Quem não tem isso acumula anos numa VM que não pode morrer, que é exatamente o cenário da abertura. Combine com o snapshot da VM: o snapshot cobre o estado completo, os dotfiles cobrem a <strong>intenção</strong> — e é a intenção que você quer levar para a máquina seguinte.</li>
+<li><strong>O home do Kali contém material que nunca pode ir para um repositório.</strong> <code>~/.msf4/</code> guarda o banco do Metasploit, com hosts e credenciais de engajamentos; <code>~/.ssh/</code> tem chaves; <code>~/.zsh_history</code> tem comandos que frequentemente incluem senhas e endereços de alvos. Um <code>git init</code> no home do Kali é, potencialmente, publicar dados de cliente — o que além de risco técnico é problema contratual e legal. É o argumento mais forte para a lista de inclusão: no Kali, o custo de um esquecimento é maior do que numa máquina comum.</li>
+<li><strong>Metapacotes do Kali substituem metade do seu script de bootstrap</strong> (<a href="../vol06/cap036-repositorios-do-kali-metapacotes-e-kali-tweaks.html" class="quarto-xref"><span>Capítulo 36</span></a>). Em vez de listar duzentas ferramentas individualmente, <code>kali-linux-headless</code>, <code>kali-tools-web</code> ou <code>kali-tools-top10</code> reconstroem conjuntos coerentes com um comando. O <code>apt-mark showmanual</code> numa instalação de Kali vai listar o metapacote, não as ferramentas dentro dele — que é justamente o comportamento desejado.</li>
+<li><strong>Versione também os seus scripts de <code>~/bin</code>, não só os arquivos de configuração.</strong> As ferramentas pequenas que você escreve para um problema específico — o script que formata a saída de um scan, o que monta o laboratório, o que gera o relatório — são o que mais se perde e mais custa reescrever. Elas seguem as regras do <a href="../vol12/cap077-estruturando-scripts-grandes-e-bibliotecas-de.html" class="quarto-xref"><span>Capítulo 77</span></a> e do <a href="../vol12/cap071-tratamento-de-erros-set-euo-pipefail-e-traps.html" class="quarto-xref"><span>Capítulo 71</span></a>, entram no mesmo repositório e ganham histórico junto com o resto.</li>
+<li><strong>Cuidado ao publicar dotfiles em repositório público.</strong> Um <code>.zshrc</code> publicado revela quais ferramentas você usa, os nomes das suas máquinas, caminhos internos e às vezes o formato dos seus alvos de laboratório. Não é catastrófico, mas é reconhecimento gratuito oferecido a quem estiver interessado — e num contexto de segurança, o hábito de considerar o que cada publicação revela é parte do ofício. Se for publicar, revise com a mesma atenção com que você revisaria um relatório.</li>
+</ul>
+<blockquote class="blockquote">
+<p><strong>Nota sobre a família RHEL e portabilidade.</strong> Um repositório de dotfiles que atravessa famílias precisa de duas defesas: testar a existência do arquivo ou comando antes de usá-lo (<code>command -v</code>, <code>[[ -r ]]</code>), e ramificar por <code>ID</code> do <code>/etc/os-release</code> para o que é realmente diferente — gerenciador de pacotes (<code>apt</code> contra <code>dnf</code>), caminhos de plugin, nome do serviço. O equivalente do <code>apt-mark showmanual</code> no RHEL é <code>dnf history userinstalled</code>. O <code>chezmoi</code> e o <code>stow</code> funcionam igualmente nas duas famílias, e o <code>chezmoi</code> já expõe <code>.chezmoi.osRelease.id</code> como variável de modelo, o que torna a ramificação declarativa em vez de condicional espalhada pelo arquivo.</p>
+</blockquote>
+</section>
+<section id="laboratório" class="level2" data-number="97.8">
+<h2 data-number="97.8" class="anchored" data-anchor-id="laboratório"><span class="header-section-number">97.8</span> 🧪 Laboratório</h2>
+<p>Roteiro numa VM do Kali. Você vai construir um repositório de dotfiles do zero e, no passo 8, <strong>provar</strong> que ele funciona numa conta limpa.</p>
+<ol type="1">
+<li><p><strong>Crie o repositório com a lista de inclusão desde o começo.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">mkdir</span> <span class="at">-p</span> ~/.dotfiles/<span class="dt">{zsh</span><span class="op">,</span><span class="dt">vim</span><span class="op">,</span><span class="dt">tmux</span><span class="op">,</span><span class="dt">git}</span> <span class="kw">&amp;&amp;</span> <span class="bu">cd</span> ~/.dotfiles</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> init</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="bu">printf</span> <span class="st">'*\n!*/\n!.gitignore\n'</span> <span class="op">&gt;</span> .gitignore     <span class="co"># padrao: nada entra</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> add .gitignore <span class="kw">&amp;&amp;</span> <span class="fu">git</span> commit <span class="at">-m</span> <span class="st">"dotfiles: bloqueia tudo por padrao"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: um repositório onde nada é rastreado automaticamente. Cada arquivo daqui em diante entra com <code>git add -f</code>, deliberadamente.</p></li>
+<li><p><strong>Traga a sua configuração real para dentro dele.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cp</span> <span class="at">-a</span> ~/.zshrc  ~/.dotfiles/zsh/.zshrc  <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="bu">printf</span> <span class="st">'alias ll="ls -la"\n'</span> <span class="op">&gt;</span> ~/.dotfiles/zsh/.zshrc</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="bu">printf</span> <span class="st">'set number\nsyntax on\nset expandtab tabstop=4\n'</span> <span class="op">&gt;</span> ~/.dotfiles/vim/.vimrc</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="bu">printf</span> <span class="st">'set -g mouse on\nset -g history-limit 10000\n'</span> <span class="op">&gt;</span> ~/.dotfiles/tmux/.tmux.conf</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="bu">printf</span> <span class="st">'[user]\n\tname = Lab Kali\n[alias]\n\tst = status --short\n'</span> <span class="op">&gt;</span> ~/.dotfiles/git/.gitconfig</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> add <span class="at">-f</span> zsh/.zshrc vim/.vimrc tmux/.tmux.conf git/.gitconfig</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> commit <span class="at">-m</span> <span class="st">"dotfiles: zsh, vim, tmux e git"</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> ls-files</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: exatamente cinco arquivos rastreados. Rode <code>git status</code> e confirme que nada mais aparece — a lista de inclusão está funcionando.</p></li>
+<li><p><strong>Escreva o instalador que não destrói o que já existe.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> <span class="op">&gt;</span> ~/.dotfiles/instalar.sh <span class="op">&lt;&lt;'EOF'</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="st">#!/usr/bin/env bash</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="st">set -euo pipefail</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="st">raiz="$(cd "$(dirname "$0")" &amp;&amp; pwd)"</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="st">ligar() {</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="st">    local origem="$raiz/$1" destino="$HOME/$2"</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="st">    [ -e "$origem" ] || { echo "ausente: $origem" &gt;&amp;2; return 1; }</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a><span class="st">    if [ -e "$destino" ] &amp;&amp; [ ! -L "$destino" ]; then</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="st">        mv -- "$destino" "$destino.pre-dotfiles"</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="st">        echo "guardado: $destino.pre-dotfiles"</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a><span class="st">    fi</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a><span class="st">    mkdir -p -- "$(dirname "$destino")"</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="st">    ln -sfn -- "$origem" "$destino"</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a><span class="st">    echo "ligado: $destino"</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="st">}</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a><span class="st">ligar zsh/.zshrc      .zshrc</span></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a><span class="st">ligar vim/.vimrc      .vimrc</span></span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a><span class="st">ligar tmux/.tmux.conf .tmux.conf</span></span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a><span class="st">ligar git/.gitconfig  .gitconfig</span></span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a><span class="op">EOF</span></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a><span class="fu">chmod</span> +x ~/.dotfiles/instalar.sh</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a><span class="ex">shellcheck</span> ~/.dotfiles/instalar.sh <span class="kw">||</span> <span class="fu">true</span></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a><span class="ex">~/.dotfiles/instalar.sh</span></span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-l</span> ~/.zshrc ~/.vimrc ~/.tmux.conf ~/.gitconfig</span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: os quatro caminhos agora são links simbólicos apontando para <code>~/.dotfiles/</code>, e o <code>.zshrc</code> anterior foi guardado como <code>.zshrc.pre-dotfiles</code>. Nada foi destruído.</p></li>
+<li><p><strong>Comprove a vantagem do link: editar o home é editar o repositório.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">'alias lt="ls -lat"'</span> <span class="op">&gt;&gt;</span> ~/.zshrc</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles status <span class="at">--short</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles diff <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-3</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles commit <span class="at">-am</span> <span class="st">"zsh: alias lt"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: a edição feita em <code>~/.zshrc</code> aparece no <code>git status</code> do repositório sem nenhum passo de cópia. É o que torna essa estratégia sustentável no dia a dia.</p></li>
+<li><p><strong>Adicione a variação por máquina e a ponte para segredos.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> <span class="op">&gt;&gt;</span> ~/.dotfiles/zsh/.zshrc <span class="op">&lt;&lt;'EOF'</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="st"># variacao por distribuicao</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="st">[ -f /etc/os-release ] &amp;&amp; . /etc/os-release</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="st">case "${ID:-}" in</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="st">    kali|debian|ubuntu) alias instalar='sudo apt install'  ;;</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="st">    fedora|rhel|centos) alias instalar='sudo dnf install'  ;;</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="st">esac</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="st"># so cria o alias se a ferramenta existir</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="st">command -v bat &gt;/dev/null 2&gt;&amp;1 &amp;&amp; alias mostrar='bat --paging=never'</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a><span class="st"># segredos ficam FORA do repositorio</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a><span class="st">[ -r "$HOME/.zshrc.local" ] &amp;&amp; . "$HOME/.zshrc.local"</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a><span class="op">EOF</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a><span class="bu">printf</span> <span class="st">'export TOKEN_FICTICIO=nao-versionado\n'</span> <span class="op">&gt;</span> ~/.zshrc.local</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles commit <span class="at">-am</span> <span class="st">"zsh: variacao por distro e ponte para segredos"</span></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles ls-files <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-c</span> <span class="st">'zshrc.local'</span> <span class="kw">||</span> <span class="bu">echo</span> <span class="st">"zshrc.local NAO esta versionado: correto"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: o <code>.zshrc.local</code> existe no home e <strong>não</strong> aparece no repositório. Essa é a separação entre estrutura versionada e segredo local.</p></li>
+<li><p><strong>Capture os pacotes instalados por decisão sua.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="ex">apt-mark</span> showmanual <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="ex">apt-mark</span> showmanual <span class="op">&gt;</span> ~/.dotfiles/pacotes-manuais.txt</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span> <span class="at">-5</span> ~/.dotfiles/pacotes-manuais.txt</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles add <span class="at">-f</span> pacotes-manuais.txt</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles commit <span class="at">-m</span> <span class="st">"bootstrap: lista de pacotes instalados manualmente"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: uma lista de dezenas a poucas centenas de linhas, com os metapacotes <code>kali-*</code> entre elas — e não os milhares de pacotes que <code>dpkg -l</code> mostraria. É o que os dotfiles sozinhos não capturam.</p></li>
+<li><p><strong>Escreva o bootstrap completo.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb19"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> <span class="op">&gt;</span> ~/.dotfiles/bootstrap.sh <span class="op">&lt;&lt;'EOF'</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="st">#!/usr/bin/env bash</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="st">set -euo pipefail</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="st">raiz="$(cd "$(dirname "$0")" &amp;&amp; pwd)"</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="st">echo "[1/3] pacotes"</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="st">sudo apt update</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="st">xargs -a "$raiz/pacotes-manuais.txt" sudo apt install -y</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="st">echo "[2/3] dotfiles"</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="st">"$raiz/instalar.sh"</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="st">echo "[3/3] verificacao"</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="st">for ferramenta in git vim tmux zsh; do</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="st">    command -v "$ferramenta" &gt;/dev/null || { echo "FALTA: $ferramenta" &gt;&amp;2; exit 1; }</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a><span class="st">done</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a><span class="st">echo "ambiente pronto"</span></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a><span class="op">EOF</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a><span class="fu">chmod</span> +x ~/.dotfiles/bootstrap.sh</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> <span class="at">-n</span> ~/.dotfiles/bootstrap.sh <span class="kw">&amp;&amp;</span> <span class="bu">echo</span> <span class="st">"sintaxe ok"</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles add <span class="at">-f</span> bootstrap.sh <span class="kw">&amp;&amp;</span> <span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles commit <span class="at">-m</span> <span class="st">"bootstrap: script completo"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: sintaxe válida. <strong>Não execute</strong> o passo de pacotes agora — ele reinstalaria tudo. O passo seguinte testa numa conta limpa.</p></li>
+<li><p><strong>Teste de verdade: aplique numa conta que nunca viu esses arquivos.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb20"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash teste-dot</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> cp <span class="at">-a</span> ~/.dotfiles /home/teste-dot/.dotfiles</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> chown <span class="at">-R</span> teste-dot:teste-dot /home/teste-dot/.dotfiles</span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> <span class="at">-u</span> teste-dot <span class="at">-H</span> bash <span class="at">-c</span> <span class="st">'$HOME/.dotfiles/instalar.sh'</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ls <span class="at">-l</span> /home/teste-dot/.zshrc /home/teste-dot/.vimrc</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> <span class="at">-u</span> teste-dot <span class="at">-H</span> bash <span class="at">-c</span> <span class="st">'grep -c instalar $HOME/.zshrc'</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: os links são criados na conta nova e os arquivos chegam íntegros. <strong>Este é o único teste que prova que o seu repositório funciona.</strong> Se algo falhar aqui — um caminho com o seu nome de usuário dentro, uma ferramenta ausente —, é exatamente o que falharia na máquina nova no pior dia possível.</p></li>
+<li><p><strong>Confirme que nenhum segredo escapou.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb21"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles ls-files</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles log <span class="at">-p</span> <span class="at">--all</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-iE</span> <span class="st">'BEGIN (RSA|OPENSSH|PRIVATE)|password|token='</span> <span class="kw">|</span> <span class="fu">head</span> <span class="kw">||</span> <span class="bu">echo</span> <span class="st">"nenhum segredo no historico"</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-C</span> ~/.dotfiles ls-files <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">'id_|\.pem|\.key|history'</span> <span class="kw">||</span> <span class="bu">echo</span> <span class="st">"nenhum arquivo sensivel rastreado"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: as duas verificações passam sem achados. Faça esta checagem <strong>antes</strong> de qualquer <code>git push</code>, sempre — é a última chance antes de o commit se tornar permanente e público.</p></li>
+<li><p><strong>Limpe.</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb22"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> userdel <span class="at">-r</span> teste-dot</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> f <span class="kw">in</span> .zshrc .vimrc .tmux.conf .gitconfig<span class="kw">;</span> <span class="cf">do</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">[</span> <span class="ot">-L</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$f</span><span class="st">"</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="fu">rm</span> <span class="at">-f</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$f</span><span class="st">"</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>    <span class="bu">[</span> <span class="ot">-e</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$f</span><span class="st">.pre-dotfiles"</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="fu">mv</span> <span class="at">--</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$f</span><span class="st">.pre-dotfiles"</span> <span class="st">"</span><span class="va">$HOME</span><span class="st">/</span><span class="va">$f</span><span class="st">"</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="cf">done</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="fu">rm</span> <span class="at">-rf</span> ~/.dotfiles ~/.zshrc.local</span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-l</span> ~/.zshrc <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="bu">echo</span> <span class="st">"restaurado"</span></span></code></pre></div><button title="Copiar para a área de transferência" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Esperado: os links somem, a configuração original volta do <code>.pre-dotfiles</code> e o repositório de laboratório desaparece. Repare que a restauração só foi possível porque o instalador do passo 3 preservou o que existia — um instalador que sobrescreve não permite este último passo.</p></li>
+</ol>
+</section>
+<section id="resumo" class="level2" data-number="97.9">
+<h2 data-number="97.9" class="anchored" data-anchor-id="resumo"><span class="header-section-number">97.9</span> Resumo</h2>
+<ul>
+<li><strong>O ambiente de trabalho costuma ser a única parte da infraestrutura que não é reproduzível</strong>, e três anos de ajustes invisíveis desaparecem com um disco. Dotfiles versionados transformam configuração pessoal em ativo recuperável.</li>
+<li><strong>Lista de inclusão, nunca de exclusão.</strong> <code>.gitignore</code> com <code>*</code> na primeira linha e cada arquivo adicionado com <code>git add -f</code>. O padrão passa a ser “não versionado”, e o esquecimento deixa de ser vazamento.</li>
+<li><strong>Três estratégias válidas:</strong> links simbólicos com script (ou GNU Stow), repositório <em>bare</em> apontado para o home, ou <code>chezmoi</code>/<code>yadm</code> quando há várias máquinas e segredos a referenciar.</li>
+<li><strong>Segredo não entra no repositório, nem em repositório privado.</strong> O padrão <code>[[ -r ~/.zshrc.local ]] &amp;&amp; source</code> resolve a maioria dos casos; <code>pass</code> e <code>age</code> cobrem o resto.</li>
+<li><strong><code>apt-mark showmanual</code> captura o que os dotfiles não capturam:</strong> os pacotes que você instalou por decisão própria, sem as milhares de dependências. É a base do script de bootstrap.</li>
+<li><strong>Um repositório de dotfiles nunca aplicado numa máquina limpa é hipótese, não backup.</strong> Teste num contêiner descartável ou num usuário novo — e é sempre na primeira vez que aparecem o caminho absoluto com o seu nome dentro e a dependência esquecida.</li>
+<li><strong>No Kali, o home contém <code>.msf4/</code>, <code>.ssh/</code> e histórico com alvos e credenciais.</strong> Um <code>git init</code> no home é potencialmente publicar dados de cliente, o que torna a disciplina da lista de inclusão mais do que boa prática.</li>
+</ul>
 
 
+</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
@@ -1383,7 +2819,7 @@ ul.task-list li input[type="checkbox"] {
 </div>   
     <div class="nav-footer-center">
       &nbsp;
-    <div class="toc-actions"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></div>
+    <div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/VitorMattosDev/manual-linux/edit/main/vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd" class="toc-action"><i class="bi bi-github"></i>Editar essa página</a></li><li><a href="https://github.com/VitorMattosDev/manual-linux/issues/new" class="toc-action"><i class="bi empty"></i>Criar uma issue</a></li></ul></div></div>
     <div class="nav-footer-right">
 <p>Licença CC BY-SA 4.0</p>
 </div>
