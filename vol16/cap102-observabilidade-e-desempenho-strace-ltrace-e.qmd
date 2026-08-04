@@ -1,3 +1,408 @@
 # Observabilidade e desempenho: strace, ltrace e perf {#sec-cap102}
 
-*(em elaboracao)*
+O serviço sobe, escreve uma linha no log e morre. O código de saída é 1. A mensagem é `erro ao inicializar`. O `journalctl` (@sec-cap042) não tem mais nada, o autor do software sumiu em 2019, e não há fonte disponível. Você já conferiu permissões, caminho e configuração — tudo parece certo.
+
+Existe um recurso que funciona nesse caso e em quase todos os parentes dele: em vez de perguntar ao programa o que aconteceu, perguntar ao **kernel** o que o programa pediu. Um processo não pode abrir arquivo, conectar em porta, alocar memória ou ler o relógio sem passar pela fronteira que o @sec-cap098 descreveu. Toda intenção do programa aparece ali, e ali é possível observar, mesmo sem fonte, sem símbolos e sem cooperação nenhuma do software.
+
+Este capítulo trata das ferramentas dessa observação: `strace` para chamadas de sistema, `ltrace` para chamadas de biblioteca, `perf` para onde a CPU gasta ciclos, e o `/proc` para o estado instantâneo. E, antes das ferramentas, do método — porque o erro mais comum em diagnóstico de desempenho é escolher a ferramenta antes de saber que pergunta se está fazendo.
+
+## O método vem antes da ferramenta
+
+Duas perguntas separam bem os casos, e cada uma leva a um conjunto diferente:
+
+- **"Por que não funciona?"** — comportamento inesperado, falha silenciosa, arquivo que não é encontrado. Ferramenta: rastreamento (`strace`, `ltrace`).
+- **"Por que está lento?"** — funciona, mas devagar. Ferramenta: perfilamento e métricas (`perf`, `vmstat`, `pidstat`, `/proc`).
+
+Para a segunda, o passo inicial é sempre classificar o gargalo antes de medir qualquer coisa. Um processo em qualquer instante está numa de três situações: consumindo CPU, esperando E/S ou esperando outro processo. A tríade `top`, `vmstat` e `iostat` responde em trinta segundos:
+
+```bash
+uptime                       # carga media: 1, 5 e 15 minutos
+vmstat 1 5                   # r = prontos para CPU; b = bloqueados em E/S; wa = espera
+iostat -xz 1 3               # %util e await por disco
+pidstat -u -r -d 1 3         # CPU, memoria e E/S por processo
+free -h                      # memoria e swap (@sec-cap032)
+ss -s                        # resumo de sockets (@sec-cap080)
+```
+
+::: {#fig-arvore-diagnostico}
+```{.tikz}
+%%| filename: arvore-diagnostico
+%%| alt: Arvore de decisao ligando o sintoma observado a ferramenta de diagnostico adequada
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.1cm,minimum height=1.0cm},
+    lf/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.3cm,minimum height=1.15cm},
+    lb/.style={font=\tiny,manualgray,fill=white,inner sep=1.5pt},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!14] (q) at (0,4.0) {\textbf{qual é o sintoma?}};
+
+  \node[bx,draw=manualred,fill=manualred!12]   (nf) at (-4.2,2.3) {\textbf{não funciona}\\\tiny falha, erro obscuro};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (lt) at (4.2,2.3) {\textbf{está lento}\\\tiny funciona, mas demora};
+
+  \draw[fl] (q) -- (nf);
+  \draw[fl] (q) -- (lt);
+
+  \node[lf,draw=manualred,fill=manualred!8]  (s1) at (-6.3,0.3)
+    {\texttt{strace -f -e trace=file}\\\tiny arquivo que não abre,\\\tiny permissão negada};
+  \node[lf,draw=manualred,fill=manualred!8]  (s2) at (-2.6,0.3)
+    {\texttt{ltrace} / \texttt{ldd}\\\tiny biblioteca errada,\\\tiny função que retorna erro};
+
+  \draw[fl] (nf) -- (s1);
+  \draw[fl] (nf) -- (s2);
+
+  \node[lf,draw=manualyellow,fill=manualyellow!14] (p1) at (1.9,0.3)
+    {CPU alta?\\\texttt{perf top}, \texttt{perf record}\\\tiny gráfico de chama};
+  \node[lf,draw=manualyellow,fill=manualyellow!14] (p2) at (5.6,0.3)
+    {esperando E/S?\\\texttt{iostat}, \texttt{iotop}\\\texttt{strace -c}};
+  \node[lf,draw=manualyellow,fill=manualyellow!14] (p3) at (9.3,0.3)
+    {parado sem motivo?\\\texttt{/proc/PID/wchan}\\\texttt{/proc/PID/stack}};
+
+  \draw[fl] (lt) -- (p1);
+  \draw[fl] (lt) -- (p2);
+  \draw[fl] (lt) -- (p3);
+
+  \node[lb] at (-2.4,3.3) {sem saída útil};
+  \node[lb] at (2.4,3.3)  {saída correta};
+
+  \node[nt,text width=13.6cm,anchor=north] at (1.5,-0.8)
+    {O ramo da esquerda pergunta \emph{o que o programa tentou fazer}; o da direita, \emph{onde o tempo foi gasto}. A classificação inicial vem de \texttt{vmstat 1}: coluna \texttt{r} alta indica disputa por CPU, coluna \texttt{b} e \texttt{wa} altos indicam espera por E/S, e um processo que não aparece em nenhuma das duas está bloqueado esperando algo --- travamento, rede ou outro processo. Medir antes de supor evita a armadilha clássica de otimizar o trecho errado.};
+\end{tikzpicture}
+```
+Do sintoma à ferramenta: a árvore de decisão do diagnóstico.
+:::
+
+## `strace`: tudo o que o programa pede ao kernel
+
+`strace` intercepta as chamadas de sistema de um processo, mostrando argumentos e retorno. É a ferramenta mais próxima de ler a mente de um binário sem fonte.
+
+```bash
+sudo apt install strace ltrace
+strace ls /tmp 2>&1 | head -20
+strace -o saida.txt ls /tmp        # -o: rastreio no arquivo, saida limpa no terminal
+```
+
+Sem opções, `strace` é verborrágico demais. As que importam:
+
+| Opção | Efeito |
+|---|---|
+| `-f` | segue processos filhos — quase sempre necessária |
+| `-e trace=file` | só chamadas que tocam caminhos (`open`, `stat`, `access`) |
+| `-e trace=network` | só rede (`socket`, `connect`, `sendto`) |
+| `-e trace=%process` | `fork`, `execve`, `exit`, `wait` |
+| `-c` | não rastreia: **resume** contagem, tempo e erros por chamada |
+| `-p <PID>` | conecta a um processo já em execução |
+| `-y` | mostra o caminho por trás de cada descritor de arquivo |
+| `-T` | tempo gasto dentro de cada chamada |
+| `-s 200` | aumenta o tamanho das cadeias exibidas (padrão: 32) |
+| `-tt` | horário com microssegundos em cada linha |
+
+: As opções de `strace` que resolvem a maioria dos casos {#tbl-opcoes-strace}
+
+### O caso da abertura
+
+```bash
+strace -f -e trace=file -o /tmp/rastreio.txt ./servico
+grep -E 'ENOENT|EACCES|EPERM' /tmp/rastreio.txt | tail -20
+```
+
+Essa linha resolve uma fração enorme dos problemas de "não funciona e não diz por quê". `ENOENT` é arquivo que não existe, `EACCES` é permissão, `EPERM` é operação proibida. O rastreio mostra o caminho exato que o programa procurou — que costuma ser um arquivo de configuração num diretório que ninguém documentou, ou uma biblioteca em versão diferente da instalada (@sec-cap101).
+
+```bash
+# padroes que valem memorizar
+strace -f -e trace=network -p "$(pgrep -f meu-servico)"   # em que ele conecta?
+strace -c ls -R /usr                                       # perfil de syscalls
+strace -y -e trace=read,write -p 1234                      # o que ele le e escreve
+strace -f -T -e trace=openat ./prog 2>&1 | sort -t'<' -k2 -rn | head  # as mais lentas
+```
+
+O `-c` é subestimado e vale como diagnóstico de desempenho: um programa que faz meio milhão de chamadas `read` de 1 byte não tem problema de disco, tem problema de tamanho de buffer, e a tabela do `-c` mostra isso em uma tela.
+
+::: {.callout-warning}
+**`strace` desacelera o processo rastreado em uma ordem de grandeza.** Cada chamada interceptada custa duas trocas de contexto adicionais. Em produção, isso pode transformar um serviço lento num serviço inoperante, e há casos em que o atraso altera o comportamento — condições de corrida somem, tempos-limite estouram. Prefira `-e trace=` restrito, use `-c` quando quiser apenas o agregado, e para observação contínua em produção use eBPF, discutido adiante.
+:::
+
+### Quem pode rastrear quem
+
+```bash
+cat /proc/sys/kernel/yama/ptrace_scope
+# 0 = qualquer processo do mesmo usuario     1 = so pai e filho (padrao Debian/Kali)
+# 2 = so root                                3 = ninguem, ate reiniciar
+sudo sysctl -w kernel.yama.ptrace_scope=0    # em laboratorio
+```
+
+`strace`, `ltrace` e `gdb` usam a mesma syscall `ptrace`, e por isso todos são governados por esse botão. Quando `strace -p` responde `Operation not permitted` num processo do seu próprio usuário, a causa é o Yama, e não permissão de arquivo. Do lado defensivo, `ptrace_scope=1` é um padrão bom: impede que um processo comprometido leia a memória de outro processo do mesmo usuário — inclusive a do navegador com as suas sessões abertas.
+
+## `ltrace`: uma camada acima
+
+Onde `strace` mostra a fronteira com o kernel, `ltrace` mostra as chamadas a bibliotecas compartilhadas — `strcmp`, `malloc`, `printf`, funções da OpenSSL. É útil exatamente quando o programa erra **antes** de falar com o kernel.
+
+```bash
+ltrace ./prog 2>&1 | head -20
+ltrace -e 'str*' ./prog             # so funcoes de string
+ltrace -S ./prog                    # intercala com as syscalls
+ltrace -c ./prog                    # resumo por funcao
+```
+
+`ltrace` só enxerga chamadas que atravessam a *Procedure Linkage Table*, ou seja, funções em bibliotecas dinâmicas. Binário estático (@sec-cap101) não rende nada, e funções internas do próprio programa também não aparecem.
+
+## `perf`: onde os ciclos estão indo
+
+`perf` conversa com os contadores de desempenho do processador e com pontos de instrumentação do kernel. É a ferramenta certa quando o problema é CPU.
+
+```bash
+sudo apt install linux-perf   # no Kali; em outras, linux-tools-$(uname -r)
+perf --version
+sudo sysctl -w kernel.perf_event_paranoid=1   # padrao endurecido bloqueia usuario comum
+```
+
+```bash
+perf stat ./prog                       # visao geral de uma execucao
+perf stat -e cache-misses,branch-misses,instructions,cycles ./prog
+sudo perf top                          # "top" por funcao, do sistema inteiro, ao vivo
+sudo perf record -F 99 -g -- ./prog    # amostra 99 vezes por segundo, com pilha
+sudo perf report                       # navega no resultado
+sudo perf record -F 99 -g -p <PID> -- sleep 30   # 30 s de um processo em producao
+```
+
+A saída de `perf stat` responde a perguntas que nenhuma outra ferramenta responde: **IPC** (instruções por ciclo) baixo indica que a CPU está esperando memória, não calculando; `cache-misses` alto aponta estrutura de dados com localidade ruim; `context-switches` alto sugere disputa ou E/S excessiva.
+
+O `perf record -g` produz o perfil hierárquico que, convertido, vira um **gráfico de chama** — a visualização em que a largura de cada bloco é proporcional ao tempo gasto:
+
+```bash
+git clone https://github.com/brendangregg/FlameGraph ~/FlameGraph
+sudo perf record -F 99 -g -- ./prog
+sudo perf script | ~/FlameGraph/stackcollapse-perf.pl | ~/FlameGraph/flamegraph.pl > perfil.svg
+```
+
+::: {#fig-camadas-observacao}
+```{.tikz}
+%%| filename: camadas-observacao
+%%| alt: Camadas de observacao de um processo, da funcao interna ate os eventos de hardware
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=5pt,minimum width=6.8cm,minimum height=0.95cm},
+    tg/.style={rounded corners=2pt,draw,thin,align=center,font=\tiny,inner sep=3pt,minimum width=3.3cm,minimum height=0.9cm},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!14] (a) at (0,4.0)
+    {\textbf{funções internas do programa}\\\tiny só com símbolos ou fonte};
+  \node[bx,draw=manualblue,fill=manualblue!10] (b) at (0,2.85)
+    {\textbf{chamadas a bibliotecas}\\\tiny malloc, strcmp, SSL\_read};
+  \node[bx,draw=manualred,fill=manualred!12] (c) at (0,1.7)
+    {\textbf{chamadas de sistema}\\\tiny openat, read, connect, execve};
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (d) at (0,0.55)
+    {\textbf{eventos do kernel}\\\tiny escalonamento, E/S de bloco, rede};
+  \node[bx,draw=manualgray,fill=manualgray!12] (e) at (0,-0.6)
+    {\textbf{contadores do processador}\\\tiny ciclos, instruções, faltas de cache};
+
+  \node[tg,draw=manualblue,fill=manualblue!8,anchor=west]   at (4.0,4.0)  {\texttt{perf record -g}\\\texttt{gdb}};
+  \node[tg,draw=manualblue,fill=manualblue!8,anchor=west]   at (4.0,2.85) {\texttt{ltrace}\\\texttt{LD\_PRELOAD}};
+  \node[tg,draw=manualred,fill=manualred!8,anchor=west]     at (4.0,1.7)  {\texttt{strace}\\\texttt{bpftrace}};
+  \node[tg,draw=manualgreen,fill=manualgreen!8,anchor=west] at (4.0,0.55) {\texttt{perf trace}\\\texttt{bpftrace}, \texttt{bcc}};
+  \node[tg,draw=manualgray,fill=manualgray!8,anchor=west]   at (4.0,-0.6) {\texttt{perf stat}};
+
+  \node[nt,text width=12.6cm,anchor=north] at (1.5,-1.4)
+    {Cada camada responde a uma pergunta diferente sobre o mesmo processo, e escolher a camada errada custa horas. Um programa que trava esperando resposta de rede não aparece em \texttt{perf stat} --- ele não gasta ciclo nenhum. Um laço que consome CPU não aparece em \texttt{strace} --- ele não faz chamada nenhuma. A regra prática: comece pela camada mais barata que possa conter a resposta e desça só se precisar.};
+\end{tikzpicture}
+```
+As camadas de observação de um processo e a ferramenta de cada uma.
+:::
+
+## O que o `/proc` responde sem ferramenta nenhuma
+
+Antes de instalar qualquer coisa, o @sec-cap098 já deu o essencial: `/proc/<PID>/` é um retrato completo do processo.
+
+```bash
+pid=$(pgrep -n sshd)
+cat /proc/$pid/wchan; echo            # em qual funcao do kernel ele esta dormindo
+sudo cat /proc/$pid/stack             # a pilha de kernel (requer root)
+cat /proc/$pid/io                     # bytes lidos e escritos, acumulados
+cat /proc/$pid/status | grep -E 'Threads|voluntary|VmRSS'
+sudo ls -l /proc/$pid/fd | tail       # descritores abertos: arquivos e sockets
+cat /proc/$pid/limits | head -5
+```
+
+O `wchan` é a resposta imediata para "por que esse processo está parado": ele nomeia a função do kernel em que o processo dorme. `futex_wait` indica espera por travamento entre threads; `sk_wait_data`, espera por rede; `io_schedule`, espera por disco. Três leituras de arquivo substituem um debate inteiro.
+
+O par `voluntary_ctxt_switches` e `nonvoluntary_ctxt_switches` também distingue os casos: trocas voluntárias em excesso significam um processo que dorme esperando algo; involuntárias em excesso significam disputa por CPU.
+
+## eBPF: observar sem parar o programa
+
+O `strace` para o processo a cada chamada. O **eBPF** executa um pequeno programa verificado dentro do kernel, que agrega os dados e entrega só o resultado — observação com custo baixo o suficiente para produção. É a fronteira atual da observabilidade no Linux.
+
+```bash
+sudo apt install bpftrace bpfcc-tools
+sudo bpftrace -l 'tracepoint:syscalls:*openat*'       # o que da para observar
+
+# quem executa o que, no sistema inteiro
+sudo bpftrace -e 'tracepoint:syscalls:sys_enter_execve { printf("%s -> %s\n", comm, str(args->filename)); }'
+
+# quais arquivos estao sendo abertos e por quem
+sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat { printf("%-16s %s\n", comm, str(args->filename)); }'
+
+# histograma de latencia de leitura de disco
+sudo biolatency-bpfcc 10 1
+sudo execsnoop-bpfcc                 # cada exec do sistema, em tempo real
+sudo opensnoop-bpfcc                 # cada open
+sudo tcpconnect-bpfcc                # cada conexao TCP de saida
+```
+
+A coleção `bpfcc-tools` traz dezenas de ferramentas prontas, todas com o sufixo `-bpfcc` no Debian e no Kali. Para quem chega da segurança, `execsnoop` e `tcpconnect` são também instrumentos de detecção: mostram cada processo criado e cada conexão de saída, no sistema inteiro, sem agente instalado.
+
+## Um roteiro que funciona
+
+Diante de um problema concreto, a sequência que evita perder tempo:
+
+1. **Reproduza.** Um problema que não se reproduz não se mede.
+2. **Classifique** com `vmstat 1` e `pidstat 1`: CPU, E/S ou bloqueio.
+3. **Delimite** com `strace -c` ou `perf stat`: um número agregado antes de qualquer rastreio detalhado.
+4. **Aprofunde** na camada certa, conforme a @fig-camadas-observacao.
+5. **Mude uma coisa só**, meça de novo e compare com a linha de base.
+6. **Registre** o que mediu. Sem a linha de base anotada, a próxima investigação recomeça do zero.
+
+## 🐉 No Kali
+
+- **`strace` é a forma mais rápida de entender uma ferramenta que você não escreveu.** Ao usar um script de exploração ou uma ferramenta pouco documentada, `strace -f -e trace=file,network` mostra quais arquivos ela lê, onde grava resultado e com quem conversa na rede. Isso resolve dois problemas de uma vez: descobrir onde ficou o relatório que a ferramenta gerou, e verificar que uma ferramenta baixada de repositório desconhecido não está enviando os seus dados para um servidor de terceiros — verificação que vale sempre fazer antes de rodar código alheio em ambiente de cliente.
+- **Análise dinâmica de binário suspeito é o mesmo conjunto de ferramentas, com regras extras.** Executar amostra desconhecida só em VM isolada e descartável (@sec-cap100), com snapshot antes e reversão depois, e nunca em contêiner. Nesse contexto, `strace -f`, `ltrace` e `opensnoop`/`tcpconnect` do eBPF revelam persistência (o que grava em `~/.config` ou em `crontab`), comunicação (para onde conecta) e leitura de credenciais. Amostras modernas detectam `ptrace` e alteram o comportamento — a presença de `ptrace(PTRACE_TRACEME)` no próprio rastreio é justamente o sinal de anti-depuração.
+- **`ptrace_scope` é botão dos dois lados.** Do defensivo, `kernel.yama.ptrace_scope=1` (padrão do Kali) impede que um processo comprometido leia a memória de outro processo do mesmo usuário; `=2` restringe a root; `=3` desliga o `ptrace` até o próximo boot, o que endurece um servidor ao custo de impedir qualquer depuração. Do lado do laboratório, quando `strace -p` falha com `Operation not permitted`, é esse valor — e não `sudo` — que está no caminho.
+- **`perf` e eBPF exigem privilégio, e por bom motivo.** `kernel.perf_event_paranoid` controla quanto um usuário comum pode observar; valores permissivos expõem informação de temporização que serve para ataques de canal lateral. Em laboratório, baixar o valor é aceitável; num servidor compartilhado, é uma decisão de segurança consciente, não um ajuste de conveniência.
+- **Rastreamento não substitui análise estática, e a ordem importa.** Diante de um binário desconhecido, o roteiro seguro começa sem executar nada: `file`, `strings`, `readelf -d`, `objdump -d` (@sec-cap101) e a soma de verificação comparada com fontes públicas. Só depois disso, e só em ambiente isolado, vem a execução observada. Inverter a ordem significa executar primeiro e entender depois — que é exatamente o que o malware espera.
+
+> **Nota sobre a família RHEL.** O `perf` vem em `perf` (e não em `linux-perf`), e o pacote `bcc-tools` instala as ferramentas de eBPF em `/usr/share/bcc/tools/` com os nomes originais, sem o sufixo `-bpfcc` do Debian. O grande diferencial da família é o **SystemTap** e, sobretudo, o `sosreport`, que coleta um pacote completo de diagnóstico da máquina num único comando — prática que vale imitar em qualquer distribuição antes de mexer num sistema com problema.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Todos os passos usam programas comuns; o passo 10 limpa.
+
+1. **Instale as ferramentas e verifique os botões do kernel.**
+
+   ```bash
+   sudo apt install -y strace ltrace linux-perf bpftrace bpfcc-tools sysstat
+   cat /proc/sys/kernel/yama/ptrace_scope
+   cat /proc/sys/kernel/perf_event_paranoid
+   strace --version | head -1; perf --version
+   ```
+
+   Esperado: `ptrace_scope` costuma valer 1 e `perf_event_paranoid`, 2 ou 4. Guarde esses valores — eles explicam metade das recusas de permissão que aparecem adiante.
+
+2. **Veja um programa simples conversando com o kernel.**
+
+   ```bash
+   strace -o /tmp/ls.txt ls /tmp >/dev/null
+   wc -l /tmp/ls.txt
+   head -5 /tmp/ls.txt
+   grep -c openat /tmp/ls.txt
+   grep 'execve\|write(1' /tmp/ls.txt | head -3
+   ```
+
+   Esperado: um `ls` trivial faz de 50 a 150 chamadas. A primeira linha é sempre `execve`, as seguintes carregam bibliotecas (@sec-cap101), e o `write(1, ...)` no fim é a saída aparecendo na tela.
+
+3. **Reproduza o caso da abertura: um erro que o programa não explica.**
+
+   ```bash
+   cat > /tmp/servico.sh <<'EOF'
+   #!/usr/bin/env bash
+   cat /etc/servico-inexistente/config.ini >/dev/null 2>&1 || { echo "erro ao inicializar"; exit 1; }
+   EOF
+   chmod +x /tmp/servico.sh
+   /tmp/servico.sh; echo "codigo de saida: $?"
+   strace -f -e trace=file /tmp/servico.sh 2>&1 | grep -E 'ENOENT|EACCES' | tail -5
+   ```
+
+   Esperado: o script diz apenas "erro ao inicializar", e o `strace` revela `openat(... "/etc/servico-inexistente/config.ini" ...) = -1 ENOENT`. **É esse o valor da ferramenta**: o caminho exato que o programa procurou, sem ler uma linha de código.
+
+4. **Use o resumo de `strace` como medida de desempenho.**
+
+   ```bash
+   strace -c -f ls -R /usr/share/doc >/dev/null 2>/tmp/resumo.txt
+   head -15 /tmp/resumo.txt
+   strace -c dd if=/dev/zero of=/tmp/teste.bin bs=1 count=20000 2>&1 | tail -8
+   strace -c dd if=/dev/zero of=/tmp/teste.bin bs=4096 count=5 2>&1 | tail -8
+   ```
+
+   Esperado: as duas execuções de `dd` gravam os mesmos 20 KB, mas a primeira faz 20 mil chamadas `write` e a segunda faz 5. A tabela do `-c` mostra a diferença de forma imediata — é o diagnóstico clássico de "problema de buffer, não de disco".
+
+5. **Conecte-se a um processo em execução.**
+
+   ```bash
+   sleep 300 &
+   pid=$!
+   sudo strace -p "$pid" -e trace=all 2>&1 | head -5 &
+   sleep 3; sudo pkill -f "strace -p $pid"
+   cat /proc/$pid/wchan; echo
+   cat /proc/$pid/status | grep -E 'State|voluntary'
+   kill $pid
+   ```
+
+   Esperado: o `strace` mostra o processo parado dentro de `clock_nanosleep`, e `wchan` diz `hrtimer_nanosleep`. Duas fontes independentes concordando sobre onde o processo está dormindo.
+
+6. **Compare `strace` e `ltrace` no mesmo binário.**
+
+   ```bash
+   ltrace -c /bin/echo teste 2>&1 | head -8
+   ltrace -e 'str*' /bin/echo teste 2>&1 | head -5
+   ltrace ls /tmp 2>&1 | head -5
+   file /bin/echo
+   ```
+
+   Esperado: `ltrace` mostra funções de biblioteca (`strlen`, `malloc`) que o `strace` nunca veria, porque não chegam ao kernel. Se o binário for estático, `ltrace` não produz nada — e é exatamente esse o limite da ferramenta.
+
+7. **Meça CPU com `perf stat`.**
+
+   ```bash
+   perf stat -e task-clock,cycles,instructions,cache-misses \
+     bash -c 'a=0; for i in $(seq 1 200000); do a=$((a+i)); done; echo $a' 2>&1 | tail -12
+   perf stat -e task-clock,context-switches sleep 1 2>&1 | tail -8
+   ```
+
+   Esperado: no laço, `instructions per cycle` fica em torno de 1 a 3 e o tempo é quase todo de CPU. No `sleep 1`, o tempo total é 1 segundo mas o `task-clock` é de milissegundos — o processo não usou CPU nenhuma. É a distinção entre tempo de relógio e tempo de processador.
+
+8. **Encontre a função que consome CPU.**
+
+   ```bash
+   bash -c 'while :; do echo $((RANDOM*RANDOM)) >/dev/null; done' & carga=$!
+   sudo perf record -F 99 -g -p "$carga" -- sleep 10
+   sudo perf report --stdio 2>/dev/null | head -20
+   kill "$carga"
+   sudo rm -f perf.data
+   ```
+
+   Esperado: o relatório atribui a maior parte das amostras a funções do próprio `bash`. Num programa com símbolos, esse é o momento em que a função culpada aparece com nome — e a largura no gráfico de chama seria proporcional a esses percentuais.
+
+9. **Observe o sistema inteiro com eBPF, sem parar nada.**
+
+   ```bash
+   sudo timeout 15 execsnoop-bpfcc &
+   sleep 2; ls /tmp >/dev/null; id >/dev/null; date >/dev/null
+   wait
+   sudo timeout 10 bpftrace -e \
+     'tracepoint:syscalls:sys_enter_openat { @[comm] = count(); }' &
+   sleep 3; cat /etc/hostname >/dev/null; ls -R /etc >/dev/null 2>&1
+   wait
+   ```
+
+   Esperado: `execsnoop` lista cada processo criado durante a janela, com PID, PPID e linha de comando; o `bpftrace` imprime um histograma de quantos `openat` cada programa fez. Nada foi parado, nada foi rastreado individualmente — o kernel agregou e entregou o resumo. É a diferença de custo entre eBPF e `strace`.
+
+10. **Feche com o roteiro completo num caso e limpe.**
+
+    ```bash
+    vmstat 1 3
+    pidstat -u -d 1 2 | tail -8
+    strace -c find /usr/share -name '*.txt' 2>&1 >/dev/null | tail -6
+    rm -f /tmp/ls.txt /tmp/resumo.txt /tmp/teste.bin /tmp/servico.sh
+    ls /tmp/servico.sh 2>/dev/null || echo "laboratorio limpo"
+    ```
+
+    Esperado: o `vmstat` classifica (coluna `r` contra `b` e `wa`), o `pidstat` aponta o processo, e o `strace -c` mostra que um `find` grande gasta o tempo em `getdents64` e `newfstatat` — ou seja, em percorrer diretórios, não em ler conteúdo. Classificar, delimitar, aprofundar: nessa ordem.
+
+## Resumo
+
+- **Método antes de ferramenta.** "Não funciona" pede rastreamento (`strace`, `ltrace`); "está lento" pede classificação com `vmstat`/`pidstat` e depois perfilamento com `perf`.
+- **`strace -f -e trace=file` filtrando por `ENOENT` e `EACCES`** resolve a maior parte das falhas silenciosas: mostra exatamente qual caminho o programa procurou e não encontrou.
+- **`strace -c` é medida, não rastreio.** A tabela agregada revela padrões como meio milhão de `write` de 1 byte — problema de buffer que nenhum gráfico de uso de disco apontaria.
+- **`strace` custa caro** — uma ordem de grandeza de lentidão e risco de alterar o comportamento. Em produção, restrinja o filtro, use `-c`, ou prefira eBPF.
+- **`ltrace` observa a camada de bibliotecas**, útil quando o erro acontece antes de chegar ao kernel; não funciona em binário estático.
+- **`perf stat` mostra ciclos, instruções e faltas de cache; `perf record -g` mais o gráfico de chama mostram qual função consome o tempo.** Processo bloqueado não aparece em `perf` — ele não gasta ciclo.
+- **`/proc/<PID>/wchan`, `/stack`, `/io` e as contagens de troca de contexto** respondem "por que está parado" sem instalar nada.
+- **eBPF (`bpftrace`, `bpfcc-tools`) observa o sistema inteiro com custo baixo**, e ferramentas como `execsnoop`, `opensnoop` e `tcpconnect` servem tanto a desempenho quanto a detecção.
+- **No Kali, `strace` é o jeito mais rápido de entender ferramenta alheia** — inclusive para verificar que ela não manda dados para fora. Análise dinâmica de binário suspeito, só em VM isolada, e sempre depois da análise estática.

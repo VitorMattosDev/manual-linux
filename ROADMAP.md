@@ -168,10 +168,10 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 - [x] **cap 099** - Contêineres por dentro: namespaces, cgroups e Docker - `vol16/cap099-conteineres-por-dentro-namespaces-cgroups-e.qmd`
 - [x] **cap 100** - Virtualização: KVM, QEMU e o laboratório de estudos - `vol16/cap100-virtualizacao-kvm-qemu-e-o-laboratorio-de.qmd`
 - [x] **cap 101** - Compilação, toolchains e o ecossistema de desenvolvimento - `vol16/cap101-compilacao-toolchains-e-o-ecossistema-de.qmd`
-- [ ] **cap 102** - Observabilidade e desempenho: strace, ltrace e perf - `vol16/cap102-observabilidade-e-desempenho-strace-ltrace-e.qmd`
+- [x] **cap 102** - Observabilidade e desempenho: strace, ltrace e perf - `vol16/cap102-observabilidade-e-desempenho-strace-ltrace-e.qmd`
 - [ ] **cap 103** - Para onde ir depois: certificações, comunidade e prática contínua - `vol16/cap103-para-onde-ir-depois-certificacoes-comunidade.qmd`
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (101 concluidos).
+**Total:** 103 capitulos em 16 volumes (102 concluidos).
 
