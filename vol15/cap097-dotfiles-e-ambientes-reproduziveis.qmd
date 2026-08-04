@@ -1,3 +1,447 @@
 # Dotfiles e ambientes reproduzíveis {#sec-cap097}
 
-*(em elaboracao)*
+A VM tinha três anos. Dentro dela, quarenta aliases refinados um a um, um `.vimrc` ajustado ao longo de dezenas de sessões, uma configuração de `tmux` que ninguém mais entendia mas funcionava perfeitamente, e um punhado de scripts em `~/bin` que resolviam problemas específicos daquele ambiente. O disco do hospedeiro falhou numa terça-feira. O snapshot mais recente era de quatro meses antes.
+
+O que se perdeu não foi o Kali — reinstalar leva vinte minutos. O que se perdeu foram três anos de decisões acumuladas, cada uma pequena, todas invisíveis, nenhuma documentada em lugar nenhum a não ser nos próprios arquivos. Esse conjunto é o que se chama de **dotfiles**, e o problema que ele expõe é maior do que backup: é que o ambiente de trabalho de uma pessoa costuma ser a única coisa da infraestrutura que não é reproduzível.
+
+Este capítulo fecha o volume juntando o que veio antes. A configuração de shell do @sec-cap092, o prompt e os plugins do @sec-cap093, as tarefas agendadas do @sec-cap094, o Git do @sec-cap095 e a configuração de editor do @sec-cap096 são todos dotfiles. Versioná-los e conseguir reconstruí-los numa máquina limpa é o que transforma configuração pessoal em ativo.
+
+## O que é dotfile, e o que merece versionamento
+
+Dotfile é qualquer arquivo de configuração no seu diretório pessoal cujo nome começa com ponto — a convenção que o faz não aparecer num `ls` comum. Na prática o termo cobre também `~/.config/`, que é onde o padrão XDG concentrou a configuração moderna.
+
+Vale a pena separar o que existe no seu home em quatro categorias:
+
+| Categoria | Exemplos | Versionar? |
+|---|---|---|
+| Configuração escrita por você | `.zshrc`, `.vimrc`, `.tmux.conf`, `.gitconfig` | **sim**, é o núcleo |
+| Estado gerado pelo programa | `.zsh_history`, `.cache/`, `.local/state/` | não; muda toda hora |
+| Segredo | `.ssh/id_*`, `.gnupg/`, tokens, `.netrc` | **nunca**, em nenhuma hipótese |
+| Dados de aplicação | `.mozilla/`, `.msf4/`, `.local/share/` | não; é dado, não configuração |
+
+: O que vai e o que não vai para o repositório de dotfiles {#tbl-o-que-versionar}
+
+::: {.callout-warning}
+**A regra é lista de inclusão, nunca lista de exclusão.** Dar `git init` no home e ir adicionando um `.gitignore` conforme aparecem problemas é o caminho garantido para vazar `.ssh/id_ed25519` ou `.zsh_history` cheio de comandos com senha. O `.gitignore` protege apenas do que você lembrou de listar, e você não vai lembrar de tudo. A abordagem correta é o inverso: um `.gitignore` com `*` na primeira linha, e cada arquivo adicionado explicitamente com `git add -f`. Assim o padrão é "não versionado" e a exceção é deliberada — o que inverte quem paga o preço do esquecimento.
+:::
+
+## Três estratégias, do simples ao completo
+
+### Repositório com links simbólicos
+
+O modelo mais comum: os arquivos vivem num repositório em `~/.dotfiles`, e o home tem links simbólicos (@sec-cap016) apontando para lá.
+
+```bash
+~/.dotfiles/
+├── zsh/.zshrc
+├── vim/.vimrc
+├── tmux/.tmux.conf
+├── git/.gitconfig
+└── instalar.sh
+```
+
+O script de instalação cria os links:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+raiz="$(cd "$(dirname "$0")" && pwd)"
+
+ligar() {
+    local origem="$raiz/$1" destino="$HOME/$2"
+    [[ -e $origem ]] || { echo "ausente: $origem" >&2; return 1; }
+    if [[ -e $destino && ! -L $destino ]]; then
+        mv -- "$destino" "$destino.pre-dotfiles"     # preserva o que ja existia
+        echo "guardado: $destino.pre-dotfiles"
+    fi
+    mkdir -p -- "$(dirname "$destino")"
+    ln -sfn -- "$origem" "$destino"
+    echo "ligado: $destino -> $origem"
+}
+
+ligar zsh/.zshrc      .zshrc
+ligar vim/.vimrc      .vimrc
+ligar tmux/.tmux.conf .tmux.conf
+ligar git/.gitconfig  .gitconfig
+```
+
+A vantagem é que editar o arquivo no home é editar o arquivo no repositório — `git status` já mostra a mudança, sem passo de sincronização. O `mv` do arquivo pré-existente é o detalhe que distingue um script educado de um que apaga a configuração da máquina nova sem avisar.
+
+O **GNU Stow** automatiza exatamente esse padrão, se a estrutura de diretórios espelhar o home:
+
+```bash
+sudo apt install stow
+cd ~/.dotfiles && stow zsh vim tmux git      # cria todos os links
+stow -D vim                                   # desfaz os links do vim
+```
+
+### Repositório *bare* apontado para o home
+
+Uma alternativa engenhosa que dispensa links: manter o diretório `.git` separado e dizer ao Git que a árvore de trabalho é o próprio home.
+
+```bash
+git init --bare "$HOME/.dotfiles-git"
+alias dot='git --git-dir=$HOME/.dotfiles-git --work-tree=$HOME'
+dot config status.showUntrackedFiles no      # ESSENCIAL: nao lista o home inteiro
+dot add -f ~/.zshrc ~/.vimrc ~/.tmux.conf
+dot commit -m "dotfiles iniciais"
+dot remote add origin git@servidor:dotfiles.git
+dot push -u origin main
+```
+
+O `status.showUntrackedFiles no` é obrigatório: sem ele, `dot status` tenta listar todo o seu diretório pessoal. E `dot add` exige `-f` para cada arquivo, o que na prática já implementa a lista de inclusão do quadro de aviso.
+
+A vantagem é não haver links nem cópia — o arquivo real é o arquivo versionado. A desvantagem é que um `git` digitado por engano dentro do home, sem o alias, se comporta de forma inesperada.
+
+### Gerenciadores dedicados
+
+`chezmoi` e `yadm` resolvem os dois problemas que as abordagens caseiras não cobrem bem: **variação por máquina** e **segredos**.
+
+```bash
+sudo apt install chezmoi        # ou: sh -c "$(curl -fsLS get.chezmoi.io)"
+chezmoi init --apply git@servidor:dotfiles.git
+chezmoi add ~/.zshrc            # traz um arquivo para o controle
+chezmoi edit ~/.zshrc           # edita a fonte
+chezmoi diff                    # o que mudaria no home
+chezmoi apply                   # aplica
+```
+
+O `chezmoi` trata os arquivos como modelos, o que permite um único `.gitconfig` que rende conteúdo diferente por máquina:
+
+```
+[user]
+    name = Seu Nome
+{{ if eq .chezmoi.hostname "kali-lab" }}
+    email = lab@exemplo.local
+{{ else }}
+    email = voce@empresa.com
+{{ end }}
+```
+
+E integra com gerenciadores de segredo (`pass`, `age`, Bitwarden), de modo que o repositório guarda a *referência* ao segredo, nunca o segredo.
+
+| Estratégia | Melhor para | Custo |
+|---|---|---|
+| Links simbólicos + script | começar; controle total | você escreve o script |
+| GNU Stow | mesma coisa, sem escrever script | estrutura de diretórios rígida |
+| Repositório *bare* | não gostar de links | `git` sem alias no home confunde |
+| `chezmoi` / `yadm` | várias máquinas e segredos | aprender a ferramenta |
+
+: Comparação entre as estratégias de gerenciamento de dotfiles {#tbl-estrategias-dotfiles}
+
+## Segredos nunca vão no repositório
+
+Vale repetir o que o @sec-cap095 estabeleceu, porque em dotfiles a tentação é maior: chave privada, token de API, senha de banco e `.netrc` **não entram no Git**, nem em repositório privado. Repositório privado vira público por engano com frequência incômoda, e um commit é permanente mesmo depois de removido.
+
+As alternativas, em ordem de simplicidade:
+
+```bash
+# 1. arquivo local, fora do repositorio, carregado se existir
+[[ -r ~/.zshrc.local ]] && source ~/.zshrc.local
+
+# 2. gerenciador de senhas na linha de comando, com GPG (@sec-cap086)
+sudo apt install pass
+pass init "SUA-CHAVE-GPG"
+pass insert api/servico
+export TOKEN=$(pass show api/servico)
+
+# 3. criptografia por arquivo dentro do repositorio
+sudo apt install age
+age -e -r "chave-publica" -o segredo.age segredo.env
+```
+
+O padrão do `~/.zshrc.local` é o de melhor relação custo-benefício e resolve 90% dos casos: o repositório guarda a estrutura, a máquina guarda o segredo, e a linha que carrega um se existir é a única ponte.
+
+## Máquina-específico sem duplicar arquivo
+
+Nem tudo é igual em todas as máquinas. O padrão que evita manter três versões do mesmo `.zshrc`:
+
+```bash
+# no ~/.zshrc versionado
+case "$(hostname)" in
+    kali-lab)  export PROMPT_COR=red   ;;
+    servidor*) export PROMPT_COR=green ;;
+esac
+
+[[ -f /etc/os-release ]] && . /etc/os-release
+case "${ID:-}" in
+    kali|debian|ubuntu) alias instalar='sudo apt install'  ;;
+    fedora|rhel|centos) alias instalar='sudo dnf install'  ;;
+esac
+
+command -v bat >/dev/null && alias cat='bat --paging=never'   # so se existir
+```
+
+O último padrão — testar se o comando existe antes de criar o alias — é o que faz um dotfile sobreviver a máquinas onde nem tudo está instalado. Um `.zshrc` que assume ferramentas presentes cospe erro na abertura de todo terminal da máquina que não as tem.
+
+## O espectro de reprodutibilidade
+
+Dotfiles são o primeiro degrau, não o único. Vale saber onde eles ficam no espectro, e o que cada degrau acima acrescenta.
+
+::: {#fig-espectro-reprodutibilidade}
+```{.tikz}
+%%| filename: espectro-reprodutibilidade
+%%| alt: Cinco niveis de reprodutibilidade de ambiente, do dotfile versionado a imagem completa
+\begin{tikzpicture}[
+    dg/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.1cm,minimum height=1.25cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    ex/.style={-{Latex[length=1.8mm]},thick,manualgray}
+  ]
+  \node[dg,draw=manualblue,fill=manualblue!12]     (n1) at (0,0)    {\textbf{dotfiles no Git}\\\tiny sua configuração pessoal};
+  \node[dg,draw=manualblue,fill=manualblue!16]     (n2) at (3.1,1.3){\textbf{script de bootstrap}\\\tiny + pacotes e serviços};
+  \node[dg,draw=manualgreen,fill=manualgreen!14]   (n3) at (6.2,2.6){\textbf{chezmoi / stow}\\\tiny + variação por máquina\\\tiny + segredos referenciados};
+  \node[dg,draw=manualyellow,fill=manualyellow!24] (n4) at (9.3,3.9){\textbf{Ansible}\\\tiny + várias máquinas\\\tiny + idempotência};
+  \node[dg,draw=manualred,fill=manualred!14]       (n5) at (12.4,5.2){\textbf{imagem ou contêiner}\\\tiny + o sistema inteiro};
+
+  \draw[ex] (n1) -- (n2);
+  \draw[ex] (n2) -- (n3);
+  \draw[ex] (n3) -- (n4);
+  \draw[ex] (n4) -- (n5);
+
+  \draw[ex] (-1.9,-1.4) -- (13.4,-1.4);
+  \node[nt,anchor=north] at (5.7,-1.6) {esforço de manutenção e rigidez};
+  \draw[ex] (-1.9,-1.4) -- (-1.9,6.0);
+  \node[nt,rotate=90,anchor=south] at (-2.2,2.3) {fidelidade da reprodução};
+
+  \node[nt,text width=13.0cm,anchor=north] at (5.7,-2.4)
+    {Cada degrau reproduz mais e custa mais. O erro comum é pular direto para o topo: uma imagem de contêiner reproduz o ambiente perfeitamente e é péssima para configuração que você ajusta todo dia. O ponto de equilíbrio para uma estação de trabalho pessoal fica entre o segundo e o terceiro degrau --- dotfiles versionados mais um script que instala os pacotes. Ansible e imagens entram quando as máquinas passam a ser várias, ou quando outra pessoa precisa reproduzir o mesmo ambiente.};
+\end{tikzpicture}
+```
+Os degraus de reprodutibilidade de um ambiente, do dotfile à imagem completa.
+:::
+
+Como a @fig-espectro-reprodutibilidade indica, o segundo degrau é barato e rende muito. Um script de bootstrap captura o que os dotfiles não capturam: os pacotes.
+
+```bash
+# gerar a lista do que voce instalou explicitamente (@sec-cap034)
+apt-mark showmanual > pacotes-manuais.txt
+
+# reinstalar tudo numa maquina nova
+sudo apt update
+xargs -a pacotes-manuais.txt sudo apt install -y
+```
+
+O `apt-mark showmanual` é a peça que quase ninguém conhece: ele lista apenas o que foi instalado por decisão sua, ignorando as centenas de dependências. É a diferença entre uma lista de 120 linhas útil e um despejo de 2.000 pacotes.
+
+Um bootstrap completo tem quatro partes, nesta ordem:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# 1. pacotes
+sudo apt update && xargs -a "$(dirname "$0")/pacotes-manuais.txt" sudo apt install -y
+# 2. dotfiles
+git clone git@servidor:dotfiles.git ~/.dotfiles && ~/.dotfiles/instalar.sh
+# 3. ajustes do sistema que nao sao dotfile
+sudo timedatectl set-timezone America/Sao_Paulo
+# 4. verificacao: o ambiente esta como esperado?
+command -v vim tmux git zsh >/dev/null && echo "ferramentas presentes"
+```
+
+## Testar a reprodutibilidade, ou não acreditar nela
+
+Um repositório de dotfiles que nunca foi aplicado numa máquina limpa é uma hipótese, não um backup. O teste real:
+
+```bash
+# em um conteiner descartavel (@sec-cap038 e o Volume 16)
+docker run --rm -it kalilinux/kali-rolling bash
+# dentro: apt update && apt install -y git && git clone ... && ./instalar.sh
+```
+
+Ou, sem contêiner, um usuário novo na própria máquina:
+
+```bash
+sudo useradd -m -s /bin/bash teste-dotfiles
+sudo -u teste-dotfiles -i bash -c 'git clone ... ~/.dotfiles && ~/.dotfiles/instalar.sh'
+sudo userdel -r teste-dotfiles
+```
+
+O que esse teste sempre revela na primeira vez: alguma dependência que você tinha instalado e esqueceu de listar, algum caminho absoluto com o seu nome de usuário dentro, e alguma linha que assume uma ferramenta presente. É melhor descobrir isso num contêiner de teste do que na máquina nova, no dia em que a antiga morreu.
+
+## 🐉 No Kali
+
+- **A VM do Kali é descartável por natureza, e isso é uma vantagem — se os dotfiles estiverem fora dela.** O fluxo saudável é tratar a VM como algo que se joga fora e recria: `git clone` dos dotfiles, script de bootstrap, e em quinze minutos o ambiente está de volta. Quem não tem isso acumula anos numa VM que não pode morrer, que é exatamente o cenário da abertura. Combine com o snapshot da VM: o snapshot cobre o estado completo, os dotfiles cobrem a **intenção** — e é a intenção que você quer levar para a máquina seguinte.
+- **O home do Kali contém material que nunca pode ir para um repositório.** `~/.msf4/` guarda o banco do Metasploit, com hosts e credenciais de engajamentos; `~/.ssh/` tem chaves; `~/.zsh_history` tem comandos que frequentemente incluem senhas e endereços de alvos. Um `git init` no home do Kali é, potencialmente, publicar dados de cliente — o que além de risco técnico é problema contratual e legal. É o argumento mais forte para a lista de inclusão: no Kali, o custo de um esquecimento é maior do que numa máquina comum.
+- **Metapacotes do Kali substituem metade do seu script de bootstrap** (@sec-cap036). Em vez de listar duzentas ferramentas individualmente, `kali-linux-headless`, `kali-tools-web` ou `kali-tools-top10` reconstroem conjuntos coerentes com um comando. O `apt-mark showmanual` numa instalação de Kali vai listar o metapacote, não as ferramentas dentro dele — que é justamente o comportamento desejado.
+- **Versione também os seus scripts de `~/bin`, não só os arquivos de configuração.** As ferramentas pequenas que você escreve para um problema específico — o script que formata a saída de um scan, o que monta o laboratório, o que gera o relatório — são o que mais se perde e mais custa reescrever. Elas seguem as regras do @sec-cap077 e do @sec-cap071, entram no mesmo repositório e ganham histórico junto com o resto.
+- **Cuidado ao publicar dotfiles em repositório público.** Um `.zshrc` publicado revela quais ferramentas você usa, os nomes das suas máquinas, caminhos internos e às vezes o formato dos seus alvos de laboratório. Não é catastrófico, mas é reconhecimento gratuito oferecido a quem estiver interessado — e num contexto de segurança, o hábito de considerar o que cada publicação revela é parte do ofício. Se for publicar, revise com a mesma atenção com que você revisaria um relatório.
+
+> **Nota sobre a família RHEL e portabilidade.** Um repositório de dotfiles que atravessa famílias precisa de duas defesas: testar a existência do arquivo ou comando antes de usá-lo (`command -v`, `[[ -r ]]`), e ramificar por `ID` do `/etc/os-release` para o que é realmente diferente — gerenciador de pacotes (`apt` contra `dnf`), caminhos de plugin, nome do serviço. O equivalente do `apt-mark showmanual` no RHEL é `dnf history userinstalled`. O `chezmoi` e o `stow` funcionam igualmente nas duas famílias, e o `chezmoi` já expõe `.chezmoi.osRelease.id` como variável de modelo, o que torna a ramificação declarativa em vez de condicional espalhada pelo arquivo.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Você vai construir um repositório de dotfiles do zero e, no passo 8, **provar** que ele funciona numa conta limpa.
+
+1. **Crie o repositório com a lista de inclusão desde o começo.**
+
+   ```bash
+   mkdir -p ~/.dotfiles/{zsh,vim,tmux,git} && cd ~/.dotfiles
+   git init
+   printf '*\n!*/\n!.gitignore\n' > .gitignore     # padrao: nada entra
+   git add .gitignore && git commit -m "dotfiles: bloqueia tudo por padrao"
+   ```
+
+   Esperado: um repositório onde nada é rastreado automaticamente. Cada arquivo daqui em diante entra com `git add -f`, deliberadamente.
+
+2. **Traga a sua configuração real para dentro dele.**
+
+   ```bash
+   cp -a ~/.zshrc  ~/.dotfiles/zsh/.zshrc  2>/dev/null || printf 'alias ll="ls -la"\n' > ~/.dotfiles/zsh/.zshrc
+   printf 'set number\nsyntax on\nset expandtab tabstop=4\n' > ~/.dotfiles/vim/.vimrc
+   printf 'set -g mouse on\nset -g history-limit 10000\n' > ~/.dotfiles/tmux/.tmux.conf
+   printf '[user]\n\tname = Lab Kali\n[alias]\n\tst = status --short\n' > ~/.dotfiles/git/.gitconfig
+   git add -f zsh/.zshrc vim/.vimrc tmux/.tmux.conf git/.gitconfig
+   git commit -m "dotfiles: zsh, vim, tmux e git"
+   git ls-files
+   ```
+
+   Esperado: exatamente cinco arquivos rastreados. Rode `git status` e confirme que nada mais aparece — a lista de inclusão está funcionando.
+
+3. **Escreva o instalador que não destrói o que já existe.**
+
+   ```bash
+   cat > ~/.dotfiles/instalar.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   raiz="$(cd "$(dirname "$0")" && pwd)"
+   ligar() {
+       local origem="$raiz/$1" destino="$HOME/$2"
+       [ -e "$origem" ] || { echo "ausente: $origem" >&2; return 1; }
+       if [ -e "$destino" ] && [ ! -L "$destino" ]; then
+           mv -- "$destino" "$destino.pre-dotfiles"
+           echo "guardado: $destino.pre-dotfiles"
+       fi
+       mkdir -p -- "$(dirname "$destino")"
+       ln -sfn -- "$origem" "$destino"
+       echo "ligado: $destino"
+   }
+   ligar zsh/.zshrc      .zshrc
+   ligar vim/.vimrc      .vimrc
+   ligar tmux/.tmux.conf .tmux.conf
+   ligar git/.gitconfig  .gitconfig
+   EOF
+   chmod +x ~/.dotfiles/instalar.sh
+   shellcheck ~/.dotfiles/instalar.sh || true
+   ~/.dotfiles/instalar.sh
+   ls -l ~/.zshrc ~/.vimrc ~/.tmux.conf ~/.gitconfig
+   ```
+
+   Esperado: os quatro caminhos agora são links simbólicos apontando para `~/.dotfiles/`, e o `.zshrc` anterior foi guardado como `.zshrc.pre-dotfiles`. Nada foi destruído.
+
+4. **Comprove a vantagem do link: editar o home é editar o repositório.**
+
+   ```bash
+   echo 'alias lt="ls -lat"' >> ~/.zshrc
+   git -C ~/.dotfiles status --short
+   git -C ~/.dotfiles diff | tail -3
+   git -C ~/.dotfiles commit -am "zsh: alias lt"
+   ```
+
+   Esperado: a edição feita em `~/.zshrc` aparece no `git status` do repositório sem nenhum passo de cópia. É o que torna essa estratégia sustentável no dia a dia.
+
+5. **Adicione a variação por máquina e a ponte para segredos.**
+
+   ```bash
+   cat >> ~/.dotfiles/zsh/.zshrc <<'EOF'
+
+   # variacao por distribuicao
+   [ -f /etc/os-release ] && . /etc/os-release
+   case "${ID:-}" in
+       kali|debian|ubuntu) alias instalar='sudo apt install'  ;;
+       fedora|rhel|centos) alias instalar='sudo dnf install'  ;;
+   esac
+   # so cria o alias se a ferramenta existir
+   command -v bat >/dev/null 2>&1 && alias mostrar='bat --paging=never'
+   # segredos ficam FORA do repositorio
+   [ -r "$HOME/.zshrc.local" ] && . "$HOME/.zshrc.local"
+   EOF
+   printf 'export TOKEN_FICTICIO=nao-versionado\n' > ~/.zshrc.local
+   git -C ~/.dotfiles commit -am "zsh: variacao por distro e ponte para segredos"
+   git -C ~/.dotfiles ls-files | grep -c 'zshrc.local' || echo "zshrc.local NAO esta versionado: correto"
+   ```
+
+   Esperado: o `.zshrc.local` existe no home e **não** aparece no repositório. Essa é a separação entre estrutura versionada e segredo local.
+
+6. **Capture os pacotes instalados por decisão sua.**
+
+   ```bash
+   apt-mark showmanual | wc -l
+   apt-mark showmanual > ~/.dotfiles/pacotes-manuais.txt
+   head -5 ~/.dotfiles/pacotes-manuais.txt
+   git -C ~/.dotfiles add -f pacotes-manuais.txt
+   git -C ~/.dotfiles commit -m "bootstrap: lista de pacotes instalados manualmente"
+   ```
+
+   Esperado: uma lista de dezenas a poucas centenas de linhas, com os metapacotes `kali-*` entre elas — e não os milhares de pacotes que `dpkg -l` mostraria. É o que os dotfiles sozinhos não capturam.
+
+7. **Escreva o bootstrap completo.**
+
+   ```bash
+   cat > ~/.dotfiles/bootstrap.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   raiz="$(cd "$(dirname "$0")" && pwd)"
+   echo "[1/3] pacotes"
+   sudo apt update
+   xargs -a "$raiz/pacotes-manuais.txt" sudo apt install -y
+   echo "[2/3] dotfiles"
+   "$raiz/instalar.sh"
+   echo "[3/3] verificacao"
+   for ferramenta in git vim tmux zsh; do
+       command -v "$ferramenta" >/dev/null || { echo "FALTA: $ferramenta" >&2; exit 1; }
+   done
+   echo "ambiente pronto"
+   EOF
+   chmod +x ~/.dotfiles/bootstrap.sh
+   bash -n ~/.dotfiles/bootstrap.sh && echo "sintaxe ok"
+   git -C ~/.dotfiles add -f bootstrap.sh && git -C ~/.dotfiles commit -m "bootstrap: script completo"
+   ```
+
+   Esperado: sintaxe válida. **Não execute** o passo de pacotes agora — ele reinstalaria tudo. O passo seguinte testa numa conta limpa.
+
+8. **Teste de verdade: aplique numa conta que nunca viu esses arquivos.**
+
+   ```bash
+   sudo useradd -m -s /bin/bash teste-dot
+   sudo cp -a ~/.dotfiles /home/teste-dot/.dotfiles
+   sudo chown -R teste-dot:teste-dot /home/teste-dot/.dotfiles
+   sudo -u teste-dot -H bash -c '$HOME/.dotfiles/instalar.sh'
+   sudo ls -l /home/teste-dot/.zshrc /home/teste-dot/.vimrc
+   sudo -u teste-dot -H bash -c 'grep -c instalar $HOME/.zshrc'
+   ```
+
+   Esperado: os links são criados na conta nova e os arquivos chegam íntegros. **Este é o único teste que prova que o seu repositório funciona.** Se algo falhar aqui — um caminho com o seu nome de usuário dentro, uma ferramenta ausente —, é exatamente o que falharia na máquina nova no pior dia possível.
+
+9. **Confirme que nenhum segredo escapou.**
+
+   ```bash
+   git -C ~/.dotfiles ls-files
+   git -C ~/.dotfiles log -p --all | grep -iE 'BEGIN (RSA|OPENSSH|PRIVATE)|password|token=' | head || echo "nenhum segredo no historico"
+   git -C ~/.dotfiles ls-files | grep -E 'id_|\.pem|\.key|history' || echo "nenhum arquivo sensivel rastreado"
+   ```
+
+   Esperado: as duas verificações passam sem achados. Faça esta checagem **antes** de qualquer `git push`, sempre — é a última chance antes de o commit se tornar permanente e público.
+
+10. **Limpe.**
+
+    ```bash
+    sudo userdel -r teste-dot
+    for f in .zshrc .vimrc .tmux.conf .gitconfig; do
+        [ -L "$HOME/$f" ] && rm -f "$HOME/$f"
+        [ -e "$HOME/$f.pre-dotfiles" ] && mv -- "$HOME/$f.pre-dotfiles" "$HOME/$f"
+    done
+    rm -rf ~/.dotfiles ~/.zshrc.local
+    ls -l ~/.zshrc 2>/dev/null || echo "restaurado"
+    ```
+
+    Esperado: os links somem, a configuração original volta do `.pre-dotfiles` e o repositório de laboratório desaparece. Repare que a restauração só foi possível porque o instalador do passo 3 preservou o que existia — um instalador que sobrescreve não permite este último passo.
+
+## Resumo
+
+- **O ambiente de trabalho costuma ser a única parte da infraestrutura que não é reproduzível**, e três anos de ajustes invisíveis desaparecem com um disco. Dotfiles versionados transformam configuração pessoal em ativo recuperável.
+- **Lista de inclusão, nunca de exclusão.** `.gitignore` com `*` na primeira linha e cada arquivo adicionado com `git add -f`. O padrão passa a ser "não versionado", e o esquecimento deixa de ser vazamento.
+- **Três estratégias válidas:** links simbólicos com script (ou GNU Stow), repositório *bare* apontado para o home, ou `chezmoi`/`yadm` quando há várias máquinas e segredos a referenciar.
+- **Segredo não entra no repositório, nem em repositório privado.** O padrão `[[ -r ~/.zshrc.local ]] && source` resolve a maioria dos casos; `pass` e `age` cobrem o resto.
+- **`apt-mark showmanual` captura o que os dotfiles não capturam:** os pacotes que você instalou por decisão própria, sem as milhares de dependências. É a base do script de bootstrap.
+- **Um repositório de dotfiles nunca aplicado numa máquina limpa é hipótese, não backup.** Teste num contêiner descartável ou num usuário novo — e é sempre na primeira vez que aparecem o caminho absoluto com o seu nome dentro e a dependência esquecida.
+- **No Kali, o home contém `.msf4/`, `.ssh/` e histórico com alvos e credenciais.** Um `git init` no home é potencialmente publicar dados de cliente, o que torna a disciplina da lista de inclusão mais do que boa prática.
