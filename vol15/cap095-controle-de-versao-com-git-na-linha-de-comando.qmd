@@ -1,3 +1,362 @@
 # Controle de versão com Git na linha de comando {#sec-cap095}
 
-*(em elaboracao)*
+O diretório tinha sete arquivos: `firewall.sh`, `firewall.sh.bak`, `firewall.sh.bak2`, `firewall.sh.old`, `firewall.sh.funciona`, `firewall.sh.FINAL` e `firewall.sh.FINAL2`. Nenhum deles com data confiável, porque um `cp` preservou o carimbo de tempo e outro não. A regra que bloqueava o acesso indevido estava em um desses arquivos, e o que estava em produção não era ele. Descobrir qual foi trabalho de uma tarde inteira, comparando saídas de `diff` duas a duas.
+
+Esse diretório é a versão manual, ruim e incompleta do que o Git faz bem: guardar **todos** os estados anteriores, com autor, data e uma explicação do porquê, e permitir voltar a qualquer um deles em um comando. Não é ferramenta de programador — é ferramenta de quem edita arquivos importantes, e num sistema Linux isso significa scripts, configurações, playbooks e dotfiles.
+
+Este capítulo trata do Git como ferramenta de administração de sistemas na linha de comando. O objetivo não é cobrir tudo, e sim construir o modelo mental correto — porque quase toda confusão com Git vem de não saber em qual das três áreas cada comando mexe.
+
+## O modelo de três áreas
+
+Um repositório Git tem três lugares onde um arquivo pode estar, e cada comando move informação entre eles. Entender esse mapa resolve a maior parte das dúvidas.
+
+::: {#fig-areas-git}
+```{.tikz}
+%%| filename: areas-git
+%%| alt: As tres areas do Git mais o remoto, e quais comandos movem arquivos entre elas
+\begin{tikzpicture}[
+    ar/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.9cm,minimum height=1.7cm},
+    fw/.style={-{Latex[length=1.5mm]},very thick,manualgreen},
+    bw/.style={-{Latex[length=1.5mm]},very thick,manualred},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ar,draw=manualblue,fill=manualblue!12]   (wt)  at (0,5)    {\textbf{diretório}\\\textbf{de trabalho}\\\tiny os arquivos que\\\tiny você edita};
+  \node[ar,draw=manualyellow,fill=manualyellow!20](ix) at (4.4,5)  {\textbf{índice}\\\textbf{(\emph{stage})}\\\tiny o próximo commit\\\tiny sendo montado};
+  \node[ar,draw=manualgreen,fill=manualgreen!12] (rp)  at (8.8,5)  {\textbf{repositório}\\\textbf{local}\\\tiny histórico completo\\\tiny em \texttt{.git/}};
+  \node[ar,draw=manualgray,fill=manualgray!12]   (rm)  at (13.2,5) {\textbf{remoto}\\\tiny \texttt{origin}\\\tiny outra máquina};
+
+  \draw[fw] (1.45,5.45) -- (2.95,5.45);
+  \node[lb,manualgreen] at (2.2,5.75) {\texttt{git add}};
+  \draw[fw] (5.85,5.45) -- (7.35,5.45);
+  \node[lb,manualgreen] at (6.6,5.75) {\texttt{git commit}};
+  \draw[fw] (10.25,5.45) -- (11.75,5.45);
+  \node[lb,manualgreen] at (11.0,5.75) {\texttt{git push}};
+
+  \draw[bw] (2.95,4.55) -- (1.45,4.55);
+  \node[lb,manualred] at (2.2,4.25) {\texttt{git restore}};
+  \draw[bw] (7.35,4.55) -- (5.85,4.55);
+  \node[lb,manualred,align=center] at (6.6,4.2) {\texttt{git restore}\\\texttt{-{}-staged}};
+  \draw[bw] (11.75,4.55) -- (10.25,4.55);
+  \node[lb,manualred] at (11.0,4.25) {\texttt{git fetch}};
+
+  \draw[bw] (13.2,4.1) -- (13.2,3.2) -- (0,3.2) -- (0,4.1);
+  \node[lb,manualred,fill=white,inner sep=2pt] at (6.6,3.2) {\texttt{git pull} \quad = \quad \texttt{git fetch} + \texttt{git merge}};
+
+  \node[nt,text width=14.0cm,anchor=north] at (6.6,2.5)
+    {O \texttt{git diff} sozinho compara \textbf{trabalho} com \textbf{índice}; \texttt{git diff -{}-staged} compara \textbf{índice} com o último commit; \texttt{git diff HEAD} compara trabalho com o último commit. Saber qual dos três você quer é metade do uso diário. E a propriedade que muda tudo: \textbf{depois que algo entrou num commit, é praticamente impossível perdê-lo} --- mesmo apagado de todos os ramos, o \texttt{git reflog} guarda por onde \texttt{HEAD} passou nos últimos 90 dias. Antes do primeiro \texttt{git add}, porém, não há rede nenhuma.};
+\end{tikzpicture}
+```
+As três áreas do Git, o remoto, e o comando que move entre cada par.
+:::
+
+O ponto que a @fig-areas-git deixa explícito e que quase todo tutorial esconde: o **índice** existe para você escolher *o que* entra no próximo commit. Editou cinco arquivos e só três são a correção que você quer registrar? `git add` nos três, `git commit`, e os outros dois seguem editados no diretório de trabalho, esperando o próximo. É o que permite um histórico onde cada commit é uma mudança coerente, em vez de um despejo do dia.
+
+## Configuração e o primeiro repositório
+
+Antes de qualquer coisa, identidade e preferências. Sem isso o Git recusa o primeiro commit:
+
+```bash
+git config --global user.name "Seu Nome"
+git config --global user.email "voce@exemplo.com"
+git config --global init.defaultBranch main
+git config --global core.editor vim
+git config --global pull.rebase false        # decide o comportamento do pull explicitamente
+git config --list --show-origin | head       # de onde veio cada valor
+```
+
+O `--show-origin` é a resposta para "por que o Git está usando este e-mail?": ele mostra o arquivo que definiu cada valor. A precedência é `/etc/gitconfig` (sistema), `~/.gitconfig` (global) e `.git/config` (do repositório) — o mais específico vence, o que permite usar um e-mail diferente num repositório específico.
+
+O ciclo básico:
+
+```bash
+mkdir -p ~/scripts && cd ~/scripts
+git init                        # cria o .git/
+git status                      # o comando que voce mais vai rodar
+git add firewall.sh             # coloca no indice
+git commit -m "firewall: bloqueia acesso indevido a porta 8080"
+git log --oneline --graph --decorate --all
+```
+
+Uma boa mensagem de commit explica **por que**, não *o que* — o `diff` já mostra o que mudou. "Corrige bug" não ajuda ninguém em seis meses; "firewall: bloqueia 8080, que expunha o painel interno" ajuda.
+
+## O que não entra no repositório
+
+O `.gitignore` lista padrões que o Git deve ignorar. É o arquivo que impede o repositório de encher de lixo — e, mais importante, de vazar segredo:
+
+```gitignore
+# .gitignore
+*.log
+*.tmp
+*.bak
+__pycache__/
+.venv/
+segredos.env
+*.key
+*.pem
+id_rsa*
+```
+
+::: {.callout-warning}
+**Um segredo commitado é um segredo vazado, e apagá-lo depois não resolve.** Se você commitou uma chave privada, um token ou uma senha, o valor está no histórico permanentemente — um `git rm` no commit seguinte remove o arquivo do estado atual e mantém o conteúdo acessível em todo clone que já existe. Se o repositório foi para um remoto, considere o segredo comprometido de fato: **rotacione a credencial imediatamente**, que é a única ação que realmente resolve. Reescrever o histórico com `git filter-repo` limpa o repositório para o futuro, mas não recupera o que já foi copiado. A prevenção é `.gitignore` desde o primeiro commit e uma revisão do `git diff --staged` antes de cada `git commit`.
+:::
+
+Vale conferir o que está prestes a entrar, sempre:
+
+```bash
+git diff --staged               # exatamente o que o proximo commit vai gravar
+git status --short              # visao compacta do estado
+```
+
+## Desfazer: o mapa dos arrependimentos
+
+É onde as pessoas mais travam, porque os comandos parecem intercambiáveis e não são. O critério é **o que você quer desfazer, e se já foi compartilhado**.
+
+| Situação | Comando | Efeito |
+|---|---|---|
+| Editei e quero descartar a edição | `git restore arquivo` | volta ao que está no índice |
+| Dei `add` e quero tirar do índice | `git restore --staged arquivo` | sai do índice, edição preservada |
+| Mensagem do último commit está ruim | `git commit --amend` | reescreve o último commit |
+| Quero desfazer commits ainda **locais** | `git reset --soft HEAD~1` | desfaz o commit, mantém tudo no índice |
+| Quero jogar fora commits locais e o trabalho | `git reset --hard HEAD~1` | **destrutivo**: perde as edições |
+| Quero desfazer um commit **já publicado** | `git revert <hash>` | cria um commit novo que inverte o outro |
+| Fiz besteira e não sei onde estou | `git reflog` | mostra por onde `HEAD` passou; dá para voltar |
+
+: Como desfazer cada tipo de arrependimento no Git {#tbl-desfazer-git}
+
+Duas regras que evitam quase todo estrago:
+
+**`--amend` e `reset` reescrevem o histórico; `revert` não.** Reescrever o que já foi publicado quebra o repositório de todo mundo que já baixou. A linha divisória é clara: enquanto o commit é só seu, reescreva à vontade; depois de um `push`, use `revert`.
+
+**`git reflog` é a rede de segurança.** Ele registra toda posição por onde `HEAD` passou, inclusive as que "desapareceram" após um `reset --hard`. Se você acha que perdeu commits, quase nunca perdeu:
+
+```bash
+git reflog                        # lista as posicoes recentes de HEAD
+git reset --hard HEAD@{3}         # volta para onde estava tres movimentos atras
+```
+
+O que o `reflog` **não** salva é o que nunca foi commitado. Edição no diretório de trabalho descartada por `git restore` ou por `reset --hard` some de verdade.
+
+## Ramos: trabalhar sem quebrar o que funciona
+
+Um ramo é um ponteiro móvel para um commit. Criar um custa alguns bytes e nenhum tempo, o que muda a economia do "vou tentar uma coisa aqui".
+
+```bash
+git switch -c ajuste-firewall      # cria e muda para o ramo
+# ... edições e commits ...
+git switch main
+git merge ajuste-firewall
+git branch -d ajuste-firewall      # apaga o ramo ja incorporado
+```
+
+Quando os dois lados alteraram a mesma região do mesmo arquivo, o `merge` para e pede que você decida. O Git marca o conflito no próprio arquivo:
+
+```
+<<<<<<< HEAD
+iptables -A INPUT -p tcp --dport 8080 -j DROP
+=======
+nft add rule inet filter input tcp dport 8080 drop
+>>>>>>> ajuste-firewall
+```
+
+Você edita o arquivo deixando o conteúdo final correto — apagando as três linhas de marcação —, dá `git add` no arquivo e `git commit`. Ou `git merge --abort` para voltar ao estado anterior e pensar melhor. Conflito não é erro; é o Git dizendo que a decisão é humana.
+
+## Remotos: sincronizar entre máquinas
+
+```bash
+git clone git@servidor:caminho/repo.git       # copia completa, com historico
+git remote -v                                  # quais remotos existem
+git remote add origin git@servidor:repo.git
+git push -u origin main                        # -u so na primeira vez
+git fetch                                      # baixa sem mexer no seu trabalho
+git pull                                       # fetch + merge
+git log --oneline origin/main..main            # o que voce tem e o remoto nao
+```
+
+A distinção entre `fetch` e `pull` importa: `fetch` só baixa, deixando você inspecionar antes de integrar; `pull` baixa e já mescla. Em máquina onde outras pessoas trabalham, `fetch` seguido de `git log ..origin/main` é o hábito prudente.
+
+Autenticação por SSH é a forma recomendada, com as chaves do @sec-cap086:
+
+```bash
+ssh-keygen -t ed25519 -C "kali-lab"       # se ainda nao tiver par de chaves
+cat ~/.ssh/id_ed25519.pub                 # cadastrar a PUBLICA no servidor
+ssh -T git@github.com                     # testa a autenticacao
+```
+
+Nunca use senha em URL HTTPS: ela fica no `.git/config` em texto claro e vaza no primeiro `cat`.
+
+## Git para configuração de sistema
+
+O uso que mais rende num servidor é versionar o `/etc`. A ferramenta pronta é o `etckeeper`:
+
+```bash
+sudo apt install etckeeper
+sudo etckeeper init
+sudo etckeeper commit "estado inicial"
+sudo git -C /etc log --oneline | head
+```
+
+Depois disso, cada `apt install` gera um commit automático em `/etc`, e a pergunta "o que mudou na configuração quando aquele pacote entrou?" vira um `git log`. É o antídoto direto contra o diretório de `.bak` da abertura.
+
+::: {.callout-note}
+**Um repositório de `/etc` contém segredos por definição** — `/etc/shadow`, chaves privadas de serviços, tokens de configuração. As permissões do diretório `/etc/.git` precisam ser restritas (o `etckeeper` cuida disso, com `0700`), e esse repositório **não** deve ser enviado a um remoto compartilhado sem criptografia. Versionar `/etc` é excelente para auditoria local e para reverter uma mudança ruim; publicar `/etc` é vazar a máquina inteira.
+:::
+
+## 🐉 No Kali
+
+- **O Git já vem instalado no Kali e é dependência de metade do ecossistema de ferramentas.** Boa parte das ferramentas fora dos repositórios oficiais se instala com `git clone` (@sec-cap037). Isso torna o `git pull` num diretório de ferramentas uma operação corriqueira — e vale lembrar que `git clone` de repositório de terceiro executa código de terceiro na sua máquina assim que você roda o que baixou. Ler o que se clona antes de executar é o mesmo cuidado do @sec-cap085 aplicado ao código-fonte.
+- **Ganchos (`hooks`) do Git executam código automaticamente, e isso é um vetor real.** Os arquivos em `.git/hooks/` rodam em eventos como commit e merge. O `git clone` **não** copia os hooks do remoto, o que fecha o caso mais óbvio — mas um arquivo `.git/hooks/post-checkout` presente num diretório que alguém te entregou como arquivo compactado roda na primeira operação. Ao receber um repositório de origem não confiável, `ls -la .git/hooks/` antes de qualquer comando é um hábito barato.
+- **Versione seus scripts de laboratório e as evidências de teste autorizado.** Num engajamento com autorização escrita, um repositório com os scripts usados, as configurações e as anotações datadas é rastreabilidade — cada commit tem autor e carimbo de tempo, o que responde "quem fez o quê e quando" numa revisão posterior. É o mesmo raciocínio de trilha de auditoria do @sec-cap089, aplicado ao seu próprio trabalho. O que **não** vai para o repositório: credenciais capturadas, dados pessoais do alvo e qualquer material sensível colhido durante o teste, que têm tratamento próprio previsto no contrato e não pertencem a um `git push`.
+- **Segredo em repositório é um dos achados mais comuns em revisão de segurança, e o Kali tem o ferramental para procurar.** Ferramentas como `trufflehog` e `gitleaks` varrem o histórico inteiro atrás de chaves e tokens. O uso legítimo é rodá-las contra os **seus** repositórios, ou os do cliente dentro de um escopo autorizado, antes que outra pessoa o faça. Encontrar o segredo antes vale exatamente o trabalho de rotacioná-lo depois.
+- **Cuidado ao versionar o home do Kali inteiro.** Um `git init` em `~` no Kali captura `.ssh/`, `.zsh_history`, `.msf4/`, chaves e históricos de comandos — material que você não quer num remoto. Versionar dotfiles é ótimo e é o assunto do último capítulo deste volume, mas a abordagem correta usa lista explícita do que incluir, não do que excluir.
+
+> **Nota sobre a família RHEL.** O Git é idêntico em qualquer distribuição — `dnf install git`. O `etckeeper` existe no EPEL e funciona com `dnf` do mesmo modo que com `apt`. A única diferença prática que aparece de vez em quando é a versão do Git: distribuições estáveis como RHEL trazem versões mais antigas, onde `git switch` e `git restore` (introduzidos na versão 2.23) podem não existir — nesse caso, os equivalentes são `git checkout -b` e `git checkout --`. Como o Kali é *rolling*, ele sempre tem a versão nova.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Tudo acontece em `~/lab-git` e nada toca em repositório real seu.
+
+1. **Configure a identidade e crie o repositório.**
+
+   ```bash
+   git config --global user.name "Lab Kali"
+   git config --global user.email "lab@exemplo.local"
+   git config --global init.defaultBranch main
+   mkdir -p ~/lab-git && cd ~/lab-git
+   git init
+   git status
+   ```
+
+   Esperado: `Initialized empty Git repository` e um `status` dizendo que não há commits ainda. O diretório `.git/` é todo o repositório — copiá-lo copia o histórico inteiro.
+
+2. **Veja as três áreas da @fig-areas-git em ação.**
+
+   ```bash
+   printf '#!/bin/bash\niptables -A INPUT -p tcp --dport 8080 -j DROP\n' > firewall.sh
+   git status --short                 # ?? = nao rastreado (so no diretorio de trabalho)
+   git add firewall.sh
+   git status --short                 # A  = adicionado (no indice)
+   git commit -m "firewall: bloqueia 8080, que expunha o painel interno"
+   git status --short                 # vazio = trabalho, indice e repositorio iguais
+   ```
+
+   Esperado: o marcador de duas letras muda a cada passo — `??`, depois `A `, depois nada. Cada mudança é um salto de uma área para a próxima.
+
+3. **Compare os três `diff`.**
+
+   ```bash
+   echo "iptables -A INPUT -p tcp --dport 9090 -j DROP" >> firewall.sh
+   git diff | tail -4                 # trabalho vs indice: mostra a nova linha
+   git add firewall.sh
+   git diff | wc -l                   # agora vazio: trabalho e indice sao iguais
+   git diff --staged | tail -4        # indice vs ultimo commit: mostra a nova linha
+   ```
+
+   Esperado: a linha aparece no `git diff` antes do `add` e no `git diff --staged` depois. Confundir os dois é a fonte número um de "o Git não está mostrando minha mudança".
+
+4. **Use o índice para separar dois assuntos num commit cada.**
+
+   ```bash
+   echo "# comentario de documentacao" >> firewall.sh
+   printf 'echo "backup iniciado"\n' > backup.sh
+   git add backup.sh
+   git commit -m "backup: script inicial"
+   git status --short                 # firewall.sh continua modificado, esperando
+   git add firewall.sh && git commit -m "firewall: documenta as regras"
+   git log --oneline
+   ```
+
+   Esperado: dois commits distintos, cada um com um assunto. É exatamente para isso que o índice existe.
+
+5. **Desfaça uma edição não commitada.**
+
+   ```bash
+   echo "LINHA ERRADA QUE NAO DEVERIA EXISTIR" >> firewall.sh
+   git diff --stat
+   git restore firewall.sh
+   git diff --stat                    # vazio
+   tail -2 firewall.sh
+   ```
+
+   Esperado: a linha errada desaparece. **Atenção**: essa edição foi perdida de verdade — nunca esteve num commit, então nem o `reflog` a recupera.
+
+6. **Desfaça um commit local com `reset` e recupere com `reflog`.**
+
+   ```bash
+   echo "mudanca experimental" >> backup.sh
+   git commit -am "experimento que nao presta"
+   git log --oneline | head -2
+   git reset --hard HEAD~1            # DESTRUTIVO: joga fora o commit e a edicao
+   git log --oneline | head -2        # o commit sumiu
+   git reflog | head -4               # mas o reflog lembra dele
+   git reset --hard HEAD@{1}          # volta
+   git log --oneline | head -2        # o commit voltou
+   ```
+
+   Esperado: o commit desaparece e reaparece. O `reflog` é a razão de o Git ser muito mais difícil de estragar do que parece — desde que a informação tenha chegado a um commit.
+
+7. **Prove a diferença entre `reset` e `revert`.**
+
+   ```bash
+   git revert --no-edit HEAD
+   git log --oneline | head -3
+   ```
+
+   Esperado: em vez de apagar o commit, o Git criou um **novo** commit que desfaz o anterior. O histórico cresce em vez de encolher — e é por isso que `revert` é o correto para algo já publicado: ninguém que já baixou fica com um histórico incompatível.
+
+8. **Crie um ramo, provoque um conflito e resolva.**
+
+   ```bash
+   git switch -c migra-nftables
+   printf '#!/bin/bash\nnft add rule inet filter input tcp dport 8080 drop\n' > firewall.sh
+   git commit -am "firewall: migra para nftables"
+   git switch main
+   printf '#!/bin/bash\niptables -A INPUT -p tcp --dport 8080 -j REJECT\n' > firewall.sh
+   git commit -am "firewall: troca DROP por REJECT"
+   git merge migra-nftables
+   ```
+
+   Esperado: `CONFLICT (content): Merge conflict in firewall.sh`. Abra o arquivo e veja os marcadores `<<<<<<<`, `=======` e `>>>>>>>`. Resolva:
+
+   ```bash
+   printf '#!/bin/bash\nnft add rule inet filter input tcp dport 8080 reject\n' > firewall.sh
+   git add firewall.sh
+   git commit --no-edit
+   git log --oneline --graph --all | head -8
+   ```
+
+   Esperado: o grafo mostra os dois ramos convergindo no commit de merge. Conflito é decisão humana, não erro.
+
+9. **Comprove que o `.gitignore` protege — e o que ele não faz.**
+
+   ```bash
+   printf 'SENHA=troque-me\n' > segredos.env
+   git status --short                        # aparece como nao rastreado: risco
+   printf 'segredos.env\n*.key\n*.pem\n' > .gitignore
+   git status --short                        # sumiu da lista
+   git add .gitignore && git commit -m "ignora segredos e chaves"
+   git add -f segredos.env && git commit -m "commit acidental de segredo"
+   git rm --cached segredos.env && git commit -m "remove o segredo"
+   git log -p --all -- segredos.env | grep -c "troque-me"
+   ```
+
+   Esperado: o último comando retorna um número **maior que zero** — a senha continua no histórico mesmo depois de removida. É a demonstração literal do quadro de aviso: a única resposta a um segredo commitado é rotacionar a credencial.
+
+10. **Limpe.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-git
+    git config --global --unset user.email     # so se quiser reverter a identidade do lab
+    ```
+
+    Esperado: o diretório desaparece com o repositório inteiro dentro dele. Reconfigure `user.name` e `user.email` com os seus valores reais antes de trabalhar em repositório de verdade.
+
+## Resumo
+
+- **O Git substitui o diretório de `.bak` por um histórico com autor, data e motivo**, e vale para script, configuração e dotfile — não só para código de programa.
+- **Três áreas explicam quase tudo:** diretório de trabalho, índice e repositório local. `add` move para o índice, `commit` para o repositório, `push` para o remoto; `restore`, `restore --staged` e `fetch` fazem o caminho inverso.
+- **`git diff` compara trabalho com índice, `--staged` compara índice com o último commit, `HEAD` compara trabalho com o último commit.** Confundir os três é a origem mais comum de "o Git não vê minha mudança".
+- **Reescrever histórico local é livre; histórico publicado, não.** `reset` e `--amend` só antes do `push`; depois disso, `revert`, que desfaz criando um commit novo.
+- **`git reflog` é a rede de segurança** e recupera quase tudo que passou por um commit. O que nunca foi commitado — edição descartada por `restore` ou `reset --hard` — some de verdade.
+- **Segredo commitado é segredo vazado.** `.gitignore` desde o primeiro commit, `git diff --staged` antes de cada commit, e rotação imediata da credencial se escapou. Reescrever o histórico não recupera o que já foi copiado.
+- **`etckeeper` versiona o `/etc` e transforma "o que mudou na configuração?" num `git log`** — mas esse repositório contém segredos e não vai para remoto compartilhado.
