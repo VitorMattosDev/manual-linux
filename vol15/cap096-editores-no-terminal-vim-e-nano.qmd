@@ -1,3 +1,335 @@
 # Editores no terminal: vim e nano {#sec-cap096}
 
-*(em elaboracao)*
+Três da manhã, servidor remoto por SSH, a configuração do `sshd` acabou de ser alterada e o serviço se recusa a subir. Não há interface gráfica. Não há `nano` — a imagem mínima do contêiner não o inclui. Há `vi`, porque **todo** sistema Unix tem `vi`. A pessoa abre o arquivo, digita a correção, e as letras não aparecem: o editor está em modo normal e cada tecla é um comando. Ela aperta `Esc`, `Ctrl+C`, digita `:q!` sem saber o que faz, e sai sem ter corrigido nada.
+
+Esse cenário é a razão pela qual saber editar arquivo no terminal não é preferência pessoal. É competência de recuperação. Você pode passar a vida usando um editor gráfico e ainda assim precisar, um dia, de dez comandos de `vi` numa máquina onde nada mais funciona.
+
+Este capítulo cobre os dois editores que importam num Linux: o `nano`, que se aprende em cinco minutos e resolve a maior parte do dia, e o `vim`, que exige investimento e paga com velocidade e onipresença. E cobre também o detalhe de segurança que quase ninguém conhece: por que `sudo vim` é diferente de `sudoedit`.
+
+## Qual editor abre, e por quê
+
+Antes dos editores, a variável que os invoca. `git commit`, `crontab -e`, `visudo` e `systemctl edit` não escolhem editor: eles consultam `EDITOR` (ou `VISUAL`) e abrem o que estiver lá. É por isso que tanta gente se vê presa no Vim sem ter pedido — o padrão do Debian e do Kali é o `vi` quando `EDITOR` não está definida.
+
+```bash
+echo "${EDITOR:-<nao definida>}"
+export EDITOR=nano                     # no ~/.bash_profile ou ~/.zshenv (@sec-cap092)
+sudo update-alternatives --config editor   # o padrao do sistema, no Debian
+```
+
+O `update-alternatives` muda o `/usr/bin/editor`, que é o que os programas usam quando `EDITOR` não existe. Definir `EDITOR` no seu perfil resolve para você; `update-alternatives` resolve para a máquina.
+
+## `nano`: o mínimo que funciona
+
+O `nano` mostra os atalhos na própria tela, o que elimina a curva de aprendizado. O `^` significa `Ctrl` e o `M-` significa `Alt`.
+
+| Atalho | O que faz |
+|---|---|
+| `Ctrl+O` | grava o arquivo (*write Out*) |
+| `Ctrl+X` | sai (pergunta se quer gravar) |
+| `Ctrl+W` | busca; `Alt+W` repete a busca |
+| `Ctrl+\` | busca e substitui |
+| `Ctrl+K` | recorta a linha; `Ctrl+U` cola |
+| `Alt+A` | inicia seleção; então `Ctrl+K` recorta o bloco |
+| `Alt+U` / `Alt+E` | desfaz / refaz |
+| `Ctrl+_` | vai para um número de linha |
+| `Alt+#` | liga a numeração de linhas |
+
+: Os atalhos do `nano` que cobrem o uso diário {#tbl-atalhos-nano}
+
+Duas opções valem a pena no `~/.nanorc`:
+
+```
+set linenumbers          # numeracao a esquerda
+set tabstospaces         # TAB vira espacos, essencial para YAML
+set tabsize 4
+set constantshow         # mostra linha e coluna o tempo todo
+include "/usr/share/nano/*.nanorc"   # realce de sintaxe
+```
+
+O `tabstospaces` merece destaque: um arquivo YAML com tabulação real é inválido, e a mensagem de erro raramente diz isso. Se você edita YAML no `nano`, essa linha evita uma classe inteira de problemas.
+
+::: {.callout-note}
+**O `nano` grava o arquivo com uma linha em branco no fim, e isso é correto.** A convenção POSIX diz que todo arquivo de texto termina com quebra de linha, e ferramentas como `wc -l`, `read` em laço e o próprio `crontab` dependem disso — uma entrada de `crontab` sem `\n` final é ignorada silenciosamente. Se você vir um `diff` com "No newline at end of file", foi outro editor que errou, não o `nano`.
+:::
+
+## `vim`: os modos, que é onde todo mundo tropeça
+
+A confusão inicial com o Vim tem uma causa única: ele é **modal**. As mesmas teclas fazem coisas diferentes conforme o modo, e o modo inicial não é o de digitar texto — é o de dar comandos.
+
+::: {#fig-modos-vim}
+```{.tikz}
+%%| filename: modos-vim
+%%| alt: Maquina de estados dos modos do Vim e as teclas que fazem cada transicao
+\begin{tikzpicture}[
+    nd/.style={rounded corners=5pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.0cm,minimum height=1.15cm},
+    lb/.style={font=\tiny,inner sep=1.5pt,fill=white},
+    fl/.style={-{Latex[length=1.5mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[nd,draw=manualblue,fill=manualblue!16,minimum width=3.4cm] (nor) at (0,0)
+    {\textbf{NORMAL}\\\tiny navegar, apagar, copiar\\\tiny é onde o Vim começa};
+  \node[nd,draw=manualgreen,fill=manualgreen!14]  (ins) at (5.4,2.4)  {\textbf{INSERÇÃO}\\\tiny digitar texto};
+  \node[nd,draw=manualyellow,fill=manualyellow!24](vis) at (5.4,-2.4) {\textbf{VISUAL}\\\tiny selecionar região};
+  \node[nd,draw=manualred,fill=manualred!14]      (cmd) at (-5.4,-2.4){\textbf{LINHA DE COMANDO}\\\tiny gravar, sair, substituir};
+  \node[nd,draw=manualgray,fill=manualgray!16]    (sub) at (-5.4,2.4) {\textbf{SUBSTITUIÇÃO}\\\tiny sobrescrever};
+
+  \draw[fl] (nor) to[bend left=14] node[lb,sloped,above,pos=0.5]{\texttt{i a o I A O}} (ins);
+  \draw[fl] (ins) to[bend left=14] node[lb,sloped,above,pos=0.5]{\texttt{Esc}} (nor);
+
+  \draw[fl] (nor) to[bend right=14] node[lb,sloped,below,pos=0.5]{\texttt{v V Ctrl-v}} (vis);
+  \draw[fl] (vis) to[bend right=14] node[lb,sloped,below,pos=0.5]{\texttt{Esc}} (nor);
+
+  \draw[fl] (nor) to[bend right=14] node[lb,sloped,above,pos=0.5]{\texttt{: / ?}} (cmd);
+  \draw[fl] (cmd) to[bend right=14] node[lb,sloped,below,pos=0.5]{\texttt{Enter} ou \texttt{Esc}} (nor);
+
+  \draw[fl] (nor) to[bend left=14] node[lb,sloped,below,pos=0.5]{\texttt{R}} (sub);
+  \draw[fl] (sub) to[bend left=14] node[lb,sloped,above,pos=0.5]{\texttt{Esc}} (nor);
+
+  \node[nt,text width=13.2cm,anchor=north] at (0,-4.2)
+    {Toda transição de volta é \texttt{Esc}, e é a tecla mais útil do editor: apertada duas vezes, você está em NORMAL a partir de qualquer lugar. A regra que resolve o pânico do primeiro contato: \textbf{se as letras que você digita não aparecem, você está em NORMAL} --- aperte \texttt{i} e digite. Para sair sem gravar nada, \texttt{Esc} e depois \texttt{:q!} seguido de Enter.};
+\end{tikzpicture}
+```
+Os modos do Vim e as teclas que levam de um ao outro.
+:::
+
+O que a @fig-modos-vim mostra e que muda a experiência: **NORMAL é o estado de repouso**, não o de digitação. O Vim assume que você passa mais tempo navegando e transformando texto do que inserindo caracteres novos — o que é verdade quando se edita configuração. Modo de inserção é para escrever; sai-se dele assim que terminou.
+
+### Sobreviver: os dez comandos que bastam
+
+Para o cenário das três da manhã, isto é suficiente:
+
+```
+i        entra em modo de insercao (digita antes do cursor)
+Esc      volta para o modo normal
+:w       grava
+:q       sai
+:wq      grava e sai        (ou ZZ, no modo normal)
+:q!      sai DESCARTANDO as alteracoes
+dd       apaga a linha inteira
+u        desfaz             (Ctrl-r refaz)
+/texto   busca "texto"; n vai para a proxima ocorrencia
+:123     vai para a linha 123
+```
+
+Se você aprender só isso, já não fica preso e já consegue corrigir uma configuração remota.
+
+### A gramática: operador + movimento
+
+O que torna o Vim rápido não é decorar atalhos, é a **composição**. Comandos se combinam como uma linguagem: um operador (o que fazer) mais um movimento (onde fazer).
+
+| Operador | | Movimento | | Combinação |
+|---|---|---|---|---|
+| `d` apagar | + | `w` palavra | = | `dw` apaga até o fim da palavra |
+| `c` alterar | + | `$` fim da linha | = | `c$` altera até o fim da linha |
+| `y` copiar | + | `}` parágrafo | = | `y}` copia o parágrafo |
+| `d` apagar | + | `i"` dentro das aspas | = | `di"` apaga o conteúdo entre aspas |
+| `c` alterar | + | `ip` parágrafo inteiro | = | `cip` substitui o parágrafo |
+
+: A gramática do Vim: operador mais movimento {#tbl-gramatica-vim}
+
+Um número na frente multiplica: `3dd` apaga três linhas, `d2w` apaga duas palavras. Repetir o operador age na linha inteira: `dd`, `yy`, `cc`. E `.` repete o último comando de edição — o comando mais subestimado do Vim.
+
+Os *text objects* (`iw`, `i"`, `i(`, `it` para tags) são o que mais rende em edição de configuração: com o cursor em qualquer lugar dentro das aspas, `ci"` apaga o conteúdo e já entra em modo de inserção.
+
+### Busca e substituição
+
+```
+/padrao          busca para frente        (n / N navega)
+:%s/velho/novo/g          substitui em todo o arquivo
+:%s/velho/novo/gc         idem, confirmando cada ocorrencia
+:5,20s/velho/novo/g       so nas linhas 5 a 20
+:g/^#/d                   apaga todas as linhas comentadas
+:v/erro/d                 apaga todas as linhas que NAO contem "erro"
+```
+
+A sintaxe é a mesma do `sed` (@sec-cap066), e as expressões regulares são as do @sec-cap064 — com a ressalva de que o Vim usa um dialeto próprio, onde `\v` ("very magic") aproxima a sintaxe da do `grep -E`.
+
+### Um `~/.vimrc` mínimo e defensável
+
+```vim
+set nocompatible          " Vim, nao vi
+syntax on
+set number                " numeracao de linhas
+set expandtab             " TAB vira espacos
+set tabstop=4 shiftwidth=4
+set incsearch hlsearch    " busca incremental e destacada
+set ignorecase smartcase  " ignora caixa, exceto se voce digitar maiusculas
+set undofile              " desfazer persiste entre sessoes
+set backupdir=~/.vim/bkp// directory=~/.vim/swp//
+set mouse=a
+" Esc limpa o destaque da busca
+nnoremap <silent> <Esc><Esc> :nohlsearch<CR>
+```
+
+O `smartcase` é o ajuste de melhor relação custo-benefício: busca por `erro` acha `Erro` e `ERRO`, mas busca por `Erro` só acha `Erro`. O `undofile` faz o `u` continuar funcionando depois de fechar e reabrir o arquivo.
+
+### Além do básico
+
+```bash
+vimdiff a.conf b.conf         # comparacao lado a lado, com navegacao ]c e [c
+vim -O arq1 arq2              # dois arquivos em janelas verticais
+vim +/PermitRootLogin /etc/ssh/sshd_config   # abre ja na primeira ocorrencia
+vim -R arquivo                # somente leitura
+vim -u NONE arquivo           # sem carregar nenhum vimrc (para depurar configuracao)
+```
+
+Dentro do editor, `:e outro-arquivo` abre outro, `:sp` e `:vs` dividem a janela, `Ctrl-w` seguido de uma direção navega entre as divisões, e `:ls` lista os buffers abertos.
+
+## `sudoedit`: a diferença que é de segurança
+
+Editar um arquivo do sistema parece trivial e tem uma armadilha real.
+
+::: {.callout-warning}
+**`sudo vim /etc/algo` executa o editor inteiro como root, com a sua configuração.** Isso significa que todo o `~/.vimrc` e todos os plugins do seu usuário rodam com privilégio total — e o `.vimrc` é um arquivo gravável pelo seu usuário, portanto por qualquer processo que rode como você. Um plugin comprometido, ou uma linha inserida no seu `.vimrc` por um programa qualquer, vira execução como root na próxima vez que você editar uma configuração. Pior: dentro de um Vim rodando como root, `:!bash` abre um shell de root, o que transforma uma permissão de `sudo` restrita a "editar um arquivo" em root completo.
+
+A resposta é **`sudoedit`** (ou `sudo -e`): ele copia o arquivo para um temporário do **seu** usuário, roda o editor com **os seus** privilégios e a sua configuração, e só a cópia de volta acontece como root. O editor nunca executa privilegiado.
+
+```bash
+sudoedit /etc/ssh/sshd_config          # correto
+sudo vim /etc/ssh/sshd_config          # funciona, mas amplia a superficie
+```
+
+No `/etc/sudoers`, conceder `sudoedit /etc/nginx/nginx.conf` a alguém é uma permissão real de editar aquele arquivo; conceder `sudo vim /etc/nginx/nginx.conf` é, na prática, conceder root (@sec-cap022, @sec-cap085).
+:::
+
+E, para o próprio `sudoers`, a ferramenta é `visudo`, que valida a sintaxe antes de gravar:
+
+```bash
+sudo visudo                            # valida antes de salvar
+sudo visudo -c                         # checa os arquivos existentes
+sudo visudo -f /etc/sudoers.d/meu-arquivo
+```
+
+Um `/etc/sudoers` com erro de sintaxe deixa **ninguém** capaz de usar `sudo`, e recuperar isso exige boot em modo de recuperação (@sec-cap044). O `visudo` existe exatamente para que isso não aconteça.
+
+## 🐉 No Kali
+
+- **O Kali traz `vim`, `nano`, `vi` e `mousepad`; a imagem mínima e os contêineres, nem sempre.** A `kali-linux-core` e as imagens de contêiner podem vir só com `vim.tiny` (o `vi`), sem `nano`. É a situação da abertura, e é o argumento prático para saber os dez comandos de sobrevivência mesmo se você prefere `nano`: `apt install nano` não é opção quando a máquina está sem rede porque foi justamente a configuração de rede que você quebrou.
+- **`sudoedit` importa mais no Kali do que em outros sistemas.** Numa distribuição onde se instalam ferramentas de terceiros o tempo todo, e onde plugins de editor entram junto com repositórios clonados (@sec-cap095), a superfície do `sudo vim` deixa de ser hipotética. Adote `sudoedit` como reflexo para tudo em `/etc` — o custo é zero e fecha um caminho de escalada conhecido.
+- **`vim -u NONE` é a primeira coisa a tentar quando o editor se comporta estranho.** Ele abre sem carregar `.vimrc` nem plugin nenhum, isolando se o problema é do editor ou da sua configuração. Vale também quando você edita um arquivo enorme e o realce de sintaxe deixa tudo lento.
+- **Arquivos de troca (`.swp`) órfãos denunciam sessão interrompida — e às vezes atividade que você não fez.** Quando o Vim é morto sem fechar, ele deixa um `.arquivo.swp`, e o `E325: ATTENTION` da próxima abertura oferece recuperar o conteúdo não salvo. Numa investigação de máquina possivelmente comprometida (@sec-cap089), um `.swp` em `/etc` ou no home de um serviço é um indício de que alguém editou algo ali e a sessão foi interrompida — vale olhar antes de apagar. `vim -r arquivo` recupera; `find /etc -name '.*.swp'` encontra.
+- **O `visudo` é obrigatório, não recomendado, e a lição vale para todo arquivo crítico.** O padrão que ele representa — validar antes de gravar — se aplica ao `sshd_config` (`sshd -t`), ao `nginx.conf` (`nginx -t`) e às units do systemd (`systemd-analyze verify`). E há um detalhe de operação remota que salva carreiras: ao editar `sshd_config` por SSH, **mantenha a sessão atual aberta** e teste a nova configuração numa segunda conexão antes de fechar a primeira. Se a mudança quebrou o acesso, você ainda tem uma sessão viva para desfazê-la.
+
+> **Nota sobre a família RHEL.** O `vi` do RHEL mínimo é o `vim-minimal`, mais limitado ainda que o `vim.tiny` do Debian — sem realce de sintaxe e sem várias opções do `.vimrc`. O `nano` não vem instalado por padrão em instalações mínimas. O `update-alternatives` existe, mas o alias `editor` do Debian não: no RHEL a variável `EDITOR` é o caminho principal. O `sudoedit` e o `visudo` são idênticos, porque vêm do mesmo pacote `sudo` em ambas as famílias — e o argumento de segurança do `sudoedit` vale igualmente em qualquer distribuição.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. O passo 3 é o mais importante: pratique a saída do Vim até que ela seja automática, porque é isso que você vai precisar sob pressão.
+
+1. **Veja qual editor o sistema abre e mude-o.**
+
+   ```bash
+   mkdir -p ~/lab-editor && cd ~/lab-editor
+   echo "EDITOR=${EDITOR:-<nao definida>}"
+   ls -l /usr/bin/editor
+   EDITOR=nano crontab -e      # abre o nano; saia com Ctrl+X sem gravar
+   ```
+
+   Esperado: o `crontab -e` abre o editor indicado pela variável, não um editor fixo. É esse mecanismo que faz o `git commit` sem `-m` abrir o Vim para tanta gente.
+
+2. **Edite um arquivo no `nano` e configure o essencial.**
+
+   ```bash
+   printf 'servidor:\n  porta: 22\n  usuario: kali\n' > config.yaml
+   printf 'set linenumbers\nset tabstospaces\nset tabsize 2\nset constantshow\n' > ~/.nanorc
+   nano config.yaml
+   ```
+
+   Dentro do `nano`: `Alt+#` liga a numeração, `Ctrl+W` busca `porta`, `Ctrl+O` grava, `Ctrl+X` sai. Esperado: os atalhos aparecem na base da tela o tempo todo — é a razão de o `nano` não ter curva de aprendizado.
+
+3. **Pratique entrar e sair do Vim até virar reflexo.**
+
+   ```bash
+   vim config.yaml
+   ```
+
+   Faça, nesta ordem: `i` (as letras passam a aparecer), digite qualquer coisa, `Esc`, `u` (desfaz), `:q!` e Enter. Depois abra de novo, `i`, digite, `Esc`, `:wq`. Esperado: da primeira vez o arquivo fica intocado; da segunda, gravado. Repita cinco vezes. **Este é o passo que resolve o cenário das três da manhã.**
+
+4. **Use a gramática operador + movimento.**
+
+   ```bash
+   printf 'porta = "2222"\nusuario = "kali"\nchave = "id_rsa"\nlog = "/var/log/app.log"\n' > app.conf
+   vim app.conf
+   ```
+
+   Com o cursor na primeira linha: `ci"` e digite `22` e `Esc` — o conteúdo entre aspas foi trocado. Desça uma linha com `j` e aperte `.` para repetir a mesma edição. Depois `3dd` apaga três linhas e `u` desfaz. Esperado: o `.` repetindo a operação anterior é o que dá a velocidade — não são os atalhos, é a composição.
+
+5. **Busque e substitua no arquivo inteiro.**
+
+   ```bash
+   cp /etc/services servicos.txt
+   vim servicos.txt
+   ```
+
+   Dentro do Vim: `:%s/tcp/TCP/gc` e responda `y` ou `n` a cada ocorrência; `u` para desfazer tudo; `:g/^#/d` apaga todas as linhas de comentário; `u` de novo; `:q!` para sair. Esperado: a mesma sintaxe do `sed`, aplicada interativamente, com desfazer.
+
+6. **Escreva um `.vimrc` e veja a diferença.**
+
+   ```bash
+   cat > ~/.vimrc <<'EOF'
+   set nocompatible
+   syntax on
+   set number
+   set expandtab tabstop=4 shiftwidth=4
+   set incsearch hlsearch ignorecase smartcase
+   set undofile
+   EOF
+   mkdir -p ~/.vim/undo
+   vim app.conf
+   ```
+
+   Dentro do editor, busque `/kali` e depois `/KALI`. Esperado: o primeiro acha, o segundo não — é o `smartcase` funcionando. Compare abrindo com `vim -u NONE app.conf`, sem configuração nenhuma.
+
+7. **Compare dois arquivos com `vimdiff`.**
+
+   ```bash
+   cp app.conf app-novo.conf
+   sed -i 's/2222/22/' app-novo.conf
+   echo 'debug = "true"' >> app-novo.conf
+   vimdiff app.conf app-novo.conf
+   ```
+
+   Esperado: as diferenças destacadas lado a lado. `]c` pula para a próxima diferença, `do` traz a mudança do outro lado, `:qa!` sai de tudo. É a forma mais rápida de conferir o que mudou entre duas configurações.
+
+8. **Comprove a diferença entre `sudo vim` e `sudoedit`.**
+
+   ```bash
+   echo '# marcador do laboratorio' | sudo tee -a /etc/motd > /dev/null
+   sudoedit /etc/motd            # edite algo, grave e saia
+   ps -eo user,comm | grep -c '^root.*vim' || true
+   sudo tail -2 /etc/motd
+   ```
+
+   Esperado: a edição funciona e nenhum processo `vim` rodou como root — o editor rodou como você, e só a cópia de volta foi privilegiada. Compare com `sudo vim /etc/motd`, onde o processo do editor aparece como root em `ps`. Desfaça: `sudoedit /etc/motd` e apague a linha do marcador.
+
+9. **Valide antes de gravar, do jeito certo.**
+
+   ```bash
+   sudo visudo -c
+   sudo cp /etc/ssh/sshd_config ~/lab-editor/sshd_config.copia
+   sudo sshd -t -f ~/lab-editor/sshd_config.copia && echo "configuracao valida"
+   printf 'DiretivaInexistente sim\n' | sudo tee -a ~/lab-editor/sshd_config.copia > /dev/null
+   sudo sshd -t -f ~/lab-editor/sshd_config.copia || echo ">>> erro detectado ANTES de aplicar"
+   ```
+
+   Esperado: a cópia original passa e a alterada falha com a linha exata do problema. Este é o hábito que o `visudo` institucionaliza para o `sudoers` e que você aplica manualmente aos outros arquivos críticos.
+
+10. **Limpe.**
+
+    ```bash
+    cd ~ && rm -rf ~/lab-editor ~/.nanorc ~/.vimrc ~/.vim
+    sudo sed -i '/marcador do laboratorio/d' /etc/motd
+    find ~ /etc -name '.*.swp' 2>/dev/null | head
+    ```
+
+    Esperado: os arquivos de laboratório desaparecem e nenhum `.swp` órfão fica para trás. Se aparecer algum que você não reconhece, é sessão de edição interrompida — vale investigar antes de apagar.
+
+## Resumo
+
+- **Editar no terminal é competência de recuperação, não preferência.** Todo Unix tem `vi`; imagens mínimas e contêineres frequentemente não têm `nano`, e `apt install` não é opção quando foi a rede que você quebrou.
+- **`EDITOR` decide o que `git commit`, `crontab -e` e `visudo` abrem.** Defina-a no seu perfil; `update-alternatives --config editor` muda o padrão da máquina.
+- **O Vim é modal, e NORMAL é o estado de repouso.** Se as letras não aparecem, você está em NORMAL: aperte `i`. `Esc` volta de qualquer lugar; `:q!` sai descartando tudo.
+- **Dez comandos bastam para sobreviver** (`i`, `Esc`, `:w`, `:q`, `:wq`, `:q!`, `dd`, `u`, `/`, `:123`), e a gramática **operador + movimento** com o `.` de repetição é o que dá velocidade depois.
+- **O `nano` mostra os atalhos na tela** e resolve o dia a dia; `set tabstospaces` no `~/.nanorc` evita a classe inteira de erros de YAML com tabulação.
+- **`sudoedit` em vez de `sudo vim`.** `sudo vim` roda o editor inteiro, com o seu `.vimrc` e seus plugins, como root — e `:!bash` lá dentro é um shell de root. `sudoedit` edita como você e só copia de volta com privilégio.
+- **Valide antes de gravar:** `visudo` para o `sudoers`, `sshd -t` para o SSH, `nginx -t` para o Nginx. E ao editar `sshd_config` remotamente, mantenha a sessão atual aberta e teste numa segunda.
