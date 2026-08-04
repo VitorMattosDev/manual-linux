@@ -152,12 +152,12 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 15 — Automação e Produtividade
 
-- [ ] **cap 092** - Personalizando o shell: .bashrc, .zshrc, aliases e funções - `vol15/cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.qmd`
-- [ ] **cap 093** - Zsh, plugins e o prompt do Kali - `vol15/cap093-zsh-plugins-e-o-prompt-do-kali.qmd`
-- [ ] **cap 094** - Automatizando tarefas com cron e scripts agendados - `vol15/cap094-automatizando-tarefas-com-cron-e-scripts.qmd`
-- [ ] **cap 095** - Controle de versão com Git na linha de comando - `vol15/cap095-controle-de-versao-com-git-na-linha-de-comando.qmd`
-- [ ] **cap 096** - Editores no terminal: vim e nano - `vol15/cap096-editores-no-terminal-vim-e-nano.qmd`
-- [ ] **cap 097** - Dotfiles e ambientes reproduzíveis - `vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd`
+- [x] **cap 092** - Personalizando o shell: .bashrc, .zshrc, aliases e funções - `vol15/cap092-personalizando-o-shell-bashrc-zshrc-aliases-e.qmd`
+- [x] **cap 093** - Zsh, plugins e o prompt do Kali - `vol15/cap093-zsh-plugins-e-o-prompt-do-kali.qmd`
+- [x] **cap 094** - Automatizando tarefas com cron e scripts agendados - `vol15/cap094-automatizando-tarefas-com-cron-e-scripts.qmd`
+- [x] **cap 095** - Controle de versão com Git na linha de comando - `vol15/cap095-controle-de-versao-com-git-na-linha-de-comando.qmd`
+- [x] **cap 096** - Editores no terminal: vim e nano - `vol15/cap096-editores-no-terminal-vim-e-nano.qmd`
+- [x] **cap 097** - Dotfiles e ambientes reproduzíveis - `vol15/cap097-dotfiles-e-ambientes-reproduziveis.qmd`
 
 ## Fase 5 — Fronteira e Aprofundamento
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (91 concluidos).
+**Total:** 103 capitulos em 16 volumes (97 concluidos).
 

@@ -1,3 +1,403 @@
 # Personalizando o shell: .bashrc, .zshrc, aliases e funções {#sec-cap092}
 
-*(em elaboracao)*
+O alias funcionava. A pessoa digitou `alias ll='ls -la'` no terminal, testou, gostou, seguiu o dia. No dia seguinte abriu uma aba nova e o `ll` tinha sumido. Colocou a linha no `~/.bashrc`, abriu outra aba, funcionou de novo — e aí escreveu um script que usava `ll`, rodou pelo `cron`, e recebeu `ll: command not found` num e-mail automático às três da manhã.
+
+Nada disso é bug. É o resultado direto de uma regra que quase ninguém aprende explicitamente: **o Bash lê arquivos de configuração diferentes dependendo de como foi iniciado**, e um alias definido no lugar errado existe em um contexto e não existe em outro. Entender esse mecanismo é o que separa quem personaliza o shell por tentativa e erro — copiando linhas da internet até alguma funcionar — de quem sabe exatamente onde colocar cada coisa e por quê.
+
+Este capítulo abre o volume de automação e produtividade justamente por aí. Todo o resto — o prompt do Zsh, os scripts agendados, os dotfiles versionados — depende de você saber qual arquivo o shell lê, quando, e o que faz sentido colocar em cada um.
+
+## Login, interativo e as quatro combinações
+
+O Bash classifica a si mesmo em dois eixos independentes, e a combinação decide quais arquivos ele lê.
+
+**Shell de login** é aquele iniciado como parte de um processo de autenticação: o console de texto (tty), uma sessão SSH, um `su -`. Ele é o primeiro shell da sua sessão e tradicionalmente carrega o ambiente que todos os processos filhos vão herdar. O Bash detecta isso porque o programa que o iniciou colocou um hífen na frente do nome (`-bash` em vez de `bash`), ou porque recebeu a opção `-l`.
+
+**Shell interativo** é aquele que lê comandos de um terminal, com prompt, histórico e edição de linha. Uma aba nova do terminal gráfico é interativa mas **não** é de login — você já estava autenticado. Um script executado por `bash script.sh` não é nem uma coisa nem outra.
+
+Verificar em qual você está é direto:
+
+```bash
+shopt -q login_shell && echo "login" || echo "nao-login"
+[[ $- == *i* ]] && echo "interativo" || echo "nao-interativo"
+echo $0            # "-bash" com hifen indica shell de login
+```
+
+A variável especial `$-` guarda as opções ativas do shell; a letra `i` aparece nela apenas em shell interativo. É o teste canônico, e você vai vê-lo no topo de praticamente todo `~/.bashrc` de distribuição.
+
+::: {#fig-inicializacao-shell}
+```{.tikz}
+%%| filename: inicializacao-shell
+%%| alt: Quais arquivos o Bash le em cada tipo de shell: login, interativo sem login e nao-interativo
+\begin{tikzpicture}[
+    hd/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.7cm,minimum height=1.0cm},
+    arq/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=3.7cm,minimum height=0.8cm},
+    fl/.style={-{Latex[length=1.6mm]},very thick,manualgray},
+    dsh/.style={-{Latex[length=1.6mm]},very thick,manualblue,dashed},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hd,draw=manualblue,fill=manualblue!14] (a0) at (0,7.2)
+    {\textbf{login}\\\tiny tty, ssh, \texttt{su -}, \texttt{bash -l}};
+  \node[hd,draw=manualgreen,fill=manualgreen!14] (b0) at (4.7,7.2)
+    {\textbf{interativo, sem login}\\\tiny nova aba do terminal};
+  \node[hd,draw=manualred,fill=manualred!14] (c0) at (9.4,7.2)
+    {\textbf{não-interativo}\\\tiny script, \texttt{cron}};
+
+  \node[arq,draw=manualblue] (a1) at (0,5.8)  {\texttt{/etc/profile}};
+  \node[arq,draw=manualblue] (a2) at (0,4.6)  {\texttt{\textasciitilde/.bash\_profile}\\\tiny ou \texttt{.bash\_login}, ou \texttt{.profile}};
+  \node[arq,draw=manualgreen,fill=manualgreen!10] (a3) at (0,3.2)
+    {\texttt{\textasciitilde/.bashrc}\\\tiny só se o \texttt{.bash\_profile} pedir};
+
+  \node[arq,draw=manualgreen] (b1) at (4.7,5.8) {\texttt{/etc/bash.bashrc}};
+  \node[arq,draw=manualgreen,fill=manualgreen!10] (b2) at (4.7,4.6) {\texttt{\textasciitilde/.bashrc}};
+
+  \node[arq,draw=manualred] (c1) at (9.4,5.8) {\texttt{\$BASH\_ENV}\\\tiny só se a variável existir};
+  \node[arq,draw=manualred,dashed] (c2) at (9.4,4.6) {\tiny nenhum arquivo de perfil};
+
+  \draw[fl] (a0) -- (a1);
+  \draw[fl] (a1) -- (a2);
+  \draw[dsh] (a2) -- (a3);
+  \draw[fl] (b0) -- (b1);
+  \draw[fl] (b1) -- (b2);
+  \draw[fl] (c0) -- (c1);
+  \draw[fl] (c1) -- (c2);
+
+  \node[nt,text width=12.8cm,anchor=north] at (4.7,2.2)
+    {A seta tracejada é a chave de tudo: o \texttt{\textasciitilde/.bashrc} \emph{não} é lido automaticamente por um shell de login. Ele só entra porque a maioria das distribuições coloca um \texttt{source \textasciitilde/.bashrc} explícito dentro do \texttt{\textasciitilde/.bash\_profile}. Remova essa linha e o seu shell de SSH perde todos os aliases. Do outro lado, o shell não-interativo não lê nenhum dos dois --- por isso um alias definido no \texttt{.bashrc} não existe dentro de um script nem de uma tarefa do \texttt{cron}.};
+\end{tikzpicture}
+```
+Quais arquivos cada tipo de shell Bash lê na inicialização.
+:::
+
+A leitura prática da @fig-inicializacao-shell cabe em duas frases. **Ambiente vai no `.bash_profile`; comportamento interativo vai no `.bashrc`.** E como o `.bashrc` é o único que roda em toda aba nova, ele precisa ser barato — um `.bashrc` que consulta a rede ou roda um comando lento atrasa cada abertura de terminal.
+
+## O que colocar em cada arquivo
+
+A divisão de trabalho, na prática:
+
+| Arquivo | Quando roda | O que colocar |
+|---|---|---|
+| `/etc/profile` | login, todos os usuários | política do sistema, `PATH` global |
+| `/etc/bash.bashrc` | interativo, todos os usuários | prompt e aliases padrão da distribuição |
+| `~/.bash_profile` | seu login | `export` de variáveis, `PATH`, agente SSH |
+| `~/.bashrc` | toda aba interativa sua | aliases, funções, prompt, histórico, `shopt` |
+| `~/.profile` | login, se não houver `.bash_profile` | equivalente portável, lido também pelo `sh` |
+| `~/.bash_logout` | fim de shell de login | limpeza: apagar cache, travar tela |
+
+: Onde vai cada tipo de personalização no Bash {#tbl-arquivos-bash}
+
+Um detalhe que morde: o Bash lê **apenas o primeiro** que existir entre `~/.bash_profile`, `~/.bash_login` e `~/.profile`. Se você criar um `.bash_profile` numa máquina que só tinha `.profile`, o `.profile` para de ser lido, silenciosamente, e o `PATH` que estava lá some.
+
+O `~/.bashrc` padrão do Debian e do Kali começa assim, e a razão agora é óbvia:
+
+```bash
+# Se nao for interativo, nao faz nada.
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+```
+
+Sem essa guarda, um `ssh host 'comando'` — que é não-interativo mas, em algumas configurações, ainda lê o `.bashrc` — imprimiria banners e mensagens no meio da saída do comando, quebrando qualquer coisa que consumisse essa saída. É o motivo pelo qual `scp` e `rsync` (@sec-cap081) falham em máquinas com `.bashrc` mal escrito: eles esperam um canal limpo e recebem um "Bem-vindo!" no meio.
+
+## Aliases: o atalho e seus limites
+
+Um alias é substituição textual da **primeira palavra** de um comando, feita pelo shell antes de executar.
+
+```bash
+alias ll='ls -alF --color=auto'
+alias ..='cd ..'
+alias grep='grep --color=auto'
+alias df='df -h'
+alias apt-limpa='sudo apt autoremove && sudo apt clean'
+alias                      # lista todos os aliases ativos
+unalias ll                 # remove um
+type ll                    # mostra que ll e um alias e para o que expande
+```
+
+Três limitações que decidem quando *não* usar alias:
+
+- **Alias não recebe argumentos no meio.** `alias x='cmd --opt'` sempre põe os seus argumentos no fim. Se você precisa do argumento entre duas partes do comando, precisa de função.
+- **Alias só expande a primeira palavra.** `sudo ll` não funciona por padrão — o shell vê `sudo` como primeira palavra e não expande `ll`. O contorno clássico é `alias sudo='sudo '`: um alias terminado em espaço faz o shell tentar expandir a palavra seguinte também.
+- **Alias não vale em script.** Scripts são não-interativos e a expansão de alias vem desligada. Foi exatamente isso que quebrou o `cron` das três da manhã da abertura.
+
+Para escapar de um alias pontualmente, prefixe com barra invertida ou use `command`:
+
+```bash
+\grep padrao arquivo        # o grep de verdade, sem o alias
+command ls                  # idem, forma explicita e portavel
+```
+
+Isso importa quando você precisa da saída crua: um `grep --color=auto` aliasado injeta códigos de cor que estragam a comparação de strings dentro de um pipeline.
+
+## Funções: quando o alias não dá conta
+
+Função de shell é um comando de verdade, com parâmetros posicionais, código de saída e lógica. Tudo que um alias faz, uma função faz melhor — a única vantagem do alias é a brevidade.
+
+```bash
+# criar um diretorio e entrar nele: impossivel como alias
+mkcd() {
+    [[ -n $1 ]] || { echo "uso: mkcd DIRETORIO" >&2; return 1; }
+    mkdir -p -- "$1" && cd -- "$1"
+}
+
+# extrair qualquer arquivo compactado pelo sufixo (@sec-cap018)
+extrair() {
+    [[ -f $1 ]] || { echo "extrair: '$1' nao e um arquivo" >&2; return 1; }
+    case $1 in
+        *.tar.gz|*.tgz)   tar xzf "$1" ;;
+        *.tar.xz)         tar xJf "$1" ;;
+        *.tar.bz2)        tar xjf "$1" ;;
+        *.zip)            unzip "$1"   ;;
+        *.gz)             gunzip "$1"  ;;
+        *) echo "extrair: formato desconhecido: $1" >&2; return 1 ;;
+    esac
+}
+
+# backup datado de um arquivo, antes de editar
+bkp() {
+    local alvo=$1
+    local copia="${alvo}.$(date +%Y%m%d-%H%M%S).bak"
+    cp -a -- "$alvo" "$copia" && echo "copia: $copia"
+}
+```
+
+Repare nos detalhes que separam uma função de dotfile amadora de uma robusta, todos vindos do @sec-cap071 e do @sec-cap057: `--` para encerrar as opções e sobreviver a nomes que começam com hífen, aspas em toda expansão, `local` para não vazar variável no ambiente interativo, `return 1` com mensagem em `stderr` e código de saída honesto.
+
+Uma função definida no `.bashrc` também não existe em script — mesma regra do alias. A diferença é que a função **pode** ser exportada:
+
+```bash
+export -f extrair          # disponivel em subshells bash filhos
+```
+
+Isso funciona para subshells do próprio Bash, não para qualquer processo. É útil com `find -exec bash -c` e `xargs bash -c`, e é a exceção que confirma a regra: a maneira certa de compartilhar lógica entre scripts é uma biblioteca de funções com `source` (@sec-cap077), não o `.bashrc`.
+
+## Variáveis que valem a pena ajustar
+
+O ambiente é o que mais muda a experiência diária, e vai no `.bash_profile` porque precisa ser herdado por tudo:
+
+```bash
+export EDITOR=vim                 # o que git, crontab e sudoedit abrem
+export VISUAL=$EDITOR
+export PAGER=less
+export LESS='-R -F -X -i'         # cores, sai se couber, nao limpa a tela, busca sem caixa
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+O `LESS` merece explicação porque cada letra resolve um incômodo concreto: `-R` preserva as cores que o `grep` e o `git` emitem (sem ele você vê os códigos de escape crus), `-F` sai direto quando a saída cabe numa tela, `-X` impede que o `less` limpe a tela ao sair (o texto continua visível no histórico do terminal) e `-i` faz a busca ignorar maiúsculas.
+
+O `PATH` merece cuidado especial. A ordem importa: o shell usa o **primeiro** que encontrar. Colocar `$HOME/.local/bin` na frente é o que faz o `pipx` (@sec-cap038) funcionar. E há uma regra de segurança que vem do @sec-cap085:
+
+::: {.callout-warning}
+**Nunca coloque `.` (diretório atual) no `PATH`, e muito menos no início.** Com `.` no `PATH`, entrar num diretório escrito por outra pessoa e digitar `ls` pode executar um `ls` malicioso plantado ali em vez do binário do sistema. É uma escalada de privilégio clássica, trivial de explorar e completamente evitável. Se precisa rodar algo do diretório atual, digite `./programa` explicitamente — a barra é o que torna a intenção inequívoca.
+:::
+
+O histórico é o outro ganho grande, e vai no `.bashrc`:
+
+```bash
+HISTSIZE=50000                    # comandos guardados na sessao
+HISTFILESIZE=100000               # comandos guardados no arquivo
+HISTCONTROL=ignoreboth:erasedups  # ignora duplicatas e linhas comecadas por espaco
+HISTIGNORE='ls:ll:cd:pwd:exit:clear:history'
+HISTTIMEFORMAT='%F %T '           # carimbo de data em cada entrada
+shopt -s histappend               # anexa em vez de sobrescrever ao sair
+```
+
+O `histappend` é o que corrige o comportamento mais irritante do padrão: sem ele, a última aba que você fecha **sobrescreve** o arquivo de histórico com a sessão dela, e tudo que você digitou nas outras abas desaparece. O `ignoreboth` inclui `ignorespace` — qualquer comando digitado com um espaço na frente não entra no histórico, que é a forma correta de rodar algo com uma senha ou um token na linha sem deixá-lo gravado em disco.
+
+E algumas opções de `shopt` que se pagam no primeiro dia:
+
+```bash
+shopt -s checkwinsize             # reajusta LINES e COLUMNS ao redimensionar
+shopt -s globstar                 # habilita ** para recursao (@sec-cap013)
+shopt -s cdspell                  # corrige erro de digitacao em nome de diretorio
+shopt -s autocd                   # digitar so o nome do diretorio entra nele
+shopt -s nocaseglob               # globbing sem distinguir maiusculas
+```
+
+## Zsh: os mesmos conceitos, cinco arquivos
+
+O Kali usa Zsh como shell padrão desde 2020, e o modelo de inicialização é o mesmo em espírito, mais explícito na forma:
+
+| Arquivo | Lido por |
+|---|---|
+| `~/.zshenv` | **todo** shell Zsh, sempre, inclusive scripts |
+| `~/.zprofile` | shells de login |
+| `~/.zshrc` | shells interativos |
+| `~/.zlogin` | shells de login, depois do `.zshrc` |
+| `~/.zlogout` | ao sair de um shell de login |
+
+: Arquivos de inicialização do Zsh e quando são lidos {#tbl-arquivos-zsh}
+
+A diferença conceitual que importa: o `~/.zshenv` é lido **sempre**, inclusive por scripts não-interativos. É o único arquivo dos dois shells com essa propriedade, o que o torna o lugar certo para o `PATH` — e um lugar perigoso para qualquer coisa que produza saída, pelo mesmo motivo do `.bashrc` que imprime banner.
+
+Aliases e funções são sintaticamente idênticos entre Bash e Zsh nos casos comuns, então o conteúdo migra quase sem alteração. As diferenças aparecem em arrays (indexados a partir de 1 no Zsh, de 0 no Bash), em globbing (o Zsh tem qualificadores próprios) e no sistema de completação. O prompt, os plugins e o ecossistema do Zsh são o assunto do capítulo seguinte.
+
+## Organizando: o `.bashrc` que não vira um monstro
+
+Um `.bashrc` de trezentas linhas acumuladas ao longo de anos é impossível de auditar e péssimo de versionar. A estrutura que resolve é fragmentar por assunto e carregar em laço:
+
+```bash
+# no fim do ~/.bashrc
+for frag in "$HOME"/.bashrc.d/*.sh; do
+    [[ -r $frag ]] && source "$frag"
+done
+unset frag
+```
+
+Com isso, `~/.bashrc.d/10-aliases.sh`, `~/.bashrc.d/20-funcoes.sh` e `~/.bashrc.d/30-kali.sh` viram unidades independentes, cada uma versionável e desativável isoladamente. O prefixo numérico dá controle de ordem. E o teste `-r` evita que o laço quebre quando o diretório está vazio — nesse caso o glob não expande e o `[[ -r $frag ]]` simplesmente falha, sem erro.
+
+Um cuidado que vale para todo arquivo de inicialização: **valide antes de confiar**. Um erro de sintaxe no `.bashrc` pode deixar você sem shell utilizável no próximo login.
+
+```bash
+bash -n ~/.bashrc                 # checa sintaxe sem executar
+shellcheck ~/.bashrc              # analise estatica (@sec-cap072)
+bash -lic 'exit'                  # simula um login interativo completo
+```
+
+## 🐉 No Kali
+
+- **O Zsh é o padrão desde o Kali 2020.4, e o Bash continua instalado e funcional.** O usuário `kali` tem `/usr/bin/zsh` no `/etc/passwd` (@sec-cap021), com um `~/.zshrc` de mais de cem linhas mantido pelo pacote `kali-defaults`. O `~/.bashrc` também está lá, íntegro, para quando você entra por um contexto que usa Bash. Consequência prática que confunde muita gente: **um alias colocado no `~/.bashrc` do Kali não aparece no terminal**, porque o terminal está rodando Zsh. Confira com `echo $SHELL` e `ps -p $$` antes de decidir qual arquivo editar.
+- **O `kali-tweaks` (@sec-cap036) altera o prompt do Zsh sem você editar arquivo nenhum.** Na seção de shell ele oferece as variantes de prompt do Kali — de duas linhas, de uma linha, com ou sem indicação de usuário e caminho. Ele escreve em arquivos gerenciados pelo pacote, então uma atualização do `kali-defaults` pode sobrescrever edições manuais feitas ali. Personalização própria vai no seu `~/.zshrc` (que é seu), não nos arquivos de `/usr/share/kali-*`.
+- **Trocar o shell padrão é `chsh`, não editar o `/etc/passwd` na mão.** `chsh -s /usr/bin/bash` (ou `/usr/bin/zsh`) atualiza a entrada com validação contra o `/etc/shells`. A mudança só vale no **próximo login**, não na sessão atual — o que faz muita gente achar que não funcionou. Editar `/etc/passwd` diretamente com um caminho inválido é uma das formas mais rápidas de se trancar para fora de uma conta.
+- **Se você trabalha como root no Kali (@sec-cap026), lembre que root tem `/root/.zshrc` próprio.** Aliases do seu usuário não valem sob `sudo -i`, e é assim que deve ser: uma função de conveniência do usuário comum executando com privilégio total é exatamente o tipo de coisa que transforma um erro de digitação em desastre. Manter os dois conjuntos separados é uma decisão de segurança, não uma inconveniência.
+- **Aliases perigosos merecem pensamento, não reflexo.** `alias rm='rm -i'` parece prudente e cria um hábito ruim: você aprende a confirmar sem ler, e no dia em que estiver numa máquina sem o alias — todo servidor, todo contêiner, todo shell de script — o `rm` vai apagar sem perguntar e o reflexo treinado não vai salvá-lo. A alternativa que ensina em vez de proteger é um alias com nome próprio (`alias rmi='rm -i'`) ou uma função que move para uma lixeira, deixando o `rm` real com o comportamento real.
+
+> **Nota sobre a família RHEL.** O modelo de arquivos é idêntico — Bash é Bash. A diferença está na organização do sistema: o Fedora e o RHEL usam `/etc/profile.d/*.sh` de forma muito mais intensiva que o Debian, e o `~/.bashrc` padrão deles é minúsculo, delegando quase tudo para `/etc/bashrc`. O caminho `/etc/bash.bashrc` do Debian se chama `/etc/bashrc` lá. Se você mantém dotfiles usados nas duas famílias, teste a existência do arquivo antes de dar `source` nele, em vez de assumir o caminho.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. O objetivo é **ver** a diferença entre os tipos de shell, não apenas ler sobre ela. Faça a cópia de segurança do passo 1 antes de mexer em qualquer coisa.
+
+1. **Salve o estado atual, para poder voltar.**
+
+   ```bash
+   mkdir -p ~/lab-shell && cd ~/lab-shell
+   cp -a ~/.bashrc ~/.bashrc.original 2>/dev/null
+   [[ -f ~/.bash_profile ]] && cp -a ~/.bash_profile ~/.bash_profile.original
+   ls -la ~/.bashrc* ~/.bash_profile* ~/.profile 2>/dev/null
+   ```
+
+   Esperado: a lista dos arquivos existentes. Repare se você tem `.bash_profile`, `.profile`, ou os dois — o Bash lê só o primeiro que encontrar na ordem `.bash_profile`, `.bash_login`, `.profile`.
+
+2. **Identifique o shell em que você está agora.**
+
+   ```bash
+   echo "SHELL=$SHELL"
+   ps -p $$ -o comm=
+   shopt -q login_shell && echo "e login" || echo "NAO e login"
+   [[ $- == *i* ]] && echo "e interativo" || echo "NAO e interativo"
+   ```
+
+   Esperado: no terminal gráfico do Kali, `zsh` como shell padrão, não-login e interativo. Este é o quadrante do meio da @fig-inicializacao-shell — só o `.zshrc` (ou o `.bashrc`, se você estiver no Bash) é lido.
+
+3. **Prove que cada tipo de shell lê um arquivo diferente.** Marque os arquivos:
+
+   ```bash
+   echo 'echo "[MARCA] li o .bashrc"' >> ~/.bashrc
+   echo 'echo "[MARCA] li o .bash_profile"' >> ~/.bash_profile
+   ```
+
+   Agora rode os três casos:
+
+   ```bash
+   bash -i -c 'exit'          # interativo, sem login
+   bash -l -i -c 'exit'       # login e interativo
+   bash -c 'exit'             # nem um nem outro
+   ```
+
+   Esperado: o primeiro imprime só a marca do `.bashrc`. O segundo imprime as duas (o `.bash_profile` do Debian chama o `.bashrc`). O terceiro **não imprime nada** — é este o shell do seu script e do seu `cron`.
+
+4. **Reproduza o erro do `cron` da abertura.**
+
+   ```bash
+   echo "alias ll='ls -la'" >> ~/.bashrc
+   source ~/.bashrc
+   ll ~/lab-shell                        # funciona aqui
+   printf '#!/bin/bash\nll /tmp\n' > ~/lab-shell/teste.sh
+   chmod +x ~/lab-shell/teste.sh
+   ~/lab-shell/teste.sh
+   ```
+
+   Esperado: o `ll` funciona no terminal e o script falha com `ll: command not found` (ou `linha 2: ll: comando não encontrado`). Mesmo alias, mesmo usuário, mesma máquina — contextos diferentes.
+
+5. **Corrija com uma função em arquivo carregado explicitamente.**
+
+   ```bash
+   cat > ~/lab-shell/lib.sh <<'EOF'
+   ll() { ls -la "$@"; }
+   EOF
+   cat > ~/lab-shell/teste.sh <<'EOF'
+   #!/bin/bash
+   source "$HOME/lab-shell/lib.sh"
+   ll /tmp | head -3
+   EOF
+   chmod +x ~/lab-shell/teste.sh
+   ~/lab-shell/teste.sh
+   ```
+
+   Esperado: agora funciona. A lição é a do @sec-cap077 — o que precisa valer em script vem de uma biblioteca com `source` explícito, nunca do `.bashrc`.
+
+6. **Veja o alias sendo contornado.**
+
+   ```bash
+   alias grep='grep --color=always'
+   echo "manual de linux" | grep linux | cat -A | head -1
+   echo "manual de linux" | \grep linux | cat -A | head -1
+   ```
+
+   Esperado: a primeira linha mostra os códigos de escape ANSI (`^[[01;31m...`) misturados ao texto; a segunda sai limpa. É por isso que se usa `\grep` ou `command grep` dentro de pipeline que compara texto.
+
+7. **Configure o histórico e comprove o `ignorespace`.**
+
+   ```bash
+   HISTCONTROL=ignoreboth:erasedups
+   HISTTIMEFORMAT='%F %T '
+   shopt -s histappend
+   echo "comando visivel"
+    echo "comando com espaco na frente"
+   history | tail -4
+   ```
+
+   Esperado: o `history` mostra o primeiro `echo` e **não** mostra o segundo, que foi digitado com um espaço inicial. É o mecanismo correto para rodar algo com senha ou token na linha de comando sem gravá-lo em disco.
+
+8. **Escreva uma função útil de verdade e teste os casos de erro.**
+
+   ```bash
+   mkcd() { mkdir -p -- "$1" && cd -- "$1"; }
+   mkcd ~/lab-shell/a/b/c && pwd
+   cd ~/lab-shell
+   mkcd            # sem argumento: veja o que acontece
+   ```
+
+   Esperado: a primeira chamada cria a árvore e entra nela. A chamada sem argumento revela o defeito — `mkdir -p --` sem operando dá erro. Corrija adicionando a guarda `[[ -n $1 ]] || { echo "uso: mkcd DIR" >&2; return 1; }` e teste de novo. É o hábito do @sec-cap071 aplicado ao dotfile.
+
+9. **Valide a sintaxe antes de confiar.**
+
+   ```bash
+   bash -n ~/.bashrc && echo "sintaxe ok"
+   printf 'if [ 1 -eq 1 ]\n  echo quebrado\nfi\n' >> ~/.bashrc
+   bash -n ~/.bashrc || echo ">>> ERRO detectado sem executar nada"
+   ```
+
+   Esperado: a primeira checagem passa; depois da linha quebrada, o `bash -n` acusa o erro **sem** executar o arquivo. Numa máquina real, esse erro deixaria seu próximo login com um shell inutilizável — e o `bash -n` custa um segundo.
+
+10. **Restaure tudo.**
+
+    ```bash
+    cp -a ~/.bashrc.original ~/.bashrc
+    [[ -f ~/.bash_profile.original ]] && cp -a ~/.bash_profile.original ~/.bash_profile
+    rm -rf ~/lab-shell
+    bash -n ~/.bashrc && echo "restaurado e valido"
+    ```
+
+    Esperado: os arquivos voltam ao estado inicial e a sintaxe passa. Fechar o ciclo de laboratório restaurando o ambiente é o hábito que permite experimentar sem medo.
+
+## Resumo
+
+- **O Bash lê arquivos diferentes conforme seja de login, interativo ou nenhum dos dois.** `~/.bash_profile` roda no login, `~/.bashrc` em toda aba interativa, e o shell não-interativo de um script ou do `cron` não lê nenhum dos dois — que é a causa do `command not found` às três da manhã.
+- **Ambiente no `.bash_profile`, comportamento interativo no `.bashrc`.** O `.bashrc` roda a cada aba nova, então precisa ser rápido e silencioso; um banner ali quebra `scp` e `rsync`.
+- **Alias é substituição da primeira palavra e não vale em script.** Quando você precisa de argumento no meio, de lógica ou de código de saída, a resposta é função — com `--`, aspas, `local` e mensagem em `stderr`.
+- **`PATH`, `EDITOR`, `LESS` e as variáveis de histórico são o ajuste de maior retorno diário.** `HISTCONTROL=ignoreboth` mais `shopt -s histappend` corrigem os dois piores padrões: duplicatas e histórico sobrescrito pela última aba fechada.
+- **`.` no `PATH` é vulnerabilidade, não conveniência.** Para rodar algo do diretório atual, use `./programa` explicitamente.
+- **No Kali o shell padrão é o Zsh**, com cinco arquivos de inicialização em vez de dois e o `~/.zshenv` lido até por scripts. Editar o `~/.bashrc` num terminal que roda Zsh é o engano mais comum — confira com `ps -p $$` antes.
+- **Fragmente em `~/.bashrc.d/` e valide com `bash -n` e `shellcheck`.** Um erro de sintaxe no arquivo de inicialização é a maneira mais rápida de perder o acesso a um shell utilizável.
