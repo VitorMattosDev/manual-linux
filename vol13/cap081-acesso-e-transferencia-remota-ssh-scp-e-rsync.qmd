@@ -1,3 +1,524 @@
 # Acesso e transferência remota: SSH, scp e rsync {#sec-cap081}
 
-*(em elaboracao)*
+Um servidor de laboratório ficou exposto na internet com SSH na porta 22 e autenticação por senha habilitada. O log do primeiro dia:
+
+```bash
+sudo journalctl -u ssh --since "24 hours ago" | grep -c "Failed password"
+```
+
+```
+41027
+```
+
+Quarenta e um mil tentativas em vinte e quatro horas, de centenas de endereços diferentes, testando `root`, `admin`, `ubuntu`, `git`, `test` e uma lista de senhas comuns. Nenhuma acertou — a senha era longa. Mas a conta é simples: bastava **uma**.
+
+Duas linhas no `sshd_config` teriam reduzido esse número a zero, e não porque escondem o servidor: porque tornam a pergunta que os atacantes fazem impossível de responder. Este capítulo é sobre entender o SSH bem o suficiente para que essas duas linhas façam sentido — e depois usar o canal que ele estabelece para tudo o mais: cópia, sincronização, túnel, salto entre redes.
+
+## O que acontece quando você digita `ssh`
+
+Antes de qualquer senha ou chave sua, ocorre um handshake em três etapas:
+
+**1. Negociação e troca de chaves.** Cliente e servidor combinam algoritmos e derivam, por Diffie-Hellman, uma chave simétrica de sessão que nenhum observador da rede consegue calcular. Daqui em diante tudo é cifrado.
+
+**2. Autenticação do servidor.** O servidor prova possuir a chave privada correspondente à chave pública de host que apresentou. Isso responde "estou falando com a máquina certa?" — e é a defesa contra ataque de intermediário.
+
+**3. Autenticação do cliente.** Só agora você prova quem é, por senha ou por chave.
+
+A etapa 2 é a que produz a mensagem que todo mundo ignora:
+
+```
+The authenticity of host 'servidor (10.0.0.5)' can't be established.
+ED25519 key fingerprint is SHA256:qE3v9...
+Are you sure you want to continue connecting (yes/no/[fingerprint])?
+```
+
+Isso é **TOFU** — *trust on first use*. O SSH não tem autoridade certificadora: ele confia no que você aceitar da primeira vez, grava em `~/.ssh/known_hosts` e passa a exigir que bata em todas as conexões seguintes. Digitar `yes` sem conferir a impressão digital é abrir a janela em que o ataque de intermediário funciona. A forma correta é obter a impressão por outro canal (console da VM, provisionamento, painel do provedor) e comparar:
+
+```bash
+# no servidor, uma vez:
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Se a impressão mudar depois, o cliente recusa a conexão com um aviso alarmante. Na prática isso quase sempre significa reinstalação do servidor — mas tratar como rotina o comando que apaga o aviso (`ssh-keygen -R host`) é desarmar o único mecanismo que detecta o ataque. Confira a razão antes.
+
+## Chave pública: por que ela derrota a força bruta
+
+::: {#fig-autenticacao-chave}
+```{.tikz}
+%%| filename: autenticacao-chave
+%%| alt: Comparacao entre autenticacao por senha e por chave publica mostrando que a chave privada nunca trafega pela rede
+\begin{tikzpicture}[
+    ag/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.5cm,minimum height=0.8cm},
+    stp/.style={font=\tiny,align=center},
+    fl/.style={-{Latex[length=1.5mm]},semithick},
+    nt/.style={font=\scriptsize,align=left},
+    tag/.style={font=\scriptsize\bfseries,align=left,anchor=west}
+  ]
+  % ================= senha
+  \node[tag,manualred] at (0.3,7.9) {autenticação por senha};
+  \node[ag,draw=manualblue,fill=manualblue!12] (c1) at (2.2,7.1) {cliente};
+  \node[ag,draw=manualgray,fill=manualgray!10] (s1) at (10.4,7.1) {servidor};
+  \draw[fl,manualred] (3.5,6.75) -- (9.1,6.75)
+        node[midway,above,stp,manualred]{a senha atravessa o canal cifrado};
+  \node[stp,manualgray,anchor=north,text width=5.4cm] at (6.3,6.5)
+        {o servidor compara com o hash que guarda --- e \textbf{qualquer um} pode tentar adivinhar, indefinidamente};
+
+  \draw[semithick,manualgray,dotted] (0.3,5.55) -- (13.3,5.55);
+
+  % ================= chave
+  \node[tag,manualgreen] at (0.3,5.15) {autenticação por chave pública};
+  \node[ag,draw=manualblue,fill=manualblue!12] (c2) at (2.2,4.35) {cliente};
+  \node[ag,draw=manualgray,fill=manualgray!10] (s2) at (10.4,4.35) {servidor};
+
+  \node[stp,anchor=north,text width=2.9cm,manualred] at (2.2,3.85)
+        {\texttt{\textasciitilde/.ssh/id\_ed25519}\\\textbf{chave privada}\\nunca sai daqui};
+  \node[stp,anchor=north,text width=3.2cm,manualgreen] at (10.4,3.85)
+        {\texttt{\textasciitilde/.ssh/authorized\_keys}\\\textbf{chave pública}\\pode ser divulgada};
+
+  \draw[fl,manualgray] (9.1,4.75) -- (3.5,4.75)
+        node[midway,above,stp,manualgray]{1. desafio aleatório};
+  \draw[fl,manualgreen] (3.5,2.75) -- (9.1,2.75)
+        node[midway,above,stp,manualgreen]{2. assinatura do desafio};
+  \node[stp,anchor=north,text width=7.6cm,manualgray] at (6.3,2.55)
+        {3. o servidor verifica a assinatura com a chave pública --- confere? entra.};
+
+  \node[ag,draw=manualgreen,fill=manualgreen!12,text width=12.4cm,minimum height=1.05cm,align=left,minimum width=12.4cm] at (6.8,0.8)
+        {\textbf{\textcolor{manualgreen}{Por que isso encerra a força bruta:}} não existe segredo compartilhado para adivinhar. O atacante teria de forjar uma assinatura sem a chave privada --- problema computacionalmente inviável, ao contrário de testar 41 mil senhas por dia. E o servidor comprometido não aprende nada capaz de personificar você em outro lugar.};
+\end{tikzpicture}
+```
+Senha e chave pública: o segredo que trafega contra o segredo que fica parado.
+:::
+
+### Gerando e instalando
+
+```bash
+ssh-keygen -t ed25519 -C "vitor@notebook-2026"
+```
+
+`ed25519` é a escolha padrão: chaves pequenas, verificação rápida, segurança sólida. Use RSA (`-t rsa -b 4096`) apenas para servidor antigo que não suporte Ed25519.
+
+Três decisões no momento da geração:
+
+- **A senha da chave (*passphrase*) não é opcional.** Ela cifra a chave privada em disco. Sem ela, quem copiar o arquivo tem acesso imediato a tudo que a chave abre. Com ela, o `ssh-agent` evita que você a digite a cada conexão.
+- **O comentário (`-C`) identifica a origem**, não o dono. Um comentário por máquina (`vitor@notebook`, `vitor@vm-lab`) permite revogar o acesso de um equipamento perdido sem mexer nos outros.
+- **Uma chave por máquina de origem**, não uma chave copiada para todo lado. Chave que circula por várias máquinas perde a propriedade que a torna útil.
+
+Instalar a pública no servidor:
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub usuario@servidor
+```
+
+O `ssh-copy-id` acrescenta a chave a `~/.ssh/authorized_keys` **e** ajusta as permissões — que são a causa número um de "copiei a chave e continua pedindo senha":
+
+```bash
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/id_ed25519
+```
+
+O `sshd` recusa `authorized_keys` gravável por grupo ou por outros, e recusa em silêncio do ponto de vista do cliente. O motivo real aparece no log do servidor (`journalctl -u ssh`) ou rodando o cliente com `ssh -vvv`.
+
+### `ssh-agent`: digitar a senha uma vez por sessão
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+ssh-add -l                       # chaves carregadas
+ssh-add -t 3600 ~/.ssh/id_ed25519   # expira em uma hora
+```
+
+No Kali com Xfce, o agente normalmente já sobe com a sessão gráfica. Sobre o encaminhamento de agente (`ssh -A`), uma advertência: ele permite que o servidor remoto use as suas chaves — e **root naquele servidor pode se apropriar do seu agente** enquanto a conexão existir. Nunca use `-A` para máquina em que você não confia plenamente. O substituto correto é o `ProxyJump`, mais abaixo.
+
+## `~/.ssh/config`: onde a produtividade mora
+
+Esse arquivo transforma comandos longos em nomes curtos, e é o lugar certo para colocar decisões que você não quer repetir:
+
+```
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    HashKnownHosts yes
+
+Host lab
+    HostName 10.0.0.50
+    User vitor
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519_lab
+    IdentitiesOnly yes
+
+Host interno
+    HostName 192.168.50.10
+    User admin
+    ProxyJump lab
+
+Host *.exemplo.com
+    User vitor
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+```
+
+Agora `ssh lab` basta. E cada bloco resolve um problema real:
+
+- **`ServerAliveInterval`** mata a sessão que congela quando o NAT do meio do caminho esquece a conexão ociosa.
+- **`IdentitiesOnly yes`** faz o cliente oferecer **apenas** a chave indicada. Sem isso, ele oferece todas as chaves do agente em sequência, e servidores com `MaxAuthTries` baixo desconectam por "excesso de tentativas" antes de chegar na certa — outro caso de "não entendo por que pede senha".
+- **`ProxyJump lab`** conecta ao destino *através* do host `lab`, sem expor suas chaves nele: a conexão ao destino é feita ponta a ponta e o `lab` só encaminha bytes cifrados. É o substituto seguro do `-A`.
+- **`ControlMaster`** reaproveita uma conexão TCP já autenticada para as próximas sessões ao mesmo host. A segunda conexão abre instantaneamente. Ganho enorme em uso repetitivo — e o motivo pelo qual o Ansible é rápido.
+
+Permissão do arquivo: `chmod 600 ~/.ssh/config`.
+
+## Endurecendo o `sshd`
+
+As duas linhas que resolvem o caso da abertura:
+
+```
+# /etc/ssh/sshd_config
+PasswordAuthentication no
+PermitRootLogin no
+```
+
+Sem senha aceita, os 41 mil ataques não têm o que tentar. O conjunto completo que vale aplicar em servidor exposto:
+
+```
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AllowUsers vitor deploy
+MaxAuthTries 3
+LoginGraceTime 20
+X11Forwarding no
+AllowAgentForwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+```
+
+Com um procedimento que não admite improviso:
+
+```bash
+sudo sshd -t                          # valida a sintaxe ANTES de reiniciar
+sudo systemctl reload ssh
+```
+
+::: {.callout-warning}
+**Nunca feche a sessão atual depois de mexer no `sshd_config`.** Abra um **segundo** terminal e teste a conexão nova antes de encerrar a primeira. Um erro de digitação em `AllowUsers` tranca você para fora de uma máquina remota de forma definitiva. O `sshd -t` pega erro de sintaxe, não erro de lógica.
+:::
+
+Sobre trocar a porta 22: reduz o ruído de log, não é segurança — uma varredura completa acha a porta em segundos. Faça pelo conforto de ler o log, sem contar isso como proteção. O que de fato protege é chave em vez de senha, e `fail2ban` para conter o volume.
+
+## Túneis: o SSH como transporte genérico
+
+O canal cifrado do SSH pode carregar qualquer TCP. São três formas, e confundir `-L` com `-R` é um clássico.
+
+::: {#fig-tuneis-ssh}
+```{.tikz}
+%%| filename: tuneis-ssh
+%%| alt: Os tres tipos de encaminhamento de porta do SSH: local com -L remoto com -R e dinamico SOCKS com -D
+\begin{tikzpicture}[
+    mc/.style={rounded corners=3pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=2.0cm,minimum height=0.75cm},
+    tn/.style={very thick,manualblue,dashed},
+    fl/.style={-{Latex[length=1.4mm]},semithick},
+    lb/.style={font=\tiny,align=center},
+    cd/.style={font=\tiny\ttfamily,anchor=west},
+    ttl/.style={font=\scriptsize\bfseries,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ================= -L
+  \node[ttl,manualblue] at (0.3,7.9) {\texttt{-L} local: trago um serviço remoto para a minha máquina};
+  \node[cd,manualgray] at (0.3,7.45) {ssh -L 8080:127.0.0.1:80 servidor};
+  \node[mc,draw=manualblue,fill=manualblue!12] (la) at (2.0,6.6) {sua máquina\\\texttt{:8080}};
+  \node[mc,draw=manualgray,fill=manualgray!10] (lb1) at (7.0,6.6) {servidor SSH};
+  \node[mc,draw=manualgreen,fill=manualgreen!14] (lc) at (11.6,6.6) {serviço\\\texttt{127.0.0.1:80}};
+  \draw[tn] (la) -- node[lb,above,manualblue]{túnel SSH} (lb1);
+  \draw[fl,manualgreen] (lb1) -- node[lb,above,manualgreen]{conexão local} (lc);
+  \node[lb,manualgray,anchor=north,text width=12.0cm] at (6.8,6.05)
+        {O navegador abre \texttt{http://localhost:8080} e alcança um serviço que só escuta no loopback do servidor.};
+
+  \draw[semithick,manualgray,dotted] (0.3,5.5) -- (13.4,5.5);
+
+  % ================= -R
+  \node[ttl,manualred] at (0.3,5.1) {\texttt{-R} remoto: exponho um serviço meu no servidor};
+  \node[cd,manualgray] at (0.3,4.65) {ssh -R 9000:127.0.0.1:3000 servidor};
+  \node[mc,draw=manualgreen,fill=manualgreen!14] (ra) at (2.0,3.8) {serviço local\\\texttt{127.0.0.1:3000}};
+  \node[mc,draw=manualblue,fill=manualblue!12] (rb) at (7.0,3.8) {servidor SSH\\\texttt{:9000}};
+  \node[mc,draw=manualgray,fill=manualgray!10] (rc) at (11.6,3.8) {quem usa\\o servidor};
+  \draw[tn] (ra) -- node[lb,above,manualblue]{túnel SSH} (rb);
+  \draw[fl,manualgray] (rc) -- node[lb,above,manualgray]{conecta na 9000} (rb);
+  \node[lb,manualred,anchor=north,text width=12.0cm] at (6.8,3.25)
+        {Atravessa NAT e firewall de entrada. Por padrão só escuta no loopback do servidor; \texttt{GatewayPorts yes} abre para a rede --- e aí você publicou um serviço interno, então pense antes.};
+
+  \draw[semithick,manualgray,dotted] (0.3,2.5) -- (13.4,2.5);
+
+  % ================= -D
+  \node[ttl,manualgreen] at (0.3,2.1) {\texttt{-D} dinâmico: um proxy SOCKS que sai pela rede do servidor};
+  \node[cd,manualgray] at (0.3,1.65) {ssh -D 1080 servidor};
+  \node[mc,draw=manualblue,fill=manualblue!12] (da) at (2.0,0.85) {navegador\\SOCKS \texttt{:1080}};
+  \node[mc,draw=manualgray,fill=manualgray!10] (db) at (7.0,0.85) {servidor SSH};
+  \node[mc,draw=manualgreen,fill=manualgreen!14] (dc) at (11.6,0.85) {qualquer destino};
+  \draw[tn] (da) -- node[lb,above,manualblue]{túnel SSH} (db);
+  \draw[fl,manualgreen] (db) -- node[lb,above,manualgreen]{sai pelo servidor} (dc);
+  \node[nt,anchor=north,text width=12.0cm] at (6.8,0.3)
+        {Sem porta fixa de destino: o navegador diz aonde quer ir a cada conexão. É o modo certo para alcançar uma rede inteira, em vez de abrir um \texttt{-L} por serviço.};
+\end{tikzpicture}
+```
+Os três encaminhamentos de porta do SSH e o que cada um resolve.
+:::
+
+A regra mnemônica: **`-L` puxa, `-R` empurra.** A porta que você digita primeiro é sempre a que passa a existir; o par `host:porta` seguinte é para onde o outro lado vai conectar, resolvido **na perspectiva do outro lado** — daí `127.0.0.1:80` em `-L` significar o loopback do servidor, não o seu.
+
+Para túnel sem sessão interativa:
+
+```bash
+ssh -fN -L 8080:127.0.0.1:80 servidor      # -f para segundo plano, -N sem comando remoto
+ssh -O check -S ~/.ssh/cm-* servidor       # estado da conexão mestre
+ssh -O exit  -S ~/.ssh/cm-* servidor       # encerra
+```
+
+## Copiando arquivos: `scp`, `sftp` e `rsync`
+
+### `scp`, e por que ele está sendo aposentado
+
+```bash
+scp arquivo.txt servidor:/tmp/
+scp servidor:/var/log/syslog ./
+scp -r pasta/ servidor:/opt/
+```
+
+Funciona, é simples, e desde o OpenSSH 9 o `scp` usa o protocolo SFTP por baixo. O protocolo original tinha um defeito de projeto: o cliente confiava nos nomes de arquivo que o servidor mandava, e um servidor malicioso podia gravar arquivos fora do diretório de destino (CVE-2018-20685 e correlatos). A recomendação oficial hoje é preferir `sftp` ou `rsync`.
+
+Uma armadilha de sintaxe que morde sempre: **os dois-pontos são obrigatórios**. `scp arquivo servidor /tmp/` sem o `:` copia dois arquivos locais chamados `arquivo` e `servidor` para `/tmp/` — silenciosamente, sem tocar na rede.
+
+### `rsync`: a ferramenta certa para quase tudo
+
+O `rsync` transfere **só as diferenças**. Numa retransmissão de 10 GB em que mudou 1 MB, ele move perto de 1 MB.
+
+```bash
+rsync -avz --progress origem/ servidor:/destino/
+```
+
+As opções essenciais:
+
+| Opção | Efeito |
+|---|---|
+| `-a` | modo arquivo: recursivo, preserva permissões, dono, tempos, links simbólicos |
+| `-v` | lista o que foi transferido |
+| `-z` | comprime durante a transferência (irrelevante em LAN rápida, útil em WAN) |
+| `-P` | `--partial --progress`: barra de progresso e retomada do que foi interrompido |
+| `-n` | **ensaio**: mostra o que faria, sem fazer |
+| `--delete` | apaga no destino o que não existe mais na origem |
+| `-e "ssh -p 2222"` | escolhe o transporte |
+| `--exclude` | ignora padrões (`--exclude '.git/'`) |
+
+: Opções de `rsync` que aparecem em quase todo comando {#tbl-rsync}
+
+E a regra que causa mais estrago:
+
+::: {.callout-important}
+**A barra final na origem muda tudo.** `rsync -a /origem/ /destino/` copia o **conteúdo** de `origem` para dentro de `destino`. `rsync -a /origem /destino/` (sem a barra) copia o **diretório** `origem` para dentro de `destino`, criando `/destino/origem/`. Combinado com `--delete`, errar a barra apaga o conteúdo legítimo do destino. **Sempre rode com `-n` primeiro** quando houver `--delete` envolvido.
+:::
+
+Padrões que vale ter na memória:
+
+```bash
+# espelho exato, com ensaio antes
+rsync -avn --delete origem/ servidor:/destino/
+rsync -av  --delete origem/ servidor:/destino/
+
+# backup incremental com hard links: cada snapshot parece completo,
+# mas só o que mudou ocupa espaço novo (@sec-cap016)
+rsync -a --delete --link-dest=/bkp/ontem/ /dados/ /bkp/hoje/
+
+# retomar transferência grande interrompida
+rsync -avP --append-verify iso/ servidor:/isos/
+
+# limitar banda e preservar a rede compartilhada
+rsync -avz --bwlimit=2000 origem/ servidor:/destino/
+```
+
+O `--link-dest` é o truque que sustenta uma estratégia de backup inteira: cada diretório diário é navegável como uma cópia completa, e o custo em disco é apenas o dos arquivos alterados.
+
+## 🐉 No Kali
+
+- **O `ssh` do Kali vem desabilitado por padrão, e isso é deliberado.** `systemctl status ssh` mostra o serviço parado numa instalação nova. Habilitar (`systemctl enable --now ssh`) numa máquina que vive em Wi-Fi público sem antes desligar a senha e trocar as chaves de host é exatamente o cenário da abertura. Em imagens antigas do Kali as chaves de host vinham pré-geradas e idênticas em todas as instalações; regenerá-las (`rm /etc/ssh/ssh_host_* && dpkg-reconfigure openssh-server`) é passo obrigatório em qualquer imagem que você não gerou.
+- **`ProxyJump` é a forma limpa de trabalhar em rede segmentada.** Num teste autorizado com um host de salto acordado em contrato, `ssh -J salto interno` alcança a rede interna sem deixar chave, agente ou rastro de credencial na máquina intermediária. É melhor que `-A` em todos os aspectos, inclusive no de não expor o seu agente a quem tiver root no salto.
+- **`-D` como proxy SOCKS e a etiqueta de escopo.** Com `ssh -D 1080` mais `proxychains`, ferramentas que não falam SOCKS passam a sair pela rede do servidor. É o mecanismo de pivô mais simples que existe e tem uso administrativo legítimo diário. Também é o ponto em que "alcancei um host" vira "alcancei a rede dele": num engajamento, atravessar para uma sub-rede não listada no escopo é ultrapassar a autorização, com as consequências da Lei 12.737/2012. Fora de contrato, é acesso não autorizado desde o primeiro pacote.
+- **Chave privada é o segredo mais valioso da sua máquina.** `~/.ssh/id_*` sem senha, num notebook levado a campo, é acesso pronto a tudo que aquela chave abre. Use *passphrase*, prefira `ssh-add -t` com expiração, e trate a lista de `authorized_keys` dos seus servidores como inventário: `ssh-keygen -lf ~/.ssh/authorized_keys` mostra quais chaves ainda têm acesso — quase sempre há uma que devia ter saído há meses.
+- **`rsync` é a ferramenta de exfiltração mais discreta que existe, e é por isso que ela importa na defesa.** Transferência incremental, comprimida, sobre SSH na porta 22, no meio do tráfego administrativo normal. Do lado defensivo isso significa que monitorar volume de saída na 22 é tão relevante quanto monitorar portas exóticas — e que `AllowUsers`, `Match` por grupo e `ForceCommand` com `internal-sftp` restringem o que uma conta comprometida consegue fazer com o canal.
+
+> **Nota sobre a família RHEL.** O OpenSSH é o mesmo, e o serviço se chama `sshd` (não `ssh`) — `systemctl reload sshd`. Duas diferenças mordem na prática. Primeira: o SELinux controla em qual porta o `sshd` pode escutar, então mudar `Port 2222` exige `semanage port -a -t ssh_port_t -p tcp 2222`, sem o qual o serviço não sobe e o erro não menciona SELinux de forma óbvia. Segunda: as políticas criptográficas do sistema (`update-crypto-policies`) podem recusar algoritmos que o Kali aceita, o que produz falha de negociação entre um cliente Kali e um servidor RHEL endurecido — a mensagem é `no matching key exchange method found`, e a correção é na política, não no `sshd_config`.
+
+## 🧪 Laboratório
+
+Roteiro autocontido: a própria VM do Kali é cliente e servidor. Nada precisa de máquina externa.
+
+1. **Suba o servidor SSH local e conecte a si mesmo.**
+
+   ```bash
+   sudo systemctl enable --now ssh
+   systemctl is-active ssh
+   ss -tlpn | grep :22
+   ssh -o StrictHostKeyChecking=accept-new localhost 'hostname; whoami'
+   ```
+
+   Esperado: pede sua senha e executa os comandos. Se `ss` não mostrar a porta 22, o serviço não subiu.
+
+2. **Confira a impressão digital do jeito certo.**
+
+   ```bash
+   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   ssh-keygen -lf ~/.ssh/known_hosts | head
+   ```
+
+   Esperado: a impressão do servidor aparece na lista do `known_hosts`. Foi isso que você aceitou no passo anterior — e é o que você deveria ter comparado antes de aceitar.
+
+3. **Gere um par de chaves e instale.**
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/id_lab -C "lab@$(hostname)" -N ""
+   ls -l ~/.ssh/id_lab*
+   ssh-copy-id -i ~/.ssh/id_lab.pub localhost
+   ssh -i ~/.ssh/id_lab -o IdentitiesOnly=yes localhost 'echo entrei sem senha'
+   ```
+
+   Esperado: a última conexão não pede senha. Usamos `-N ""` (sem *passphrase*) só para o laboratório rodar sem interação — em uso real, sempre com senha.
+
+4. **Quebre a permissão e veja o sintoma silencioso.**
+
+   ```bash
+   chmod 644 ~/.ssh/authorized_keys
+   ssh -i ~/.ssh/id_lab -o IdentitiesOnly=yes -o BatchMode=yes localhost 'echo ok' \
+       || echo "recusou, como esperado"
+   sudo journalctl -u ssh -n5 --no-pager | grep -i 'bad ownership\|permissions'
+   chmod 600 ~/.ssh/authorized_keys
+   ssh -i ~/.ssh/id_lab -o IdentitiesOnly=yes -o BatchMode=yes localhost 'echo voltou'
+   ```
+
+   Esperado: com `644` a chave é ignorada e o cliente não diz por quê; o motivo real só aparece no log do servidor. É o diagnóstico que economiza meia hora.
+
+5. **Monte o `~/.ssh/config` e veja a diferença.**
+
+   ```bash
+   cat >> ~/.ssh/config <<'EOF'
+
+   Host lab
+       HostName 127.0.0.1
+       User __USUARIO__
+       IdentityFile ~/.ssh/id_lab
+       IdentitiesOnly yes
+       ControlMaster auto
+       ControlPath ~/.ssh/cm-%r@%h:%p
+       ControlPersist 2m
+   EOF
+   sed -i "s/__USUARIO__/$USER/" ~/.ssh/config
+   chmod 600 ~/.ssh/config
+   time ssh lab 'echo primeira'
+   time ssh lab 'echo segunda'
+   ssh -O check lab
+   ```
+
+   Esperado: a segunda conexão é visivelmente mais rápida — reaproveitou a conexão mestre, sem novo handshake. O `-O check` confirma que ela está viva.
+
+6. **Túnel local `-L`, com um serviço que só escuta no loopback.**
+
+   ```bash
+   python3 -m http.server 8000 --bind 127.0.0.1 &
+   sleep 1
+   ssh -fN -L 9090:127.0.0.1:8000 lab
+   curl -s -o /dev/null -w 'pelo tunel: %{http_code}\n' http://127.0.0.1:9090/
+   ss -tlpn | grep -E ':(8000|9090)'
+   ```
+
+   Esperado: `200` pelo túnel. Aqui origem e destino são a mesma máquina, mas a mecânica é idêntica à de um servidor remoto: a porta 9090 é criada localmente e o servidor SSH faz a conexão final ao `127.0.0.1:8000` do lado dele.
+
+7. **Proxy SOCKS com `-D`.**
+
+   ```bash
+   ssh -fN -D 1080 lab
+   curl -s --socks5-hostname 127.0.0.1:1080 -o /dev/null -w 'via SOCKS: %{http_code}\n' https://exemplo.com/
+   ss -tlpn | grep 1080
+   ```
+
+   Esperado: `200`. Todo o tráfego saiu pela rede do servidor SSH — que neste laboratório é a sua própria, mas o mecanismo é o do pivô.
+
+8. **Compare `scp` e `rsync` numa retransmissão.**
+
+   ```bash
+   mkdir -p ~/lab-ssh/origem && cd ~/lab-ssh
+   dd if=/dev/urandom of=origem/grande.bin bs=1M count=60 status=none
+   echo "linha 1" > origem/pequeno.txt
+   time scp -r origem lab:~/destino-scp/
+   time rsync -a origem/ lab:~/destino-rsync/
+   echo "linha 2" >> origem/pequeno.txt
+   echo "--- agora só 8 bytes mudaram ---"
+   time scp -r origem lab:~/destino-scp/
+   time rsync -av --stats origem/ lab:~/destino-rsync/ | tail -12
+   ```
+
+   Esperado: o `scp` retransmite os 60 MB inteiros nas duas vezes; o `rsync` transfere quase nada na segunda, e as estatísticas mostram a diferença entre *total file size* e *total transferred*.
+
+9. **A barra final, demonstrada em ambiente descartável.**
+
+   ```bash
+   cd ~/lab-ssh
+   rm -rf teste-a teste-b && mkdir -p origem2/sub teste-a teste-b
+   echo conteudo > origem2/sub/arquivo.txt
+   rsync -a origem2/ teste-a/
+   rsync -a origem2  teste-b/
+   find teste-a teste-b -type f
+   ```
+
+   Esperado: `teste-a/sub/arquivo.txt` contra `teste-b/origem2/sub/arquivo.txt`. Um caractere de diferença no comando, uma estrutura de diretórios diferente no destino.
+
+10. **`--delete` com ensaio obrigatório.**
+
+    ```bash
+    cd ~/lab-ssh
+    echo "arquivo que só existe no destino" > teste-a/intruso.txt
+    rsync -avn --delete origem2/ teste-a/          # ENSAIO: nada é apagado
+    rsync -av  --delete origem2/ teste-a/
+    ls teste-a/
+    ```
+
+    Esperado: o ensaio anuncia `deleting intruso.txt`; a execução real apaga. Adquira o hábito de rodar o `-n` antes — com a barra errada, esse mesmo comando apagaria o destino inteiro.
+
+11. **Snapshots incrementais com `--link-dest`.**
+
+    ```bash
+    cd ~/lab-ssh
+    rsync -a --delete origem2/ bkp-dia1/
+    echo "mudou" >> origem2/sub/arquivo.txt
+    rsync -a --delete --link-dest="$PWD/bkp-dia1/" origem2/ bkp-dia2/
+    du -sh bkp-dia1 bkp-dia2
+    du -sh --total bkp-dia1 bkp-dia2
+    stat -c '%h %n' bkp-dia1/sub/arquivo.txt bkp-dia2/sub/arquivo.txt
+    ```
+
+    Esperado: os dois diretórios parecem completos, e o total ocupado é próximo ao de um só. Arquivos inalterados compartilham inode (contagem de links maior que 1); o alterado tem inode próprio.
+
+12. **Endureça o `sshd` com rede de segurança, e limpe.**
+
+    ```bash
+    sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    printf '\nMaxAuthTries 3\nLoginGraceTime 20\nX11Forwarding no\n' | sudo tee -a /etc/ssh/sshd_config
+    sudo sshd -t && echo "sintaxe ok"
+    sudo systemctl reload ssh
+    ssh lab 'echo ainda entro'          # teste ANTES de fechar qualquer sessão
+    # limpeza
+    ssh -O exit lab 2>/dev/null; pkill -f 'ssh -fN' ; kill %1 2>/dev/null
+    sudo cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config && sudo systemctl reload ssh
+    rm -rf ~/lab-ssh ~/destino-scp ~/destino-rsync
+    ```
+
+    Esperado: `sshd -t` valida, o reload aplica e a conexão continua funcionando. A ordem — validar, recarregar, testar em sessão nova, só então fechar a antiga — é o procedimento a repetir sempre em máquina remota.
+
+## Resumo
+
+- **O handshake do SSH autentica o servidor antes de autenticar você.** A pergunta do `known_hosts` é a única defesa contra intermediário, e aceitá-la sem conferir a impressão digital desarma o mecanismo.
+- **Chave pública encerra a força bruta porque não há segredo compartilhado para adivinhar.** A privada nunca trafega; o servidor só verifica uma assinatura. `PasswordAuthentication no` transforma 41 mil tentativas diárias em zero.
+- **Permissão errada em `~/.ssh` faz a chave ser ignorada em silêncio.** `700` no diretório, `600` nos arquivos; o motivo real só aparece no log do servidor ou com `ssh -vvv`.
+- **`~/.ssh/config` é onde a produtividade mora.** `IdentitiesOnly yes` evita a desconexão por excesso de tentativas, `ProxyJump` substitui o perigoso `-A`, e `ControlMaster` torna a segunda conexão instantânea.
+- **`-L` puxa um serviço remoto para você; `-R` empurra um serviço seu para o servidor; `-D` é um proxy SOCKS para a rede inteira.** O `host:porta` de destino é sempre resolvido na perspectiva do outro lado.
+- **Nunca feche a sessão atual depois de mexer no `sshd_config`.** `sshd -t`, `reload`, testar em terminal novo, só então encerrar. Trocar a porta 22 reduz ruído de log, não é segurança.
+- **`rsync` transfere só as diferenças** e substitui `scp` em praticamente todo uso. `--link-dest` dá snapshots que parecem completos e ocupam só o que mudou.
+- **A barra final da origem muda o significado do comando**, e combinada com `--delete` apaga o destino. Ensaio com `-n` antes, sempre.

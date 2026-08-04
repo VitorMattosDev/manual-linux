@@ -1,3 +1,507 @@
 # Fundamentos: interfaces, endereçamento IP e a pilha de rede {#sec-cap078}
 
-*(em elaboracao)*
+O chamado chegou assim: "a internet caiu na máquina de laboratório". Quem atendeu abriu o navegador, confirmou que nada carregava e ia partir para reiniciar o roteador quando resolveu digitar três comandos:
+
+```bash
+ping -c1 8.8.8.8          # responde em 14 ms
+ping -c1 google.com       # ping: google.com: Temporary failure in name resolution
+ip route                  # default via 192.168.1.1 dev enp0s3
+```
+
+A internet não caiu. Os pacotes saem, atravessam o roteador doméstico, chegam a um servidor do Google na Califórnia e voltam. O que quebrou foi a **tradução de nome para endereço** — uma camada acima, num arquivo de configuração de quatro linhas. Reiniciar o roteador teria consumido dez minutos e não resolveria nada.
+
+Essa é a habilidade central deste volume: em vez de tratar "a rede" como uma caixa preta que funciona ou não funciona, enxergar a pilha de camadas independentes que a compõem e saber em qual delas o problema mora. Este capítulo constrói o mapa. Os seis seguintes ensinam a operar cada andar dele.
+
+## A pilha, e por que ela existe
+
+Uma conexão de rede não é uma coisa só. É um empilhamento de protocolos em que cada camada resolve um problema específico e entrega o resultado para a de cima, sem saber o que a de cima vai fazer com ele — e sem que a de cima precise saber como o serviço foi prestado.
+
+O ganho prático dessa separação: o seu navegador fala HTTP sem saber se o pacote vai viajar por fibra, Wi-Fi ou 4G. E o driver da placa de rede move quadros Ethernet sem saber se carregam um vídeo ou um `apt update`. Trocar o meio físico não exige reescrever o navegador; trocar o navegador não exige trocar a placa.
+
+O modelo OSI, de sete camadas, é o vocabulário acadêmico — e é dele que vêm expressões como "problema de camada 2" ou "firewall de camada 7". O que roda de fato é o modelo TCP/IP, de quatro camadas. Vale conhecer os dois porque a conversa técnica mistura os dois o tempo todo.
+
+::: {#fig-pilha-encapsulamento}
+```{.tikz}
+%%| filename: pilha-encapsulamento
+%%| alt: As camadas da pilha TCP/IP lado a lado com o modelo OSI e o encapsulamento progressivo de cabecalhos ate o quadro Ethernet
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.8cm,minimum height=1.05cm},
+    osi/.style={draw,semithick,align=center,font=\tiny,inner sep=2pt,minimum width=1.9cm,minimum height=0.45cm,draw=manualgray,fill=manualgray!6},
+    hd/.style={draw,semithick,align=center,font=\tiny,inner sep=1.5pt,minimum height=0.62cm},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    hdr/.style={font=\scriptsize\bfseries,align=center}
+  ]
+  % ---------- coluna OSI
+  \node[hdr,manualgray] at (1.3,7.4) {OSI};
+  \node[osi] at (1.3,6.55) {7 aplicação};
+  \node[osi] at (1.3,6.05) {6 apresentação};
+  \node[osi] at (1.3,5.55) {5 sessão};
+  \node[osi] at (1.3,4.60) {4 transporte};
+  \node[osi] at (1.3,3.30) {3 rede};
+  \node[osi] at (1.3,2.00) {2 enlace};
+  \node[osi] at (1.3,1.50) {1 física};
+
+  % ---------- coluna TCP/IP
+  \node[hdr,manualblue] at (5.3,7.4) {o que roda};
+  \node[bx,draw=manualblue,fill=manualblue!10] (apl) at (5.3,6.05)
+    {\textbf{aplicação}\\\tiny HTTP, SSH, DNS};
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (tra) at (5.3,4.60)
+    {\textbf{transporte}\\\tiny TCP, UDP --- portas};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (red) at (5.3,3.30)
+    {\textbf{rede}\\\tiny IPv4, IPv6, ICMP};
+  \node[bx,draw=manualred,fill=manualred!10] (enl) at (5.3,1.75)
+    {\textbf{enlace + física}\\\tiny Ethernet, Wi-Fi, ARP};
+
+  \draw[fl] (apl) -- (tra);
+  \draw[fl] (tra) -- (red);
+  \draw[fl] (red) -- (enl);
+
+  % ---------- encapsulamento (carga util fixa em x=11.9; cabecalhos crescem para a esquerda)
+  \node[hdr,manualgray] at (11.0,7.4) {o que vai no fio};
+
+  \node[hd,draw=manualblue,fill=manualblue!10,minimum width=2.4cm] at (11.9,6.05) {dados};
+
+  \node[hd,draw=manualgreen,fill=manualgreen!12,minimum width=1.25cm] at (10.075,4.60) {cab.\ TCP};
+  \node[hd,draw=manualblue,fill=manualblue!10,minimum width=2.4cm] at (11.9,4.60) {dados};
+
+  \node[hd,draw=manualyellow,fill=manualyellow!22,minimum width=1.25cm] at (8.825,3.30) {cab.\ IP};
+  \node[hd,draw=manualgreen,fill=manualgreen!12,minimum width=1.25cm] at (10.075,3.30) {cab.\ TCP};
+  \node[hd,draw=manualblue,fill=manualblue!10,minimum width=2.4cm] at (11.9,3.30) {dados};
+
+  \node[hd,draw=manualred,fill=manualred!10,minimum width=1.25cm] at (7.575,1.75) {cab.\ Eth};
+  \node[hd,draw=manualyellow,fill=manualyellow!22,minimum width=1.25cm] at (8.825,1.75) {cab.\ IP};
+  \node[hd,draw=manualgreen,fill=manualgreen!12,minimum width=1.25cm] at (10.075,1.75) {cab.\ TCP};
+  \node[hd,draw=manualblue,fill=manualblue!10,minimum width=2.4cm] at (11.9,1.75) {dados};
+  \node[hd,draw=manualred,fill=manualred!10,minimum width=0.8cm] at (13.5,1.75) {FCS};
+
+  \node[lb,text width=5.4cm] at (10.9,5.35) {cada camada envelopa a de cima\\e acrescenta o próprio cabeçalho};
+
+  \node[nt,text width=12.8cm,anchor=north] at (7.0,0.85) {No destino o processo é o inverso: cada camada tira o próprio cabeçalho e entrega o resto para a de cima. Ver um cabeçalho errado no \texttt{tcpdump} diz exatamente em qual andar procurar --- um pacote IP que chega mas não sobe para a aplicação é problema de porta ou de firewall, não de cabo.};
+\end{tikzpicture}
+```
+As camadas da pilha TCP/IP e o encapsulamento progressivo até o quadro que vai no fio.
+:::
+
+Alguns pontos que essa figura deixa implícitos e que valem explicitar:
+
+- **Cabeçalho custa banda.** Ethernet (14 bytes) + IPv4 (20) + TCP (20) somam 54 bytes de overhead por pacote. Num arquivo grande isso é ruído; num protocolo que troca pacotinhos de 10 bytes, é a maior parte do tráfego.
+- **A unidade tem nome diferente em cada camada.** Segmento (TCP), datagrama (UDP e IP), pacote (IP), quadro (Ethernet). Na prática todo mundo diz "pacote" para tudo, mas a documentação e as mensagens de erro usam os termos exatos.
+- **O tamanho máximo do quadro é a MTU**, tipicamente 1500 bytes em Ethernet. Quando um pacote IP não cabe, ele é fragmentado — e fragmentação mal resolvida é a causa de uma família inteira de bugs de rede que parecem aleatórios (@sec-cap080).
+
+## Interfaces: o ponto de contato com a rede
+
+Uma **interface de rede** é a abstração que o kernel oferece para qualquer coisa capaz de enviar e receber pacotes. Normalmente corresponde a uma placa física, mas não obrigatoriamente: `lo` é software puro, e túneis, bridges e VLANs também aparecem como interfaces.
+
+```bash
+ip -brief link show
+```
+
+```
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>
+enp0s3           UP             08:00:27:a1:b2:c3 <BROADCAST,MULTICAST,UP,LOWER_UP>
+wlan0            DOWN           dc:a6:32:11:22:33 <NO-CARRIER,BROADCAST,MULTICAST,UP>
+```
+
+Três informações por linha, e todas importam:
+
+- **O nome.** Desde o systemd 197, as distribuições usam *Predictable Network Interface Names*: `enp0s3` é Ethernet (`en`) no barramento PCI (`p`) 0, slot (`s`) 3. `wlp3s0` é Wi-Fi (`wl`). Os antigos `eth0` e `wlan0` eram atribuídos na ordem em que o kernel detectava as placas — o que mudava entre boots numa máquina com duas placas, e trocava a interface externa pela interna sem aviso. O nome previsível é feio de propósito: ele é derivado da posição física do hardware.
+- **O estado administrativo e o do link.** `UP` significa que você habilitou a interface. `LOWER_UP` significa que há sinal do outro lado — cabo conectado, Wi-Fi associado. A `wlan0` acima está `UP` e `NO-CARRIER`: ligada, mas sem associação. Distinguir os dois evita meia hora de configuração inútil numa interface com cabo solto.
+- **O endereço MAC**, 48 bits em seis octetos. Os três primeiros são o OUI, que identifica o fabricante — `08:00:27` é VirtualBox, `52:54:00` é QEMU/KVM, `00:0c:29` é VMware. Ver um OUI de virtualizador num inventário que deveria ser só de máquinas físicas é um achado.
+
+O kernel expõe tudo isso em `/sys/class/net`, e é dali que as ferramentas leem:
+
+```bash
+cat /sys/class/net/enp0s3/address       # MAC
+cat /sys/class/net/enp0s3/mtu           # 1500
+cat /sys/class/net/enp0s3/operstate     # up
+cat /sys/class/net/enp0s3/statistics/rx_bytes
+```
+
+## Camada 2: MAC, ARP e o segmento local
+
+Dentro de um mesmo segmento de rede — o que está do mesmo lado de um roteador — as máquinas se encontram por endereço MAC, não por IP. O protocolo que faz a ponte entre os dois é o **ARP**: "quem tem 192.168.1.1? me diga o seu MAC".
+
+```bash
+ip neigh show
+```
+
+```
+192.168.1.1 dev enp0s3 lladdr c0:56:27:aa:bb:cc REACHABLE
+192.168.1.50 dev enp0s3 lladdr 08:00:27:de:ad:01 STALE
+```
+
+Essa é a tabela ARP (ou *neighbour table*). Os estados dizem coisas úteis: `REACHABLE` é confirmado recentemente, `STALE` é uma entrada que ainda não expirou mas não foi validada, `FAILED` é o vizinho que não respondeu. Uma entrada `INCOMPLETE` persistente para o gateway significa que os pacotes ARP não estão chegando — problema de cabo, de switch ou de VLAN, jamais de DNS.
+
+O ARP não tem autenticação nenhuma. Qualquer máquina do segmento pode responder "o MAC de 192.168.1.1 sou eu", e é assim que funciona o *ARP spoofing* que sustenta ataques de intermediário em rede local. Não há correção no protocolo; as defesas são todas externas (entradas estáticas, *Dynamic ARP Inspection* no switch, segmentação).
+
+IPv6 não usa ARP: usa o **NDP**, sobre ICMPv6, que resolve o mesmo problema com mensagens de *Neighbour Solicitation* e *Advertisement* — e sofre da mesma classe de ataque.
+
+## Endereçamento IPv4: o que a máscara faz
+
+Um endereço IPv4 são 32 bits, escritos em quatro octetos decimais. Sozinho ele não diz nada; o que dá sentido a ele é a **máscara de rede**, que divide os 32 bits em duas partes: o prefixo que identifica a rede e o sufixo que identifica a máquina dentro dela.
+
+A notação CIDR (`192.168.1.10/24`) diz diretamente quantos bits são de rede. É a única notação que você precisa dominar — a máscara em decimal (`255.255.255.0`) é a mesma informação escrita de forma mais difícil de calcular.
+
+::: {#fig-anatomia-cidr}
+```{.tikz}
+%%| filename: anatomia-cidr
+%%| alt: Decomposicao em bits do endereco 192.168.1.200 com prefixo de 26 bits mostrando rede broadcast e faixa utilizavel
+\begin{tikzpicture}[
+    oct/.style={draw,semithick,align=center,font=\tiny\ttfamily,inner sep=2pt,minimum width=2.24cm,minimum height=0.52cm,draw=manualgray,fill=manualgray!8},
+    bit/.style={draw,thin,align=center,font=\tiny\ttfamily,inner sep=0pt,minimum width=0.28cm,minimum height=0.52cm},
+    brc/.style={decorate,decoration={brace,amplitude=4pt,mirror},thick},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    rot/.style={font=\tiny,anchor=east},
+    val/.style={font=\tiny\ttfamily,anchor=west},
+    cmt/.style={font=\tiny,manualgray,anchor=west}
+  ]
+  % ---------- endereco em octetos (centros alinhados com os grupos de bits)
+  \node[font=\scriptsize\bfseries,manualblue,anchor=east] at (1.5,6.9) {endereço};
+  \node[oct] at (2.82,6.9) {192};
+  \node[oct] at (5.31,6.9) {168};
+  \node[oct] at (7.80,6.9) {1};
+  \node[oct] at (10.29,6.9) {200};
+  \node[font=\scriptsize\ttfamily,anchor=west,manualblue] at (11.6,6.9) {/26};
+
+  % ---------- 32 bits em quatro grupos de oito; azul = rede, verde = host
+  \foreach \jj/\bt in {0/1,1/1,2/0,3/0,4/0,5/0,6/0,7/0}
+    { \node[bit,draw=manualblue,fill=manualblue!16] at ({1.84+\jj*0.28},6.15) {\bt}; }
+  \foreach \jj/\bt in {0/1,1/0,2/1,3/0,4/1,5/0,6/0,7/0}
+    { \node[bit,draw=manualblue,fill=manualblue!16] at ({4.33+\jj*0.28},6.15) {\bt}; }
+  \foreach \jj/\bt in {0/0,1/0,2/0,3/0,4/0,5/0,6/0,7/1}
+    { \node[bit,draw=manualblue,fill=manualblue!16] at ({6.82+\jj*0.28},6.15) {\bt}; }
+  \foreach \jj/\bt in {0/1,1/1,2/0,3/0,4/1,5/0,6/0,7/0} {
+    \ifnum\jj<2
+      \node[bit,draw=manualblue,fill=manualblue!16] at ({9.31+\jj*0.28},6.15) {\bt};
+    \else
+      \node[bit,draw=manualgreen,fill=manualgreen!16] at ({9.31+\jj*0.28},6.15) {\bt};
+    \fi
+  }
+
+  \draw[brc,manualblue]  (1.70,5.83) -- (9.73,5.83)
+        node[midway,below=5pt,lb,manualblue]{\textbf{26 bits de rede} --- idênticos em toda a sub-rede};
+  \draw[brc,manualgreen] (9.73,5.83) -- (11.41,5.83)
+        node[midway,below=5pt,lb,manualgreen]{\textbf{6 bits de host}\\$2^{6}=64$ endereços};
+
+  \node[lb,manualgray,anchor=west,text width=3.0cm] at (11.75,5.35)
+        {o corte cai \emph{dentro}\\do último octeto};
+
+  % ---------- os quatro enderecos que a mascara determina
+  \node[rot] at (3.3,4.15) {endereço de rede};
+  \node[val,manualblue] at (3.5,4.15) {192.168.1.192};
+  \node[cmt] at (6.9,4.15) {bits de host todos em 0 --- não se atribui a ninguém};
+
+  \node[rot] at (3.3,3.65) {primeiro válido};
+  \node[val] at (3.5,3.65) {192.168.1.193};
+  \node[cmt] at (6.9,3.65) {costuma ser o gateway, por convenção apenas};
+
+  \node[rot] at (3.3,3.15) {último válido};
+  \node[val] at (3.5,3.15) {192.168.1.254};
+  \node[cmt] at (6.9,3.15) {62 endereços utilizáveis, não 64};
+
+  \node[rot] at (3.3,2.65) {broadcast};
+  \node[val,manualred] at (3.5,2.65) {192.168.1.255};
+  \node[cmt] at (6.9,2.65) {bits de host todos em 1 --- alcança a sub-rede inteira};
+
+  \node[nt,text width=12.6cm,anchor=north] at (6.6,2.0) {A pergunta que a máscara responde é uma só: \textbf{o destino está na minha sub-rede?} O kernel aplica a máscara ao IP de destino e ao próprio; se os prefixos coincidem, resolve o MAC por ARP e entrega direto. Se não coincidem, manda para o gateway. É por isso que uma máscara errada produz o sintoma clássico de ``pingo o roteador mas não pingo o vizinho'' --- ou o inverso.};
+\end{tikzpicture}
+```
+Decomposição em bits de `192.168.1.200/26` e os quatro endereços que a máscara determina.
+:::
+
+O cálculo mental que vale automatizar: um `/24` tem 256 endereços, e cada bit a menos no prefixo **dobra** o tamanho. `/25` = 128, `/26` = 64, `/27` = 32, `/28` = 16, `/30` = 4 (o clássico enlace ponto a ponto), `/32` = um único endereço.
+
+O utilitário `ipcalc` faz a conta e mostra os bits:
+
+```bash
+ipcalc 192.168.1.200/26
+```
+
+Três faixas de IPv4 são reservadas para uso privado pela RFC 1918 e nunca são roteadas na internet pública:
+
+| Faixa | CIDR | Endereços | Uso típico |
+|---|---|---|---|
+| `10.0.0.0` – `10.255.255.255` | `10.0.0.0/8` | ~16,7 milhões | redes corporativas grandes, VPNs |
+| `172.16.0.0` – `172.31.255.255` | `172.16.0.0/12` | ~1 milhão | Docker (`172.17.0.0/16`), laboratórios |
+| `192.168.0.0` – `192.168.255.255` | `192.168.0.0/16` | 65 536 | redes domésticas e VMs |
+
+: Faixas privadas da RFC 1918 {#tbl-rfc1918}
+
+Vale conhecer mais três: `127.0.0.0/8` é loopback (a máquina consigo mesma — repare que é um `/8` inteiro, e não só `127.0.0.1`), `169.254.0.0/16` é *link-local* e aparece automaticamente quando o DHCP falha (ver um IP `169.254.x.x` é diagnóstico imediato de "não achei servidor DHCP"), e `100.64.0.0/10` é o CGNAT usado por operadoras.
+
+## IPv6 em cinco minutos
+
+IPv6 usa 128 bits, escritos em oito grupos hexadecimais de 16 bits. Duas regras de abreviação: zeros à esquerda de cada grupo caem, e **uma** sequência de grupos zerados vira `::`.
+
+```
+2001:0db8:0000:0000:0000:ff00:0042:8329
+2001:db8::ff00:42:8329
+```
+
+O que muda na prática:
+
+- **O prefixo padrão de rede local é `/64`**, sempre. Não se subdivide abaixo disso em rede de acesso, porque o SLAAC depende dos 64 bits de sufixo.
+- **Toda interface tem um endereço link-local** `fe80::/10`, gerado automaticamente e válido apenas no segmento. Como ele não é único globalmente, comandos que o usam exigem o sufixo de zona: `ping fe80::1%enp0s3`.
+- **Não há ARP nem broadcast.** No lugar entram NDP e multicast, com endereços como `ff02::1` (todos os nós do enlace).
+- **Não há NAT por padrão.** Cada máquina recebe endereço globalmente roteável, o que significa que o firewall de host deixa de ser opcional — a proteção implícita que o NAT dava desaparece.
+- **Em URLs, o endereço vai entre colchetes**: `http://[2001:db8::1]:8080/`, porque os dois-pontos já separam a porta.
+
+Ferramentas modernas aceitam `-4` e `-6` para forçar a família. Muito diagnóstico confuso vem de uma máquina que resolve para IPv6, tenta conectar, falha por rota ausente e demora a cair para IPv4 — o famoso "o site demora 20 segundos para abrir e depois funciona".
+
+## Roteamento: a decisão de para onde mandar
+
+Toda vez que a máquina precisa enviar um pacote, ela consulta a tabela de rotas e escolhe a entrada **mais específica** que casa com o destino — o prefixo mais longo vence.
+
+```bash
+ip route show
+```
+
+```
+default via 192.168.1.1 dev enp0s3 proto dhcp metric 100
+10.8.0.0/24 dev tun0 proto kernel scope link src 10.8.0.6
+192.168.1.0/24 dev enp0s3 proto kernel scope link src 192.168.1.10 metric 100
+```
+
+Lendo de baixo para cima: qualquer coisa em `192.168.1.0/24` sai direto pela `enp0s3` (`scope link` = entregável sem roteador); qualquer coisa em `10.8.0.0/24` vai pelo túnel VPN; **todo o resto** vai para `192.168.1.1`, que é o que `default` significa (é o mesmo que `0.0.0.0/0`, o prefixo de comprimento zero, que casa com tudo e por isso perde de qualquer outro).
+
+Para saber qual rota o kernel escolheria para um destino específico, sem enviar pacote nenhum:
+
+```bash
+ip route get 1.1.1.1
+```
+
+```
+1.1.1.1 via 192.168.1.1 dev enp0s3 src 192.168.1.10 uid 1000
+```
+
+Esse comando responde três perguntas de uma vez — qual gateway, qual interface e **qual IP de origem** o pacote levará. A última é a que mais economiza tempo numa máquina com VPN ou múltiplas interfaces.
+
+O `metric` desempata entre rotas equivalentes: menor vence. É o que decide se o tráfego sai pelo cabo ou pelo Wi-Fi quando os dois estão conectados.
+
+## Portas, sockets e os dois protocolos de transporte
+
+A camada de rede entrega o pacote à máquina. Quem o entrega ao **processo certo** é a camada de transporte, através do número de porta — 16 bits, de 1 a 65535.
+
+A identidade de uma conexão é a *5-tupla*: protocolo, IP de origem, porta de origem, IP de destino, porta de destino. É por isso que mil navegadores podem falar com a porta 443 do mesmo servidor sem confusão: cada um usa uma porta de origem efêmera diferente.
+
+```bash
+cat /proc/sys/net/ipv4/ip_local_port_range     # 32768 60999
+```
+
+TCP e UDP resolvem problemas diferentes:
+
+| | TCP | UDP |
+|---|---|---|
+| Conexão | handshake de três vias antes de qualquer dado | nenhuma; envia e esquece |
+| Entrega | confirmada, retransmite o que se perde | sem garantia |
+| Ordem | reordena na chegada | chega como chegar |
+| Controle de fluxo | janela deslizante, evita afogar o receptor | nenhum |
+| Overhead | 20 bytes de cabeçalho, mais o handshake | 8 bytes |
+| Usos | HTTP, SSH, SMTP, transferência de arquivo | DNS, DHCP, NTP, VoIP, jogos, QUIC |
+
+: TCP e UDP comparados {#tbl-tcp-udp}
+
+"UDP não é confiável" não significa "UDP é ruim": significa que a confiabilidade, se necessária, é responsabilidade da aplicação. É exatamente o que o QUIC faz — reimplementa entrega confiável sobre UDP para escapar das limitações do TCP, e hoje carrega boa parte do tráfego HTTP/3.
+
+Portas abaixo de 1024 são privilegiadas: só um processo com `CAP_NET_BIND_SERVICE` (na prática, root — @sec-cap023) pode escutar nelas. Os nomes conhecidos ficam em `/etc/services`:
+
+```bash
+grep -E '^(ssh|http|https|domain)\s' /etc/services
+```
+
+Esse arquivo é apenas uma tabela de nomes: nada obriga um servidor SSH a rodar na 22. Assumir que a porta 22 tem SSH e a 80 tem HTTP é o erro que faz um levantamento de rede errar o alvo.
+
+## Resolução de nomes: onde o problema da abertura estava
+
+Nenhuma das camadas anteriores conhece nomes. `google.com` precisa virar um endereço IP antes que qualquer pacote saia — e o subsistema que faz isso é independente de tudo o mais, razão pela qual ele quebra sozinho.
+
+A ordem de consulta é definida pelo NSS, em `/etc/nsswitch.conf`:
+
+```bash
+grep ^hosts /etc/nsswitch.conf
+```
+
+```
+hosts: files mdns4_minimal [NOTFOUND=return] dns
+```
+
+`files` é o `/etc/hosts`, consultado primeiro e sempre vencedor. É a forma mais rápida de apontar um nome para um IP de teste — e também a forma mais fácil de deixar uma entrada esquecida que faz um nome resolver "errado" só naquela máquina.
+
+Depois vem `dns`, que consulta os servidores de `/etc/resolv.conf`:
+
+```
+nameserver 192.168.1.1
+search casa.lan
+options timeout:2 attempts:2
+```
+
+Nas distribuições atuais esse arquivo raramente é editado à mão: ele é gerado pelo NetworkManager ou é um link para o *stub* do `systemd-resolved` (`nameserver 127.0.0.53`), assunto do @sec-cap079. Editar o arquivo gerado funciona até o próximo DHCP sobrescrevê-lo — que é o segundo erro mais comum deste capítulo.
+
+O comando de diagnóstico é `dig` (@sec-cap080), e a distinção que resolve o caso da abertura é esta:
+
+```bash
+ping 8.8.8.8         # camadas 3 e 4 funcionam?
+dig google.com       # a resolução funciona?
+ping google.com      # as duas juntas
+```
+
+Se o primeiro passa e o segundo falha, o problema é DNS e só DNS. Nenhum reboot de roteador resolve o que está em `/etc/resolv.conf`.
+
+## Onde o kernel guarda o estado da rede
+
+Vale saber que tudo o que as ferramentas mostram vem de arquivos legíveis, porque num sistema mínimo — um contêiner, um sistema de recuperação — as ferramentas podem não existir:
+
+```bash
+ls /proc/net/           # tabelas do kernel em texto
+cat /proc/net/route     # rotas, em hexadecimal little-endian
+cat /proc/net/arp       # tabela ARP
+cat /proc/net/dev       # contadores por interface
+ss -tulpn               # o que /proc/net/tcp mostra, já legível
+```
+
+E os parâmetros ajustáveis vivem em `/proc/sys/net`, acessíveis por `sysctl`:
+
+```bash
+sysctl net.ipv4.ip_forward           # 0 = a máquina não roteia
+sysctl net.ipv4.conf.all.rp_filter   # validação de caminho reverso
+```
+
+O `ip_forward` é o interruptor que transforma a máquina em roteador. Ele aparece de novo no @sec-cap083, quando o assunto for NAT.
+
+## 🐉 No Kali
+
+- **A interface da VM depende do modo de rede do virtualizador, e isso decide o que o laboratório consegue fazer.** Em NAT, a VM alcança a internet mas nenhuma outra máquina alcança a VM — o que inviabiliza qualquer exercício com conexão de retorno. Em *bridge*, a VM recebe IP do mesmo DHCP da rede física e fica visível para todo mundo, inclusive para quem você não pretendia. Em *host-only*, existe uma rede isolada entre host e VMs, e é o modo certo para laboratório de segurança. Confira em qual você está antes de qualquer exercício: `ip route get 1.1.1.1` mostrando um gateway `10.0.2.2` é o padrão de NAT do VirtualBox.
+- **Kali não vem com serviço de rede escutando, de propósito.** Diferente de uma distribuição de servidor, nem SSH nem nada mais sobe por padrão (@sec-cap041). Um `ss -tulpn` numa instalação limpa deve devolver quase nada — e qualquer coisa a mais ali é algo que você habilitou ou que se instalou junto com uma ferramenta.
+- **Wi-Fi em modo monitor não é uma interface IP.** As ferramentas de auditoria sem fio colocam a placa num modo em que ela recebe todos os quadros 802.11 do ar sem se associar a rede nenhuma; nesse estado a interface não tem endereço IP e não roteia nada. É por isso que ativar o modo monitor derruba a conexão da máquina — comportamento esperado, não defeito. Exige placa com chipset compatível, o que quase nunca é o caso do adaptador virtual de uma VM.
+- **MAC é trivialmente alterável e isso corta nos dois sentidos.** `ip link set enp0s3 address 02:11:22:33:44:55` muda o endereço em um comando. Isso serve para testar controle de acesso por MAC num laboratório próprio, e serve igualmente para contornar esse controle numa rede alheia — o que é acesso não autorizado a sistema informático, tipificado na Lei 12.737/2012. A conclusão defensiva é a que interessa: filtro por MAC não é controle de acesso, é organização de inventário.
+- **Endereço privado não significa endereço protegido.** É comum tratar `10.0.0.0/8` como "rede interna, logo confiável". Um levantamento de superfície de ataque parte justamente do contrário: enumerar o que está exposto **dentro** do perímetro, onde normalmente não há firewall entre pares e os serviços rodam sem TLS.
+
+> **Nota sobre a família RHEL.** O `iproute2` e o modelo de camadas são idênticos. O que diverge é a persistência: RHEL 8+ também usa NetworkManager, mas os perfis históricos ficavam em `/etc/sysconfig/network-scripts/ifcfg-*`, formato descontinuado no RHEL 9 em favor dos arquivos `.nmconnection` em `/etc/NetworkManager/system-connections/` — os mesmos do Kali. Duas diferenças permanecem relevantes: `rp_filter` vem em modo estrito por padrão no RHEL (o que descarta silenciosamente pacotes com rota assimétrica, sintoma difícil de diagnosticar), e o firewall vem ativo de fábrica via `firewalld`, enquanto no Kali não há regra nenhuma carregada (@sec-cap083).
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Todos os comandos são somente leitura, exceto onde indicado; nenhum altera configuração de forma persistente.
+
+1. **Inventarie as interfaces e leia os três campos que importam.**
+
+   ```bash
+   ip -brief link show
+   ip -brief addr show
+   for i in /sys/class/net/*; do
+       printf '%-10s mac=%s mtu=%s estado=%s\n' "${i##*/}" \
+              "$(cat "$i/address")" "$(cat "$i/mtu")" "$(cat "$i/operstate")"
+   done
+   ```
+
+   Esperado: a `lo` sempre presente com MTU 65536 (interface de software não tem limite de quadro físico) e ao menos uma interface real com MTU 1500. Identifique o OUI do MAC da sua interface principal e confirme que ele corresponde ao seu virtualizador.
+
+2. **Calcule uma sub-rede à mão e confira com a ferramenta.**
+
+   ```bash
+   sudo apt install -y ipcalc
+   ipcalc 192.168.1.200/26
+   ipcalc 10.20.30.40/12
+   ```
+
+   Antes de rodar o segundo, responda no papel: qual é o endereço de rede de `10.20.30.40/12`? Esperado: `10.16.0.0`, porque 12 bits de prefixo cortam o segundo octeto no meio. É o caso que quebra a intuição de "a máscara só corta em octetos inteiros".
+
+3. **Descubra a decisão de roteamento sem enviar pacote.**
+
+   ```bash
+   ip route show
+   ip route get 1.1.1.1
+   ip route get 127.0.0.1
+   ip route get "$(ip -4 -brief addr show scope global | awk 'NR==1{print $3}' | cut -d/ -f1)"
+   ```
+
+   Esperado: o primeiro `get` mostra `via <gateway> dev <interface> src <seu IP>`; o segundo mostra `dev lo`; o terceiro mostra que o tráfego para o próprio endereço também sai pela `lo`, sem tocar a placa.
+
+4. **Observe o ARP acontecer.**
+
+   ```bash
+   ip neigh flush all
+   ip neigh show                       # vazio ou quase
+   ping -c2 "$(ip route | awk '/^default/{print $3; exit}')"
+   ip neigh show
+   ```
+
+   Esperado: a tabela nasce vazia, e depois do `ping` no gateway aparece uma entrada `REACHABLE` com o MAC dele. Foi o ARP que preencheu.
+
+5. **Veja os dois transportes lado a lado.**
+
+   ```bash
+   ss -tulpn
+   ss -s
+   ```
+
+   Esperado: numa instalação limpa do Kali, pouquíssimas linhas. A coluna `Netid` distingue `tcp` de `udp`; `0.0.0.0:*` na coluna de destino significa "escutando, sem par conectado". O `ss -s` resume por estado.
+
+6. **Confirme que porta e serviço são convenção, não regra.**
+
+   ```bash
+   grep -E '^(ssh|http|https|domain|ntp)\s' /etc/services
+   python3 -m http.server 2222 &
+   sleep 1
+   ss -tlpn | grep 2222
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:2222/
+   kill %1
+   ```
+
+   Esperado: `/etc/services` associa 2222 a nada de especial, e mesmo assim um servidor HTTP roda ali e responde `200`. Nada no protocolo amarra serviço a número.
+
+7. **Separe as camadas no diagnóstico — o caso da abertura, reproduzido.**
+
+   ```bash
+   ping -c1 -W2 8.8.8.8                 # camada 3 até a internet
+   dig +short google.com                # resolução de nome
+   sudo cp /etc/resolv.conf /tmp/resolv.bak
+   echo 'nameserver 203.0.113.99' | sudo tee /etc/resolv.conf   # servidor inexistente
+   ping -c1 -W2 8.8.8.8                 # continua funcionando
+   ping -c1 -W2 google.com              # falha na resolução
+   sudo cp /tmp/resolv.bak /etc/resolv.conf
+   dig +short google.com                # volta a funcionar
+   ```
+
+   Esperado: exatamente o sintoma da abertura. Com o DNS quebrado, o IP responde e o nome não. Restaure o arquivo antes de seguir — e note que num sistema com `systemd-resolved` o arquivo pode ser regenerado sozinho, o que é o assunto do próximo capítulo.
+
+8. **Encontre o link-local IPv6 e alcance o vizinho por ele.**
+
+   ```bash
+   ip -6 addr show scope link
+   ping -c2 ff02::1%"$(ip route | awk '/^default/{print $5; exit}')"
+   ```
+
+   Esperado: cada interface tem um `fe80::`. O `ping` no multicast `ff02::1` faz todos os nós IPv6 do segmento responderem — inclusive máquinas sem IPv4 configurado, o que às vezes revela hosts que uma varredura IPv4 não veria.
+
+9. **Leia o estado direto do kernel.**
+
+   ```bash
+   cat /proc/net/dev
+   sysctl net.ipv4.ip_forward net.ipv4.ip_local_port_range
+   cat /proc/net/arp
+   ```
+
+   Esperado: `ip_forward` em `0` numa estação. Os contadores de `/proc/net/dev` são os mesmos que `ip -s link` formata — a diferença é só apresentação.
+
+10. **Meça o overhead de cabeçalho na prática.**
+
+    ```bash
+    ping -c3 -s 1472 -M do 8.8.8.8      # 1472 + 8 ICMP + 20 IP = 1500, cabe
+    ping -c3 -s 1473 -M do 8.8.8.8      # 1 byte a mais: não cabe
+    ```
+
+    Esperado: o primeiro responde; o segundo devolve `Frag needed and DF set (mtu = 1500)`. É a MTU aparecendo de forma concreta, e é a base do diagnóstico de MTU do @sec-cap080. Em rede com PPPoE ou VPN o limite cai para 1492 ou menos, e o valor exato se descobre assim.
+
+## Resumo
+
+- **A rede é uma pilha de camadas independentes**, e quase todo diagnóstico consiste em identificar em qual delas o problema está antes de mexer em qualquer coisa. `ping` num IP testa as camadas 3 e 4; `dig` testa a resolução de nomes; os dois falham por motivos que não têm relação entre si.
+- **Interface `UP` sem `LOWER_UP` é interface habilitada sem sinal do outro lado** — cabo solto ou Wi-Fi não associado. Distinguir os dois estados evita configurar uma placa que não está conectada.
+- **A máscara responde a uma única pergunta**: o destino está na minha sub-rede? Se está, entrega direta por ARP; se não, vai para o gateway. Máscara errada produz o sintoma de alcançar uns hosts e outros não.
+- **O prefixo mais longo vence** na tabela de rotas, e `default` (`0.0.0.0/0`) é o mais curto possível — por isso é o último recurso. `ip route get` mostra a decisão sem enviar pacote, incluindo o IP de origem que seria usado.
+- **A 5-tupla identifica uma conexão**, e é ela que permite milhares de conexões simultâneas para a mesma porta de destino. Porta abaixo de 1024 exige privilégio; a associação entre número e serviço é convenção, nunca garantia.
+- **TCP entrega confiável e ordenado ao custo de handshake e estado; UDP não promete nada e é mais barato.** Escolher UDP não é abrir mão de confiabilidade, é mover a responsabilidade para a aplicação — como faz o QUIC.
+- **IPv6 elimina ARP, broadcast e NAT.** A ausência do NAT torna o firewall de host obrigatório, e o endereço link-local `fe80::` exige o sufixo de zona (`%interface`) para ser usado.
+- **ARP não tem autenticação nenhuma**, e por isso filtro por MAC não é controle de acesso. As defesas contra falsificação são todas externas ao protocolo.

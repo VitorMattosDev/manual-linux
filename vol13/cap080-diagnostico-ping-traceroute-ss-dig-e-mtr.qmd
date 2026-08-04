@@ -1,3 +1,533 @@
 # Diagnóstico: ping, traceroute, ss, dig e mtr {#sec-cap080}
 
-*(em elaboracao)*
+"A rede está lenta." É o chamado mais inútil que existe, e é o mais comum. Ele pode significar que o cabo está mal encaixado, que o servidor DNS demora dois segundos para responder, que a aplicação abre uma conexão nova por requisição, que há perda de 3% num salto no meio do caminho, ou que ninguém mexeu em nada e o problema é o disco do banco de dados.
+
+O que separa quem resolve isso em cinco minutos de quem passa a tarde reiniciando serviços não é conhecer mais ferramentas. É ter um **método**: uma ordem fixa de perguntas, cada uma isolando uma camada, cada uma com uma resposta binária. Quando a pergunta certa falha, você já sabe onde procurar — e, mais importante, já sabe o que **não** precisa mais investigar.
+
+Este capítulo é essa escada, degrau por degrau, com a ferramenta de cada um.
+
+## A escada do diagnóstico
+
+::: {#fig-escada-diagnostico}
+```{.tikz}
+%%| filename: escada-diagnostico
+%%| alt: Escada de diagnostico de rede em seis degraus da camada fisica ate a aplicacao com o comando e a conclusao de cada degrau
+\begin{tikzpicture}[
+    dg/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=4pt,text width=3.5cm,minimum height=0.95cm},
+    cmd/.style={font=\tiny\ttfamily,anchor=west,align=left,text width=4.3cm},
+    cnc/.style={font=\tiny,manualgray,anchor=west,align=left,text width=5.2cm},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,align=left}
+  ]
+  \node[dg,draw=manualred,fill=manualred!10]        (l1) at (2.2,7.9) {\textbf{1. o link existe?}};
+  \node[dg,draw=manualred,fill=manualred!10]        (l2) at (2.2,6.7) {\textbf{2. tenho endereço\\e rota?}};
+  \node[dg,draw=manualyellow,fill=manualyellow!22]  (l3) at (2.2,5.5) {\textbf{3. alcanço o gateway?}};
+  \node[dg,draw=manualyellow,fill=manualyellow!22]  (l4) at (2.2,4.3) {\textbf{4. alcanço a internet\\por IP?}};
+  \node[dg,draw=manualgreen,fill=manualgreen!14]    (l5) at (2.2,3.1) {\textbf{5. resolvo nomes?}};
+  \node[dg,draw=manualblue,fill=manualblue!12]      (l6) at (2.2,1.9) {\textbf{6. a porta responde?}};
+
+  \foreach \sr/\ds in {l1/l2, l2/l3, l3/l4, l4/l5, l5/l6} { \draw[fl] (\sr) -- (\ds); }
+
+  \node[cmd] at (4.2,7.9) {ip -br link show\\ethtool enp0s3};
+  \node[cmd] at (4.2,6.7) {ip -br addr show\\ip route get 1.1.1.1};
+  \node[cmd] at (4.2,5.5) {ping -c3 \$(ip route \textbar{} \\\ \ awk '/\^{}default/\{print \$3\}')};
+  \node[cmd] at (4.2,4.3) {ping -c3 1.1.1.1\\mtr -rwc20 1.1.1.1};
+  \node[cmd] at (4.2,3.1) {dig +short exemplo.com\\resolvectl query exemplo.com};
+  \node[cmd] at (4.2,1.9) {ss -tulpn\\curl -sv https://exemplo.com};
+
+  \node[cnc] at (8.8,7.9) {falhou aqui: cabo, porta do switch, Wi-Fi não associado. Nada acima disso importa.};
+  \node[cnc] at (8.8,6.7) {falhou aqui: DHCP, perfil do gerenciador, máscara errada, rota ausente.};
+  \node[cnc] at (8.8,5.5) {falhou aqui: camada 2 local --- ARP, VLAN, filtro de porta no switch.};
+  \node[cnc] at (8.8,4.3) {falhou aqui: roteamento, NAT, firewall de saída, MTU. Aqui entra o \texttt{traceroute}.};
+  \node[cnc] at (8.8,3.1) {falhou aqui: e \textbf{só} aqui. IP funciona, nome não. Ver \texttt{resolv.conf}.};
+  \node[cnc] at (8.8,1.9) {falhou aqui: serviço parado, escutando no endereço errado, firewall de destino, TLS.};
+
+  \node[nt,manualgray,text width=13.0cm,anchor=north] at (6.8,1.15) {A regra que faz o método funcionar: \textbf{não pule degraus e não volte}. Cada teste que passa elimina definitivamente tudo o que está abaixo dele. Quem começa pelo degrau 6 --- ``o site não abre'' --- gasta a tarde investigando TLS num problema de cabo.};
+\end{tikzpicture}
+```
+A escada de diagnóstico: seis perguntas em ordem fixa, cada uma isolando uma camada.
+:::
+
+## Degrau 1: o link físico
+
+Antes de qualquer coisa, existe sinal?
+
+```bash
+ip -br link show
+sudo ethtool enp0s3
+```
+
+```
+Speed: 1000Mb/s
+Duplex: Full
+Auto-negotiation: on
+Link detected: yes
+```
+
+`Link detected: no` encerra o diagnóstico: é cabo, porta ou transceptor. Dois achados menos óbvios aparecem aqui:
+
+- **`Duplex: Half` numa rede moderna** é falha de autonegociação. O sintoma é desempenho péssimo com a rede aparentemente funcionando — colisões e retransmissões que o TCP esconde às custas de latência.
+- **`Speed: 100Mb/s` numa placa e switch de 1 Gb/s** costuma ser cabo com um par rompido. Funciona, e entrega um décimo do esperado.
+
+Contadores de erro na própria interface confirmam:
+
+```bash
+ip -s link show enp0s3
+```
+
+`RX errors` ou `dropped` subindo em tempo real é problema físico ou de driver, não de configuração.
+
+## Degraus 2 e 3: endereço, rota e o vizinho
+
+Já cobertos no @sec-cap078 e no @sec-cap079, mas com uma sequência de checagem que vale automatizar:
+
+```bash
+ip -br addr show                       # tem endereço? é 169.254.x.x?
+ip route get 1.1.1.1                   # qual gateway, qual interface, qual origem
+ping -c3 $(ip route | awk '/^default/{print $3; exit}')
+ip neigh show                          # o gateway resolveu por ARP?
+```
+
+Um IP `169.254.x.x` significa que o DHCP falhou e o sistema se autoconfigurou. Uma entrada `INCOMPLETE` ou `FAILED` para o gateway em `ip neigh` significa que o ARP não está sendo respondido — camada 2, e nada acima disso vale investigar.
+
+## `ping`: o que ele mede e o que ele não prova
+
+O `ping` envia `ICMP Echo Request` e espera `Echo Reply`.
+
+```bash
+ping -c4 1.1.1.1
+```
+
+```
+64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=12.4 ms
+...
+4 packets transmitted, 4 received, 0% packet loss, time 3005ms
+rtt min/avg/max/mdev = 12.1/12.9/13.8/0.6 ms
+```
+
+Quatro leituras dessa saída:
+
+- **`time`** é o RTT, ida e volta. Numa LAN, abaixo de 1 ms; para um servidor no mesmo país, 5–30 ms; intercontinental, 100–250 ms. Latência muito acima disso para um destino próximo é sinal de fila em algum enlace.
+- **`mdev`** é o desvio — o *jitter*. Um `mdev` alto com média baixa arruína VoIP e videoconferência sem afetar download nenhum. É a métrica que explica "a internet está boa mas a chamada trava".
+- **`ttl`** na resposta permite inferir a distância. Sistemas partem de 64 (Linux/macOS), 128 (Windows) ou 255 (equipamento de rede); `ttl=57` sugere origem em 64 com 7 saltos. Não é confiável a ponto de virar conclusão, mas é uma pista barata.
+- **Perda.** Perda de 1–2% já degrada TCP de forma perceptível, porque cada perda dispara retransmissão e redução da janela.
+
+Opções que resolvem casos concretos:
+
+```bash
+ping -c100 -i0.2 destino      # 100 pacotes rápidos: mede perda com amostra decente
+ping -f destino               # flood; exige root, use só em rede própria
+ping -D destino               # carimbo de tempo em cada linha, para correlacionar com log
+ping -I enp0s3 destino        # força a interface de saída
+ping -M do -s 1472 destino    # testa MTU sem fragmentar
+```
+
+E a advertência essencial: **`ping` sem resposta não prova que o host está fora do ar.** Bloquear ICMP é prática comum em firewall de borda, e muitos serviços em nuvem não respondem a ping por padrão. O inverso também vale — ping respondendo não prova que a aplicação está de pé. É um teste de camada 3, e só.
+
+## `traceroute`: descobrindo o caminho
+
+O truque do `traceroute` é elegante e vale entender, porque explica todas as suas esquisitices.
+
+::: {#fig-traceroute-ttl}
+```{.tikz}
+%%| filename: traceroute-ttl
+%%| alt: Como o traceroute usa TTL crescente para fazer cada roteador do caminho se identificar com uma mensagem ICMP de tempo excedido
+\begin{tikzpicture}[
+    hp/.style={rounded corners=3pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=1.7cm,minimum height=0.75cm},
+    pk/.style={draw,semithick,align=center,font=\tiny\ttfamily,inner sep=2pt,minimum width=1.15cm,minimum height=0.42cm},
+    fl/.style={-{Latex[length=1.4mm]},semithick},
+    lb/.style={font=\tiny,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---------- topologia
+  \node[hp,draw=manualblue,fill=manualblue!12]   (h0) at (1.3,6.9) {você};
+  \node[hp,draw=manualgray,fill=manualgray!10]   (h1) at (4.3,6.9) {roteador 1};
+  \node[hp,draw=manualgray,fill=manualgray!10]   (h2) at (7.3,6.9) {roteador 2};
+  \node[hp,draw=manualgray,fill=manualgray!10]   (h3) at (10.3,6.9) {roteador 3};
+  \node[hp,draw=manualgreen,fill=manualgreen!14] (h4) at (13.3,6.9) {destino};
+  \foreach \sr/\ds in {h0/h1, h1/h2, h2/h3, h3/h4} { \draw[semithick,manualgray] (\sr) -- (\ds); }
+
+  % ---------- sonda TTL=1
+  \node[lb,anchor=east,manualgray] at (0.5,5.7) {sonda 1};
+  \node[pk,draw=manualyellow,fill=manualyellow!25] at (2.8,5.7) {TTL=1};
+  \node[pk,draw=manualred,fill=manualred!12,minimum width=1.55cm] at (4.3,5.15) {TTL$\to$0};
+  \draw[fl,manualgray] (2.0,5.7) -- (3.55,5.7);
+  \draw[fl,manualred] (4.3,4.85) -- (1.3,4.85)
+        node[midway,above,lb,manualred]{ICMP \texttt{time exceeded} --- e o roteador 1 se revela};
+
+  % ---------- sonda TTL=2
+  \node[lb,anchor=east,manualgray] at (0.5,4.05) {sonda 2};
+  \node[pk,draw=manualyellow,fill=manualyellow!25] at (2.8,4.05) {TTL=2};
+  \node[pk,draw=manualyellow,fill=manualyellow!25] at (5.8,4.05) {TTL=1};
+  \node[pk,draw=manualred,fill=manualred!12,minimum width=1.55cm] at (7.3,3.5) {TTL$\to$0};
+  \draw[fl,manualgray] (2.0,4.05) -- (3.55,4.05);
+  \draw[fl,manualgray] (5.05,4.05) -- (6.55,4.05);
+  \draw[fl,manualred] (7.3,3.2) -- (1.3,3.2)
+        node[midway,above,lb,manualred]{o roteador 2 se revela};
+
+  % ---------- sonda TTL=4
+  \node[lb,anchor=east,manualgray] at (0.5,2.4) {sonda 4};
+  \node[pk,draw=manualyellow,fill=manualyellow!25] at (2.8,2.4) {TTL=4};
+  \node[pk,draw=manualgreen,fill=manualgreen!14,minimum width=1.9cm] at (13.3,2.4) {chega inteiro};
+  \draw[fl,manualgray] (2.0,2.4) -- (12.3,2.4);
+  \draw[fl,manualgreen] (13.3,2.05) -- (1.3,2.05)
+        node[midway,above,lb,manualgreen]{porta inalcançável ou \texttt{echo reply}: fim do rastreio};
+
+  \node[nt,text width=13.2cm,anchor=north] at (6.8,1.5) {Daí vêm as esquisitices. \textbf{Um \texttt{*} não significa perda:} significa que aquele roteador foi configurado para não emitir \texttt{time exceeded}, e o salto seguinte costuma responder normalmente. \textbf{Latência que cai de um salto para o outro} também é normal: o tempo mostrado é o de \emph{gerar a mensagem de erro}, tarefa de baixa prioridade num roteador ocupado, e não o de encaminhar tráfego real. Só o \textbf{último} salto mede o que interessa. E o caminho de volta pode ser inteiramente diferente do de ida --- o \texttt{traceroute} só enxerga a ida.};
+\end{tikzpicture}
+```
+O `traceroute` incrementa o TTL a cada sonda para forçar cada roteador do caminho a se identificar.
+:::
+
+Na prática:
+
+```bash
+traceroute 1.1.1.1              # UDP em portas altas, padrão no Linux
+traceroute -I 1.1.1.1           # ICMP, como o tracert do Windows
+sudo traceroute -T -p 443 host  # TCP na porta 443: atravessa firewall que bloqueia UDP
+traceroute -n 1.1.1.1           # sem resolver nomes: muito mais rápido
+```
+
+O modo TCP é o que salva o diagnóstico em rede corporativa: se o UDP genérico é bloqueado e o rastreio morre no terceiro salto, `-T -p 443` costuma chegar ao fim porque segue exatamente o caminho que o tráfego real seguiria.
+
+## `mtr`: traceroute contínuo, e a ferramenta que eu usaria primeiro
+
+O `mtr` combina `ping` e `traceroute`: rastreia o caminho e depois fica medindo perda e latência de cada salto continuamente.
+
+```bash
+mtr -rwc 50 1.1.1.1        # -r relatório, -w nomes largos, -c 50 ciclos
+```
+
+```
+HOST                          Loss%   Snt   Last   Avg  Best  Wrst StDev
+1. 192.168.1.1                 0.0%    50    1.2   1.4   1.0   3.1   0.3
+2. 100.64.0.1                  0.0%    50   11.8  12.5  11.2  22.4   1.8
+3. core-rj.exemplo.net        18.0%    50   13.1  13.9  12.4  28.7   2.6
+4. 1.1.1.1                     0.0%    50   12.9  13.2  12.6  15.1   0.4
+```
+
+Ler essa tabela é a habilidade prática do capítulo. **Perda num salto intermediário que desaparece nos saltos seguintes não é perda real.** É o roteador do salto 3 limitando a taxa com que gera mensagens ICMP de erro — proteção normal, e não sintoma. O que importa é a **última linha**: se o destino mostra 0%, não há perda no caminho, ponto final.
+
+Perda verdadeira aparece num salto **e em todos os seguintes**, incluindo o destino. Esse é o padrão a procurar.
+
+## `ss`: o que está escutando e o que está conectado
+
+O `ss` substituiu o `netstat` e é ordens de grandeza mais rápido, porque lê o estado por netlink em vez de esquadrinhar `/proc`.
+
+```bash
+ss -tulpn
+```
+
+As letras: `-t` TCP, `-u` UDP, `-l` só o que escuta, `-p` o processo dono (precisa de root para ver processos de outros usuários), `-n` numérico.
+
+```
+Netid State   Local Address:Port   Peer Address:Port  Process
+tcp   LISTEN  127.0.0.1:5432       0.0.0.0:*          users:(("postgres",pid=812,fd=5))
+tcp   LISTEN  0.0.0.0:22           0.0.0.0:*          users:(("sshd",pid=744,fd=3))
+tcp   LISTEN  [::]:80              [::]:*             users:(("nginx",pid=901,fd=6))
+```
+
+A coluna `Local Address` é onde mora o diagnóstico mais frequente deste degrau:
+
+- **`127.0.0.1:5432`** — escuta só no loopback. Nenhuma máquina remota vai conectar, por mais que o firewall esteja liberado. É a causa de metade dos "o serviço está rodando mas não conecto".
+- **`0.0.0.0:22`** — escuta em todas as interfaces IPv4.
+- **`[::]:80`** — escuta em todas as IPv6, e no Linux isso normalmente inclui IPv4 mapeado.
+
+Filtros compõem e economizam muito `grep`:
+
+```bash
+ss -tn state established                    # só conexões estabelecidas
+ss -tn state time-wait | wc -l              # quantas em TIME_WAIT
+ss -tn '( dport = :443 or sport = :443 )'
+ss -tp dst 10.0.0.0/8                       # conexões para a rede interna
+ss -tin dst 1.1.1.1                         # -i mostra RTT, cwnd, retransmissões
+ss -s                                       # resumo por estado
+```
+
+O `-i` merece destaque: ele expõe as métricas internas do TCP para cada conexão — `rtt`, `cwnd`, `retrans`. Ver `retrans` subindo numa conexão específica é a prova objetiva de perda naquele caminho.
+
+Alguns estados e o que significam quando aparecem em excesso:
+
+| Estado | Significado | Excesso indica |
+|---|---|---|
+| `LISTEN` | aguardando conexões | — |
+| `ESTAB` | conexão ativa | — |
+| `SYN-SENT` | enviou SYN, sem resposta | firewall descartando, ou destino fora do ar |
+| `SYN-RECV` | recebeu SYN, aguarda confirmação | conexões pela metade; muitas, com origens variadas, é padrão de SYN flood |
+| `TIME-WAIT` | fechada, aguardando pacotes atrasados | normal (60 s); milhares indicam aplicação abrindo conexão nova a cada requisição |
+| `CLOSE-WAIT` | o par fechou, a aplicação local não | **bug na aplicação**: ela não chama `close()` |
+
+: Estados TCP e o que o excesso de cada um indica {#tbl-estados-tcp}
+
+`CLOSE-WAIT` acumulando é o achado mais valioso dessa tabela: não é problema de rede, é código que vaza descritor de arquivo (@sec-cap073). Nenhum ajuste de kernel conserta.
+
+## `dig`: interrogando o DNS
+
+`dig` é o padrão. `nslookup` é legado, e `host` é a versão resumida.
+
+```bash
+dig exemplo.com
+```
+
+```
+;; QUESTION SECTION:
+;exemplo.com.            IN  A
+
+;; ANSWER SECTION:
+exemplo.com.     280 IN  A   93.184.215.14
+
+;; Query time: 24 msec
+;; SERVER: 127.0.0.53#53(127.0.0.53)
+```
+
+Quatro campos são o diagnóstico inteiro:
+
+- **`status:`** na linha de cabeçalho. `NOERROR` com seção de resposta vazia significa "o domínio existe, esse tipo de registro não". `NXDOMAIN` significa "o domínio não existe". `SERVFAIL` aponta problema no servidor consultado, muitas vezes falha de validação DNSSEC.
+- **O TTL** (`280` acima) é quanto tempo a resposta pode ser cacheada. Ver o número diminuir a cada consulta prova que veio do cache; ver o valor cheio prova que foi consultado na origem.
+- **`Query time`** — acima de 100 ms para um resolvedor local é sinal de resolvedor lento, que se manifesta como "tudo demora um pouco para começar".
+- **`SERVER`** — qual resolvedor respondeu. `127.0.0.53` é o stub do `systemd-resolved`.
+
+O arsenal prático:
+
+```bash
+dig +short exemplo.com                 # só a resposta, ideal para script
+dig +trace exemplo.com                 # a delegação desde a raiz, ignorando cache
+dig @1.1.1.1 exemplo.com               # pergunta a um servidor específico
+dig -x 93.184.215.14                   # reverso
+dig exemplo.com MX +short              # servidores de e-mail
+dig exemplo.com NS +short
+dig exemplo.com TXT +short             # SPF, DKIM, verificação de domínio
+dig +norecurse @ns1.exemplo.com exemplo.com
+```
+
+Dois idiomas que valem decorar. **Comparar o resolvedor local com um público** isola o problema em um comando:
+
+```bash
+diff <(dig +short exemplo.com) <(dig @1.1.1.1 +short exemplo.com)
+```
+
+Saídas diferentes: o resolvedor local tem cache velho ou está sendo interceptado. Iguais: o DNS não é o problema.
+
+E **`dig +trace`** mostra a cadeia inteira, da raiz ao servidor autoritativo — é o que revela delegação quebrada, que nenhuma outra consulta mostra porque o cache mascara.
+
+Com `systemd-resolved`, o `resolvectl` é o complemento necessário, porque o `dig` só enxerga o stub:
+
+```bash
+resolvectl query exemplo.com
+resolvectl status                      # servidores por interface
+resolvectl flush-caches
+```
+
+## Degrau 6: a porta responde?
+
+Chegando aqui, rede e nomes estão descartados. O que resta é a aplicação.
+
+```bash
+nc -zv exemplo.com 443                        # a porta aceita conexão?
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' https://exemplo.com/
+curl -sv https://exemplo.com/ 2>&1 | head -30
+```
+
+Ou, sem instalar nada, com o redirecionamento especial do Bash (@sec-cap073):
+
+```bash
+timeout 3 bash -c '</dev/tcp/exemplo.com/443' && echo aberta || echo fechada
+```
+
+A distinção que fecha o diagnóstico: **conexão recusada** (`Connection refused`) significa que o pacote chegou e ninguém escuta naquela porta — o destino está vivo. **Tempo esgotado** (`timed out`) significa que nada respondeu, e aí é firewall descartando em silêncio ou rota quebrada. São causas opostas e o erro diz qual.
+
+## O caso especial: MTU e o *black hole*
+
+Existe uma falha que atravessa a escada inteira sem ser pega por nenhum degrau: o `ping` funciona, o DNS funciona, a conexão TCP abre — e a transferência trava assim que os pacotes ficam grandes. Sintoma típico: SSH conecta e congela ao listar um diretório grande; site abre a página inicial e para nas imagens.
+
+A causa é MTU. Algum enlace do caminho aceita menos que 1500 bytes (VPN, PPPoE, túnel), e as mensagens ICMP que deveriam avisar disso estão bloqueadas por algum firewall zeloso. O emissor continua mandando pacotes grandes com o bit "não fragmente" ligado, e eles somem.
+
+O teste é binário:
+
+```bash
+ping -c3 -M do -s 1472 destino     # 1472 + 28 = 1500
+ping -c3 -M do -s 1400 destino     # 1428 total
+```
+
+Pacote pequeno passa, grande não: é MTU. O ajuste vai na interface ou, melhor, no perfil do gerenciador:
+
+```bash
+sudo nmcli connection modify <perfil> 802-3-ethernet.mtu 1400
+```
+
+Para descobrir o valor exato, busca binária entre 1200 e 1472 com `-M do`.
+
+## 🐉 No Kali
+
+- **Diagnóstico legítimo e varredura são separados pela autorização, não pela ferramenta.** `ping`, `traceroute`, `dig` e `nc -z` contra a própria infraestrutura são operação normal. Os mesmos comandos contra faixas de terceiros, em volume, são reconhecimento — e reconhecimento sem autorização escrita é a etapa inicial de um acesso não autorizado, com o enquadramento da Lei 12.737/2012. O que muda é o escopo combinado, não o binário usado.
+- **`ping` bloqueado não é host fora do ar, e essa distinção define levantamento.** Uma varredura ICMP numa faixa moderna encontra uma fração dos hosts vivos, porque o padrão em servidor Windows e em nuvem é não responder. É por isso que `nmap -Pn` existe: ele pula a descoberta por ICMP e vai direto ao TCP. Concluir "só há 4 máquinas nesta rede" a partir de um `ping` de faixa é o erro clássico de quem está começando.
+- **`dig` é ferramenta de reconhecimento passivo, e é a mais educada delas.** `dig exemplo.com NS`, `MX` e `TXT` consultam dados publicados de propósito, sem tocar na infraestrutura do alvo. Transferência de zona (`dig axfr @ns1.exemplo.com exemplo.com`) é outra coisa: entrega o domínio inteiro e só funciona em servidor mal configurado. Testá-la contra a própria zona é auditoria; contra zona alheia sem contrato, é acesso indevido.
+- **`ss -tulpn` numa máquina comprometida é o primeiro comando de triagem** — e o menos confiável. Ele revela conexão de saída para endereço estranho e porta escutando sem serviço correspondente. Mas um *rootkit* de espaço de usuário substitui exatamente esses binários; captura na rede (@sec-cap084) ou num equipamento de fora é o que confirma o que o host relata.
+- **Latência e perda no `mtr` mudam o comportamento das suas próprias ferramentas.** Numa varredura sobre enlace com 5% de perda, o `nmap` reporta portas fechadas que estão abertas — o SYN se perdeu e o silêncio foi lido como filtro. Rodar um `mtr -rwc 50` contra o alvo antes de qualquer varredura e ajustar `--max-retries` de acordo é a diferença entre um relatório correto e um relatório inventado.
+
+> **Nota sobre a família RHEL.** As ferramentas são as mesmas, com dois detalhes de empacotamento: `dig` vem em `bind-utils` (e não em `dnsutils`), e `mtr` costuma não estar instalado. A diferença de comportamento relevante é o firewall: o `firewalld` vem ativo de fábrica e sua zona padrão já bloqueia praticamente tudo que entra, então um `nc -zv` de fora para um serviço recém-instalado dá timeout mesmo com o serviço no ar — no Kali, sem regra nenhuma carregada, o mesmo teste conecta. Vale também lembrar do `rp_filter` estrito: em máquina com duas interfaces, ele descarta a resposta que sairia por caminho diferente do de entrada, produzindo perda que não aparece em log nenhum.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com acesso à internet.
+
+1. **Percorra a escada inteira numa máquina saudável e guarde a linha de base.**
+
+   ```bash
+   IF=$(ip route | awk '/^default/{print $5; exit}')
+   GW=$(ip route | awk '/^default/{print $3; exit}')
+   ip -br link show "$IF"
+   ip -br addr show "$IF"
+   ping -c3 "$GW"
+   ping -c3 1.1.1.1
+   dig +short exemplo.com
+   nc -zv exemplo.com 443
+   ```
+
+   Esperado: os seis degraus passam. Anote o RTT médio para o gateway e para `1.1.1.1` — são a referência para comparar depois.
+
+2. **Meça latência e jitter com amostra decente.**
+
+   ```bash
+   ping -c50 -i0.2 1.1.1.1 | tail -3
+   ```
+
+   Esperado: `mdev` bem menor que a média num link estável. Repita rodando `ping -c50 -i0.2 1.1.1.1` com um download pesado em paralelo e compare — o `mdev` sobe visivelmente. É o efeito de *bufferbloat*.
+
+3. **Compare os três modos do `traceroute`.**
+
+   ```bash
+   traceroute -n 1.1.1.1
+   traceroute -n -I 1.1.1.1
+   sudo traceroute -n -T -p 443 1.1.1.1
+   ```
+
+   Esperado: caminhos parecidos, com quantidades diferentes de `*`. O modo TCP costuma ser o mais completo, porque acompanha o caminho do tráfego real.
+
+4. **Leia um relatório do `mtr` e distinga perda real de limitação de ICMP.**
+
+   ```bash
+   mtr -rwc 30 1.1.1.1
+   ```
+
+   Esperado: se algum salto intermediário mostra perda e a **última** linha mostra 0%, não há perda real. Perda que começa num salto e continua até o destino é a que importa.
+
+5. **Produza cada estado TCP da tabela e observe.**
+
+   ```bash
+   ss -s
+   ss -tn state established | head
+   ss -tn state time-wait | wc -l
+   for i in $(seq 1 20); do curl -s -o /dev/null https://exemplo.com/; done
+   ss -tn state time-wait | wc -l
+   timeout 3 nc -v 192.0.2.1 8080 &      # endereço reservado, não responde
+   sleep 1; ss -tn state syn-sent
+   wait
+   ```
+
+   Esperado: `TIME-WAIT` sobe depois das 20 requisições e volta a cair em ~60 s. O `nc` para o endereço morto aparece em `SYN-SENT` até desistir.
+
+6. **Descubra o que escuta só no loopback.**
+
+   ```bash
+   sudo ss -tulpn
+   python3 -m http.server 8080 --bind 127.0.0.1 &
+   sleep 1
+   sudo ss -tlpn | grep 8080
+   curl -s -o /dev/null -w 'loopback: %{http_code}\n' http://127.0.0.1:8080/
+   MEUIP=$(ip -4 -br addr show "$IF" | awk '{print $3}' | cut -d/ -f1)
+   curl -s -m3 -o /dev/null -w 'ip real: %{http_code}\n' "http://$MEUIP:8080/" || echo "ip real: recusado"
+   kill %1
+   ```
+
+   Esperado: pelo loopback responde `200`; pelo IP real, recusa. Nenhum firewall está envolvido — é o `--bind` do servidor. Repita sem o `--bind 127.0.0.1` e veja os dois funcionarem.
+
+7. **Diferencie recusa de descarte silencioso.**
+
+   ```bash
+   nc -zv 127.0.0.1 9999            # ninguém escuta: recusa imediata
+   nc -zv -w3 192.0.2.1 9999        # endereço documental: silêncio até o timeout
+   ```
+
+   Esperado: `Connection refused` no primeiro, na hora; timeout no segundo. Recusa significa que o pacote chegou; timeout significa firewall ou rota quebrada.
+
+8. **Interrogue o DNS a fundo.**
+
+   ```bash
+   dig exemplo.com | sed -n '1,12p'
+   dig +short exemplo.com A
+   dig +short exemplo.com AAAA
+   dig exemplo.com MX +short
+   dig exemplo.com TXT +short
+   dig +trace exemplo.com | tail -20
+   dig naoexiste-abcxyz.exemplo.com | grep -E 'status:'
+   ```
+
+   Esperado: `status: NOERROR` na consulta boa e `NXDOMAIN` na última. O `+trace` mostra a cadeia da raiz aos servidores autoritativos.
+
+9. **Veja o TTL do cache descontando.**
+
+   ```bash
+   dig +noall +answer exemplo.com
+   sleep 5
+   dig +noall +answer exemplo.com
+   dig +noall +answer @1.1.1.1 exemplo.com
+   ```
+
+   Esperado: o TTL da segunda consulta é ~5 unidades menor — prova de que veio do cache. A consulta direta a `1.1.1.1` traz outro valor.
+
+10. **Reproduza o problema de MTU e encontre o limite.**
+
+    ```bash
+    for s in 1472 1450 1400 1300; do
+        printf '%5s bytes: ' "$s"
+        ping -c1 -W2 -M do -s "$s" 1.1.1.1 >/dev/null 2>&1 && echo "passa" || echo "NAO passa"
+    done
+    ip link show "$IF" | grep -o 'mtu [0-9]*'
+    ```
+
+    Esperado: numa rede Ethernet comum, todos passam. Reduza a MTU da interface temporariamente com `sudo ip link set "$IF" mtu 1300` e repita: os tamanhos acima do novo limite param de passar. Restaure com `sudo ip link set "$IF" mtu 1500`.
+
+11. **Compare resolvedores para isolar o DNS num comando.**
+
+    ```bash
+    diff <(dig +short exemplo.com) <(dig @1.1.1.1 +short exemplo.com) \
+         && echo "resolvedor local concorda com o publico"
+    ```
+
+    Esperado: sem diferença. Quando houver, o problema é cache local ou interceptação — e você descobriu isso sem tocar em mais nada.
+
+12. **Monte um script que percorre a escada sozinho.**
+
+    ```bash
+    cat > ~/diagrede.sh <<'EOF'
+    #!/usr/bin/env bash
+    set -uo pipefail
+    IF=$(ip route | awk '/^default/{print $5; exit}')
+    GW=$(ip route | awk '/^default/{print $3; exit}')
+    ok() { printf '  \033[32mOK\033[0m   %s\n' "$1"; }
+    fail() { printf '  \033[31mFALHA\033[0m %s\n' "$1"; exit 1; }
+    [[ -n "$IF" ]] || fail "2. sem rota padrao"
+    grep -q up "/sys/class/net/$IF/operstate" && ok "1. link em $IF" || fail "1. link em $IF"
+    ip -4 addr show "$IF" | grep -q 'inet ' && ok "2. endereco e rota" || fail "2. sem endereco"
+    ping -c1 -W2 "$GW"  >/dev/null && ok "3. gateway $GW"  || fail "3. gateway $GW"
+    ping -c1 -W2 1.1.1.1 >/dev/null && ok "4. internet por IP" || fail "4. internet por IP"
+    dig +short +time=2 exemplo.com >/dev/null && ok "5. DNS" || fail "5. DNS"
+    nc -z -w3 exemplo.com 443 && ok "6. porta 443" || fail "6. porta 443"
+    EOF
+    chmod +x ~/diagrede.sh && ~/diagrede.sh
+    ```
+
+    Esperado: seis linhas verdes. Quebre o DNS como no @sec-cap078 e rode de novo: o script para exatamente no degrau 5, que é o que um diagnóstico deve fazer.
+
+## Resumo
+
+- **O método vale mais que as ferramentas.** Seis degraus em ordem fixa — link, endereço e rota, gateway, internet por IP, resolução de nomes, porta — e cada degrau que passa elimina definitivamente tudo abaixo dele.
+- **`ping` testa camada 3 e nada além.** Sem resposta não prova host fora do ar (ICMP é bloqueado com frequência), e com resposta não prova serviço no ar. O `mdev` é a métrica que explica chamada de voz ruim com download bom.
+- **`traceroute` funciona incrementando o TTL**, e é por isso que `*` significa "roteador calado", não perda, e que a latência de saltos intermediários mede geração de erro, não encaminhamento. Só o último salto mede o que interessa.
+- **No `mtr`, perda em salto intermediário que some depois é limitação de ICMP.** Perda real aparece num salto e persiste até o destino.
+- **`ss -tulpn` e a coluna `Local Address` resolvem metade dos casos**: `127.0.0.1:porta` é serviço que nunca vai aceitar conexão remota, por mais liberado que esteja o firewall.
+- **`CLOSE-WAIT` acumulando é bug de aplicação, não de rede** — descritor não fechado. Ajuste de kernel nenhum resolve.
+- **No `dig`, quatro campos são o diagnóstico**: `status`, TTL, `Query time` e `SERVER`. Comparar `dig +short` local com `dig @1.1.1.1 +short` isola o DNS num único comando.
+- **Recusa e timeout são causas opostas.** `Connection refused` prova que o pacote chegou e ninguém escuta; timeout indica firewall descartando em silêncio ou rota quebrada.
+- **MTU é a falha que atravessa a escada sem ser pega.** Conexão abre e trava com dados grandes; o teste é `ping -M do -s` com tamanhos decrescentes.

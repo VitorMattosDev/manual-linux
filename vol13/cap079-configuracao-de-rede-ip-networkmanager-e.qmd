@@ -1,3 +1,468 @@
 # Configuração de rede: ip, NetworkManager e arquivos {#sec-cap079}
 
-*(em elaboracao)*
+O servidor de laboratório precisava de um IP fixo. Foram dois comandos, e funcionou na hora:
+
+```bash
+sudo ip addr add 10.0.0.50/24 dev enp0s3
+sudo ip route add default via 10.0.0.1
+```
+
+Ping respondendo, SSH entrando, tudo certo. Na semana seguinte houve queda de energia, a máquina reiniciou e o IP tinha voltado a ser o do DHCP. Alguém repetiu os dois comandos, anotou num arquivo de texto "rodar isso depois de todo boot" e seguiu a vida.
+
+Esse arquivo de texto é o sintoma de um mal-entendido que custa caro: no Linux, **configurar a rede e persistir a configuração são duas operações separadas**, feitas por camadas diferentes do sistema. O comando `ip` fala com o kernel, e o efeito dura enquanto o kernel não for reconfigurado por outro. Persistir é trabalho de um gerenciador — e a máquina tem um, ativo, que na primeira oportunidade desfaz o que você mandou na mão. Não é preciso esperar o reboot para ver isso acontecer.
+
+Este capítulo é sobre quem manda na interface, e sobre como pedir a coisa certa para a camada certa.
+
+## O `iproute2` e o fim do `ifconfig`
+
+A ferramenta é uma só: `ip`, do pacote `iproute2`. Ela substituiu `ifconfig`, `route`, `arp` e `netstat` — todos do `net-tools`, um conjunto que não recebe funcionalidade nova desde 2001 e que **não enxerga** boa parte do que o kernel moderno faz: múltiplos endereços por interface, tabelas de roteamento adicionais, políticas de roteamento, namespaces.
+
+O `ifconfig` mostrando um único IP numa interface que tem três não é bug: é a ferramenta relatando fielmente um modelo de mundo que o kernel abandonou. Se um tutorial manda instalar `net-tools`, o tutorial é velho.
+
+| Antigo (`net-tools`) | Atual (`iproute2`) |
+|---|---|
+| `ifconfig` | `ip addr` |
+| `ifconfig eth0 up` | `ip link set eth0 up` |
+| `ifconfig eth0 10.0.0.5 netmask 255.255.255.0` | `ip addr add 10.0.0.5/24 dev eth0` |
+| `route -n` | `ip route` |
+| `route add default gw 10.0.0.1` | `ip route add default via 10.0.0.1` |
+| `arp -a` | `ip neigh` |
+| `netstat -tulpn` | `ss -tulpn` |
+| `netstat -i` | `ip -s link` |
+
+: Tradução de `net-tools` para `iproute2` {#tbl-nettools-iproute2}
+
+A sintaxe do `ip` é regular: `ip [opções] OBJETO COMANDO`. Os objetos que importam são `link` (camada 2), `addr` (camada 3), `route`, `neigh` e `netns`. Todos aceitam `add`, `del`, `show` e `set`. Abreviações funcionam (`ip a`, `ip r`, `ip l`), e `-br` compacta a saída em uma linha por item — vale o hábito.
+
+```bash
+ip -br -c addr show          # -c colore por estado
+ip -4 route show table all   # inclui as tabelas local e main
+ip -s link show enp0s3       # contadores de pacote e erro
+```
+
+## Configuração efêmera: falando direto com o kernel
+
+Esses comandos alteram o estado corrente. Nada é gravado em disco.
+
+```bash
+sudo ip link set enp0s3 up                       # habilita a interface
+sudo ip addr add 10.0.0.50/24 dev enp0s3         # adiciona (não substitui!)
+sudo ip addr del 10.0.0.50/24 dev enp0s3
+sudo ip addr flush dev enp0s3                    # remove todos
+sudo ip route add default via 10.0.0.1 dev enp0s3
+sudo ip route add 172.20.0.0/16 via 10.0.0.254
+sudo ip link set enp0s3 mtu 1400
+```
+
+Duas armadilhas que aparecem sempre:
+
+**`ip addr add` acrescenta, não troca.** Rodar duas vezes com endereços diferentes deixa a interface com dois endereços, e o que sai como origem passa a depender da rota, não do que você digitou por último. Para substituir de fato, `flush` antes ou use `ip addr replace`.
+
+**A máscara não é opcional.** `ip addr add 10.0.0.50 dev enp0s3` sem `/24` assume `/32`, o que cria um endereço sem sub-rede associada: a máquina não fala nem com o vizinho, porque acredita que ninguém está no mesmo segmento (@sec-cap078). É um erro frequente e o sintoma é desconcertante.
+
+Configuração efêmera tem lugar legítimo: teste, diagnóstico, sistema de recuperação, contêiner mínimo sem gerenciador. Para uma máquina que vai reiniciar, é o caminho errado.
+
+## Quem realmente manda na interface
+
+Numa instalação típica, três camadas disputam a interface, e a de cima sempre vence — ela reconfigura por baixo do que você fez na mão.
+
+::: {#fig-camadas-config-rede}
+```{.tikz}
+%%| filename: camadas-config-rede
+%%| alt: Tres camadas de configuracao de rede empilhadas mostrando que o gerenciador sobrescreve o comando ip manual sobre o kernel
+\begin{tikzpicture}[
+    bx/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,text width=4.0cm,minimum height=1.3cm},
+    ann/.style={font=\tiny,manualgray,align=left,anchor=west,text width=6.9cm},
+    fl/.style={-{Latex[length=1.8mm]},thick},
+    nt/.style={font=\scriptsize,align=left}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!10] (ger) at (2.7,6.6)
+    {\textbf{gerenciador de rede}\\\tiny NetworkManager, systemd-networkd, ifupdown};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (cmd) at (2.7,4.5)
+    {\textbf{comando \texttt{ip}}\\\tiny altera o estado agora, não grava nada};
+  \node[bx,draw=manualgray,fill=manualgray!8] (ker) at (2.7,2.4)
+    {\textbf{kernel}\\\tiny o estado real: \texttt{/proc/net}, \texttt{/sys/class/net}};
+
+  \draw[fl,manualblue]   (ger) -- node[font=\tiny,manualblue,left=2pt,align=right,pos=0.5]{aplica no boot\\e a cada evento} (cmd);
+  \draw[fl,manualyellow] (cmd) -- node[font=\tiny,manualgray,left=2pt,pos=0.5]{netlink} (ker);
+
+  \node[ann] at (5.0,6.6) {\textbf{persistente.} Lê arquivos de perfil em disco e os reaplica: no boot, ao conectar um cabo, ao renovar o DHCP, ao acordar de suspensão.};
+  \node[ann] at (5.0,4.5) {\textbf{efêmero.} Escreve direto no kernel. Some no reboot --- e some antes disso, na próxima vez que o gerenciador agir sobre a mesma interface.};
+  \node[ann] at (5.0,2.4) {\textbf{o estado real.} É o que \texttt{ip addr} lê. Não guarda intenção nenhuma: não sabe dizer se um endereço veio de perfil, de DHCP ou da sua mão.};
+
+  \node[bx,draw=manualred,fill=manualred!8,text width=12.2cm,minimum height=0.85cm] at (6.6,0.85)
+    {\textbf{\textcolor{manualred}{A regra que evita o problema:}} configurou com \texttt{ip} numa máquina com gerenciador ativo? A configuração tem prazo de validade. Ou você marca a interface como não gerenciada, ou faz a mudança pelo gerenciador.};
+\end{tikzpicture}
+```
+As três camadas que configuram uma interface, e por que a de baixo não guarda a intenção.
+:::
+
+Descobrir quem está no comando é o primeiro passo de qualquer intervenção:
+
+```bash
+systemctl is-active NetworkManager systemd-networkd networking
+nmcli device status
+```
+
+```
+DEVICE   TYPE      STATE                   CONNECTION
+enp0s3   ethernet  connected               Wired connection 1
+lo       loopback  connected (externally)  lo
+```
+
+A coluna `STATE` é a resposta. `connected` significa que o NetworkManager assumiu a interface e vai reaplicar o perfil dela quando quiser. `unmanaged` significa que ele foi instruído a não tocar — e aí, e só aí, configuração manual sobrevive.
+
+## NetworkManager: o padrão do Kali
+
+O Kali usa NetworkManager, gerenciador padrão de praticamente toda distribuição de desktop. Ele guarda **perfis de conexão** — não configurações de interface. A distinção importa: um perfil descreve "como conectar a esta rede", e vários perfis podem existir para a mesma placa, ativados conforme o caso.
+
+Os perfis vivem em `/etc/NetworkManager/system-connections/`, um arquivo `.nmconnection` por perfil, em formato INI, com permissão `600` porque podem conter senha de Wi-Fi.
+
+Três interfaces de uso: **`nmcli`** (linha de comando, roteirizável, o que interessa aqui), **`nmtui`** (menus em modo texto, útil por console quando você não quer errar sintaxe) e o applet gráfico do Xfce.
+
+### Consultar
+
+```bash
+nmcli general status
+nmcli device status
+nmcli connection show                          # perfis existentes
+nmcli connection show "Wired connection 1"     # todos os campos do perfil
+nmcli -f IP4 device show enp0s3
+nmcli device wifi list                         # varre redes sem fio
+```
+
+### IP fixo do jeito que persiste
+
+O caso da abertura, resolvido corretamente:
+
+```bash
+sudo nmcli connection add type ethernet con-name lab-fixo ifname enp0s3 \
+     ipv4.method manual \
+     ipv4.addresses 10.0.0.50/24 \
+     ipv4.gateway 10.0.0.1 \
+     ipv4.dns "1.1.1.1 9.9.9.9" \
+     ipv4.dns-search lab.local \
+     ipv6.method disabled \
+     connection.autoconnect yes
+
+sudo nmcli connection up lab-fixo
+```
+
+Cinco detalhes que a documentação não destaca o suficiente:
+
+- **`ipv4.method manual` é obrigatório.** Definir `ipv4.addresses` com o método ainda em `auto` faz o endereço ser adicionado *além* do que o DHCP entregar, não no lugar dele.
+- **`ipv4.addresses` aceita lista** separada por vírgula, para múltiplos IPs no mesmo perfil.
+- **`ipv4.dns` substitui** o que o DHCP forneceria; para acrescentar em vez de substituir, existe `ipv4.ignore-auto-dns no`.
+- **`connection.autoconnect yes` é o que faz o perfil subir no boot.** Sem isso o perfil existe e não é usado — sintoma de "configurei e não pegou".
+- **Alterar perfil existente** é `nmcli connection modify <nome> <chave> <valor>`, e a mudança só vale depois de `nmcli connection up <nome>`. Editar o `.nmconnection` à mão exige `nmcli connection reload`.
+
+Para voltar ao DHCP:
+
+```bash
+sudo nmcli connection modify lab-fixo ipv4.method auto \
+     ipv4.gateway "" ipv4.addresses "" ipv4.dns ""
+sudo nmcli connection up lab-fixo
+```
+
+As aspas vazias apagam a propriedade. Deixar o gateway antigo num perfil que voltou para `auto` gera conflito de rota padrão.
+
+### Wi-Fi por linha de comando
+
+```bash
+nmcli radio wifi on
+nmcli device wifi list --rescan yes
+sudo nmcli device wifi connect "NomeDaRede" password "senha"
+nmcli connection show --active
+```
+
+A senha vai para o histórico do shell (@sec-cap014) e para o arquivo de perfil. Em máquina compartilhada, `nmcli --ask device wifi connect "NomeDaRede"` pergunta de forma interativa e não deixa rastro no histórico.
+
+## As alternativas, e quando você vai encontrá-las
+
+### `systemd-networkd`
+
+Leve, declarativo, sem daemon de descoberta. Domina em servidor, contêiner e nuvem. A configuração são arquivos `.network` em `/etc/systemd/network/`:
+
+```ini
+# /etc/systemd/network/10-lab.network
+[Match]
+Name=enp0s3
+
+[Network]
+Address=10.0.0.50/24
+Gateway=10.0.0.1
+DNS=1.1.1.1
+```
+
+```bash
+sudo systemctl enable --now systemd-networkd
+networkctl status enp0s3
+```
+
+Não tenta ser esperto: não faz roaming de Wi-Fi nem reage a cabo plugado com heurística. Em servidor isso é qualidade, não limitação.
+
+### `ifupdown` e o `/etc/network/interfaces`
+
+O esquema histórico do Debian. Ainda presente, ainda funcional, e a fonte número um de conflito com o NetworkManager:
+
+```
+auto enp0s3
+iface enp0s3 inet static
+    address 10.0.0.50/24
+    gateway 10.0.0.1
+```
+
+```bash
+sudo ifup enp0s3
+sudo ifdown enp0s3
+```
+
+**O conflito.** Por padrão o NetworkManager marca como `unmanaged` toda interface que apareça em `/etc/network/interfaces` — mas isso depende do plugin `ifupdown` estar habilitado com `managed=false`:
+
+```bash
+cat /etc/NetworkManager/NetworkManager.conf
+```
+
+```ini
+[ifupdown]
+managed=false
+```
+
+Se as duas camadas ficarem ativas para a mesma interface, o resultado é uma máquina que troca de configuração sozinha em intervalos irregulares — o pior tipo de defeito, porque parece intermitência de hardware. **Escolha um gerenciador por interface e desative o outro.** Não há vantagem em usar os dois.
+
+## DNS: o arquivo que se reescreve sozinho
+
+Editar `/etc/resolv.conf` à mão funciona até alguma coisa regravá-lo. Quem regrava depende do sistema, e descobrir isso é o primeiro passo:
+
+```bash
+ls -l /etc/resolv.conf
+head -1 /etc/resolv.conf
+```
+
+Três cenários:
+
+**1. Arquivo comum, gerado pelo NetworkManager.** O cabeçalho diz `# Generated by NetworkManager`. É reescrito a cada mudança de conexão, e a configuração correta é `ipv4.dns` no perfil.
+
+**2. Link simbólico para `/run/systemd/resolve/stub-resolv.conf`.** O conteúdo é `nameserver 127.0.0.53` — o *stub* do `systemd-resolved`, um resolvedor local com cache. Os servidores reais não estão nesse arquivo:
+
+```bash
+resolvectl status
+resolvectl query exemplo.com
+resolvectl flush-caches
+resolvectl statistics
+```
+
+O `systemd-resolved` faz DNS por interface: uma VPN pode ter servidores próprios só para o domínio dela. Isso é um recurso, e é também a explicação para "um nome resolve e outro não" em máquina com VPN ativa. `resolvectl status` mostra a divisão por interface.
+
+**3. Arquivo estático de verdade**, quando nada gerencia. Comum em contêiner e em servidor minimalista.
+
+Para tornar um `resolv.conf` imutável — solução de força bruta, útil em laboratório — existe `sudo chattr +i /etc/resolv.conf` (@sec-cap024). Funciona, e quebra o gerenciador de forma silenciosa. Prefira configurar na camada certa.
+
+## Interfaces virtuais: o que existe além da placa
+
+O kernel cria interfaces por software, e é isso que sustenta VMs, contêineres e laboratórios de rede inteiros dentro de uma máquina só.
+
+::: {#fig-interfaces-virtuais}
+```{.tikz}
+%%| filename: interfaces-virtuais
+%%| alt: Quatro tipos de interface virtual no Linux: bridge VLAN bond e par veth ligando dois namespaces de rede
+\begin{tikzpicture}[
+    ph/.style={rounded corners=2pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=1.45cm,minimum height=0.58cm,draw=manualgray,fill=manualgray!10},
+    vi/.style={rounded corners=2pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=1.45cm,minimum height=0.58cm,draw=manualblue,fill=manualblue!12},
+    gv/.style={rounded corners=2pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=1.45cm,minimum height=0.58cm,draw=manualgreen,fill=manualgreen!14},
+    ln/.style={semithick,manualgray},
+    ttl/.style={font=\scriptsize\bfseries,align=center,manualblue},
+    cd/.style={font=\tiny\ttfamily,manualgray,align=center},
+    ds/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---------- bridge
+  \node[ttl] at (2.4,7.5) {bridge};
+  \node[vi] (br) at (2.4,6.75) {br0};
+  \node[ph] (b1) at (0.85,5.65) {enp0s3};
+  \node[gv] (b2) at (2.4,5.65) {vnet0};
+  \node[gv] (b3) at (3.95,5.65) {vnet1};
+  \draw[ln] (br) -- (b1); \draw[ln] (br) -- (b2); \draw[ln] (br) -- (b3);
+  \node[cd,text width=4.6cm] at (2.4,5.0) {ip link add br0 type bridge};
+  \node[ds,text width=4.4cm] at (2.4,4.45) {switch em software: junta a placa física e as VMs no mesmo segmento};
+
+  % ---------- VLAN
+  \node[ttl] at (7.6,7.5) {VLAN};
+  \node[vi] (v1) at (6.75,6.75) {enp0s3.10};
+  \node[vi] (v2) at (8.45,6.75) {enp0s3.20};
+  \node[ph] (vp) at (7.6,5.65) {enp0s3};
+  \draw[ln] (v1) -- (vp); \draw[ln] (v2) -- (vp);
+  \node[cd,text width=4.8cm] at (7.6,4.95) {ip link add link enp0s3\\name enp0s3.10 type vlan id 10};
+  \node[ds,text width=4.4cm] at (7.6,4.2) {uma placa, várias redes lógicas marcadas com 802.1Q};
+
+  % ---------- bond
+  \node[ttl] at (12.3,7.5) {bond};
+  \node[vi] (bo) at (12.3,6.75) {bond0};
+  \node[ph] (o1) at (11.45,5.65) {enp1s0};
+  \node[ph] (o2) at (13.15,5.65) {enp2s0};
+  \draw[ln] (bo) -- (o1); \draw[ln] (bo) -- (o2);
+  \node[cd,text width=3.8cm] at (12.3,4.95) {ip link add bond0 type bond\\mode active-backup};
+  \node[ds,text width=3.8cm] at (12.3,4.2) {duas placas, um endereço: redundância ou soma de banda};
+
+  % ---------- veth + netns
+  \node[ttl] at (3.9,3.15) {par \texttt{veth} entre namespaces};
+  \draw[thick,dashed,draw=manualgray,rounded corners=5pt] (0.5,1.75) rectangle (3.0,2.85);
+  \draw[thick,dashed,draw=manualred,rounded corners=5pt]  (4.8,1.75) rectangle (7.3,2.85);
+  \node[gv,minimum width=1.6cm] (ve0) at (1.75,2.42) {veth0};
+  \node[gv,minimum width=1.6cm] (ve1) at (6.05,2.42) {veth1};
+  \draw[ln,{Latex[length=1.3mm]}-{Latex[length=1.3mm]}] (ve0) -- node[font=\tiny,manualgray,above=1pt]{cabo virtual} (ve1);
+  \node[font=\tiny,manualgray,anchor=north] at (1.75,2.05) {namespace padrão};
+  \node[font=\tiny,manualred,anchor=north]  at (6.05,2.05) {netns \texttt{lab}};
+  \node[cd,anchor=north west,text width=5.9cm] at (7.9,3.05) {ip netns add lab\\ip link add veth0 type veth peer name veth1\\ip link set veth1 netns lab};
+  \node[font=\tiny,manualgray,anchor=north west,text width=5.9cm] at (7.9,1.95) {O namespace tem pilha de rede inteiramente própria: interfaces, rotas e tabelas de firewall separadas. É o mecanismo sobre o qual os contêineres são construídos.};
+
+  \node[nt,text width=13.2cm,anchor=north] at (6.9,1.15) {Todas são criadas por \texttt{ip link add} e todas são \textbf{efêmeras}: somem no reboot como qualquer configuração manual. Para persistir, declare no perfil do NetworkManager (\texttt{nmcli connection add type bridge}, \texttt{vlan} ou \texttt{bond}) ou num arquivo \texttt{.netdev} do \texttt{systemd-networkd}.};
+\end{tikzpicture}
+```
+As quatro interfaces virtuais mais frequentes, e o comando que cria cada uma.
+:::
+
+Vale acrescentar duas que a figura não cobre: `dummy`, uma interface que aceita endereço e descarta tudo (ótima para testar rota sem hardware), e `tun`/`tap`, criadas por VPNs — `tun` opera em camada 3, `tap` em camada 2.
+
+O caso da bridge merece um aviso prático: ao mover o IP da placa física para a bridge, você perde a conexão no instante em que o endereço sai da placa. **Numa máquina remota, isso é ficar trancado do lado de fora.** Faça pelo console da VM, ou monte a sequência inteira num script único com rollback agendado por `at` (@sec-cap043).
+
+## 🐉 No Kali
+
+- **O modo de rede da VM decide o que o laboratório permite.** O NAT do VirtualBox e do VMware dá saída para a internet, mas nenhuma máquina externa inicia conexão com a VM — o que inviabiliza qualquer exercício com conexão de retorno. Rede *host-only* ou *internal* cria um segmento isolado, que é onde exercício de rede deve morar. *Bridge* coloca a VM na sua rede doméstica de verdade, com tudo o que ela roda visível para os vizinhos: use com consciência do que está expondo.
+- **`macchanger` e a rotação de MAC do NetworkManager.** Além do `ip link set dev X address ...`, o NetworkManager tem `wifi.cloned-mac-address` e `ethernet.cloned-mac-address`, que aceitam `random`, `stable` ou `permanent`. Randomizar o MAC em Wi-Fi público é medida de privacidade legítima e hoje é padrão em celulares. Usar o mesmo recurso para contornar controle de acesso de uma rede que não é sua é acesso não autorizado, com o enquadramento da Lei 12.737/2012.
+- **Modo monitor não é configuração de rede.** `airmon-ng start wlan0` (ou `iw dev wlan0 set type monitor`) tira a placa do modo gerenciado, e a interface deixa de ter endereço IP e conectividade. O NetworkManager tenta reassumir a placa e atrapalha — daí o `airmon-ng check kill`, que encerra `wpa_supplicant` e NetworkManager. Depois do exercício, `airmon-ng stop wlan0mon` e `systemctl restart NetworkManager` devolvem a máquina ao estado normal. Exige chipset com suporte; adaptador virtual de VM não tem.
+- **Namespace de rede é o laboratório mais barato que existe.** Dois `ip netns` ligados por um par `veth` reproduzem cliente, servidor e roteador dentro de uma única máquina, com tabelas de firewall independentes, sem VM e sem risco de tocar em rede alheia. É o ambiente ideal para praticar o @sec-cap083 e o @sec-cap084 — e o mesmo mecanismo que o Docker usa por baixo.
+- **Perfil de conexão guarda segredo em texto.** Os arquivos `.nmconnection` contêm PSK de Wi-Fi e credenciais de VPN em claro, protegidos apenas pela permissão `600`. Numa máquina que será emprestada, doada ou levada a campo, eles entram na lista de limpeza junto com `~/.bash_history` e `~/.ssh` (@sec-cap026).
+
+> **Nota sobre a família RHEL.** O NetworkManager é o mesmo e o `nmcli` funciona idêntico. As diferenças: o RHEL 9 removeu o suporte aos arquivos `ifcfg-*` de `/etc/sysconfig/network-scripts/`, migrando tudo para `.nmconnection` — script antigo que escreve `ifcfg` falha em silêncio. O `ifupdown` e o `/etc/network/interfaces` não existem lá, então essa classe de conflito some. Em compensação, `rp_filter` vem em modo estrito por padrão, descartando pacotes cuja rota de volta não bate com a de ida: em laboratório com múltiplas interfaces isso derruba tráfego que no Kali passaria, e o diagnóstico é confuso porque nada aparece no firewall.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com acesso pelo console — **não faça por SSH**, porque vários passos derrubam a conectividade de propósito. Anote antes a configuração atual, para restaurar no fim.
+
+1. **Registre o estado inicial e descubra quem manda.**
+
+   ```bash
+   { ip -br addr show; ip route show; } | tee ~/rede-antes.txt
+   systemctl is-active NetworkManager systemd-networkd networking
+   nmcli device status
+   ```
+
+   Esperado: `NetworkManager` ativo, as outras duas inativas, e a interface principal em `connected`.
+
+2. **Veja a configuração efêmera ser desfeita pelo gerenciador, sem reboot.**
+
+   ```bash
+   IF=$(ip route | awk '/^default/{print $5; exit}')
+   PERFIL=$(nmcli -g GENERAL.CONNECTION device show "$IF")
+   sudo ip addr add 10.99.99.99/24 dev "$IF"
+   ip -br addr show "$IF"                   # o novo endereço está lá, somado ao antigo
+   sudo nmcli connection up "$PERFIL"
+   ip -br addr show "$IF"                   # sumiu
+   ```
+
+   Esperado: o endereço aparece e desaparece assim que o perfil é reaplicado. É o ponto central do capítulo.
+
+3. **Demonstre que `add` soma e que máscara ausente vira `/32`.**
+
+   ```bash
+   sudo ip addr add 10.99.1.1/24 dev "$IF"
+   sudo ip addr add 10.99.2.2/24 dev "$IF"
+   ip -br addr show "$IF"                   # três endereços simultâneos
+   sudo ip addr add 10.99.3.3 dev "$IF"
+   ip addr show "$IF" | grep 10.99.3.3      # repare no /32
+   sudo nmcli connection up "$PERFIL"
+   ```
+
+   Esperado: os três primeiros convivem; o quarto sai com `/32`, sem sub-rede associada.
+
+4. **Crie um perfil com IP fixo que sobreviveria ao boot.**
+
+   ```bash
+   sudo nmcli connection add type ethernet con-name lab-fixo ifname "$IF" \
+        ipv4.method manual ipv4.addresses 10.0.0.50/24 \
+        ipv4.gateway 10.0.0.1 ipv4.dns 1.1.1.1 \
+        ipv6.method disabled connection.autoconnect no
+   nmcli connection show lab-fixo | grep -E '^ipv4\.(method|addresses|gateway|dns):'
+   sudo ls -l /etc/NetworkManager/system-connections/
+   ```
+
+   Esperado: o perfil existe, gravado em `lab-fixo.nmconnection` com permissão `600`. Deixamos `autoconnect no` de propósito: ativar esse perfil isolaria a VM se `10.0.0.1` não existir na sua rede.
+
+5. **Descubra qual é o esquema de DNS da sua máquina.**
+
+   ```bash
+   ls -l /etc/resolv.conf
+   head -3 /etc/resolv.conf
+   resolvectl status 2>/dev/null | head -20 || echo "systemd-resolved nao esta em uso"
+   ```
+
+   Esperado: no Kali padrão, um arquivo comum gerado pelo NetworkManager. Se for link para `stub-resolv.conf`, o `nameserver` será `127.0.0.53` e os servidores reais aparecem no `resolvectl status`.
+
+6. **Monte um laboratório de rede completo com namespaces — sem tocar na rede real.**
+
+   ```bash
+   sudo ip netns add lab
+   sudo ip link add veth0 type veth peer name veth1
+   sudo ip link set veth1 netns lab
+   sudo ip addr add 192.168.99.1/24 dev veth0
+   sudo ip link set veth0 up
+   sudo ip netns exec lab ip addr add 192.168.99.2/24 dev veth1
+   sudo ip netns exec lab ip link set veth1 up
+   sudo ip netns exec lab ip link set lo up
+   ping -c2 192.168.99.2
+   sudo ip netns exec lab ip -br addr show
+   sudo ip netns exec lab ip route show
+   ```
+
+   Esperado: o `ping` responde. Dentro do namespace a tabela de rotas tem só a rota do `/24` e não há rota padrão — é uma pilha de rede inteiramente separada, com firewall próprio. Vamos reaproveitar este ambiente nos capítulos de firewall e de captura.
+
+7. **Comprove o isolamento do namespace.**
+
+   ```bash
+   sudo ip netns exec lab ping -c1 -W2 8.8.8.8 || echo "sem rota para fora, como esperado"
+   sudo ip netns exec lab ip route add default via 192.168.99.1
+   sudo ip netns exec lab ping -c2 192.168.99.1
+   sudo ip netns exec lab ping -c1 -W2 8.8.8.8 || echo "ainda falta NAT no host"
+   ```
+
+   Esperado: sem rota, o namespace não alcança nada além do par `veth`; com a rota padrão ele chega ao host e para por aí. O que falta é encaminhamento e NAT — exatamente o assunto do @sec-cap083.
+
+8. **Crie e observe uma interface `dummy` e uma VLAN.**
+
+   ```bash
+   sudo ip link add lab0 type dummy
+   sudo ip addr add 172.31.0.1/24 dev lab0
+   sudo ip link set lab0 up
+   ip route get 172.31.0.55
+   sudo ip link add link "$IF" name "$IF.10" type vlan id 10
+   ip -br link show type vlan
+   ```
+
+   Esperado: a rota para `172.31.0.0/24` existe e aponta para `lab0`, sem hardware nenhum. A interface VLAN aparece com o sufixo `@` indicando a interface pai.
+
+9. **Desfaça tudo e confirme que a máquina voltou ao normal.**
+
+   ```bash
+   sudo ip link del "$IF.10"
+   sudo ip link del lab0
+   sudo ip netns del lab
+   sudo ip link del veth0 2>/dev/null || true
+   sudo nmcli connection delete lab-fixo
+   sudo nmcli connection up "$PERFIL"
+   diff <(ip -br addr show) <(head -n -1 ~/rede-antes.txt) && echo "estado idêntico ao inicial"
+   ping -c1 -W2 1.1.1.1 && echo "conectividade restaurada"
+   ```
+
+   Esperado: apagar o namespace destrói os dois lados do par `veth` de uma vez, por isso o `ip link del veth0` provavelmente já não acha nada. O `ping` final confirma que a rede está como estava.
+
+## Resumo
+
+- **Configurar e persistir são operações distintas.** O comando `ip` fala com o kernel e o efeito é efêmero; persistência é trabalho do gerenciador de rede, que lê perfis em disco e os reaplica no boot e a cada evento de link.
+- **Numa máquina com NetworkManager ativo, configuração manual tem prazo de validade** — e o prazo é a próxima vez que o gerenciador tocar naquela interface, não o próximo reboot. `nmcli device status` diz quem está no comando.
+- **`iproute2` substituiu `net-tools`.** O `ifconfig` não enxerga múltiplos endereços, tabelas adicionais nem namespaces; tutorial que manda instalar `net-tools` está desatualizado.
+- **`ip addr add` acrescenta, e endereço sem máscara vira `/32`** — os dois erros mais frequentes, ambos com sintomas que não apontam para a causa.
+- **`ipv4.method manual` é o que faz o IP fixo substituir o DHCP**, e `connection.autoconnect yes` é o que faz o perfil subir sozinho. Faltando qualquer um dos dois, a configuração "não pega".
+- **NetworkManager e `ifupdown` ativos na mesma interface produzem uma máquina que se reconfigura sozinha.** Escolha um e desative o outro, com `managed=false` no plugin `ifupdown`.
+- **`/etc/resolv.conf` é quase sempre um arquivo gerado.** Descubra o dono (`ls -l` e o cabeçalho) e configure na camada certa; com `systemd-resolved`, os servidores reais só aparecem em `resolvectl status`.
+- **Interfaces virtuais são criadas por `ip link add` e também são efêmeras.** Namespaces de rede com par `veth` dão um laboratório completo e isolado dentro de uma máquina só — o mesmo mecanismo que sustenta contêineres.

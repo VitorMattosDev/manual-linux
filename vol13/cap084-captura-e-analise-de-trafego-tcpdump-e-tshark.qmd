@@ -1,3 +1,349 @@
 # Captura e análise de tráfego: tcpdump e tshark {#sec-cap084}
 
-*(em elaboracao)*
+Uma aplicação chamava uma API e recebia sempre a mesma resposta genérica de erro. O log da aplicação dizia "falha na requisição". O log da API não registrava requisição alguma. As duas equipes estavam certas, e por isso ninguém avançava: o problema estava **no fio**, no espaço entre as duas máquinas que nenhum dos dois logs enxerga.
+
+Um comando encerrou o impasse:
+
+```bash
+sudo tcpdump -i any -n host 10.0.0.80 and port 443
+```
+
+```
+10.0.0.20.52014 > 10.0.0.80.443: Flags [S], seq 998...
+10.0.0.20.52014 > 10.0.0.80.443: Flags [S], seq 998...   (retransmissão)
+10.0.0.20.52014 > 10.0.0.80.443: Flags [S], seq 998...   (retransmissão)
+```
+
+Só `SYN`, três vezes, sem nenhum `SYN-ACK` de volta. A aplicação mandava, o servidor nunca respondia — porque um firewall no meio descartava os pacotes em silêncio (@sec-cap083). O erro "genérico" era um timeout de conexão que jamais chegou à camada HTTP. O log da API estava vazio porque, do ponto de vista da API, nunca houve requisição.
+
+Este é o poder da captura de pacotes: quando os logs de ponta discordam, o tráfego é o árbitro que não mente. Depois de tudo o que este volume ensinou a configurar e diagnosticar, a captura é a camada final — a que mostra o que **de fato** aconteceu, byte a byte, quando todo o resto diz coisas incompatíveis.
+
+## Antes de capturar: a responsabilidade
+
+Capturar tráfego é ler comunicação que muitas vezes não é sua. Numa rede que você administra ou num laboratório próprio, é diagnóstico legítimo e essencial. Na rede de terceiros, sem autorização, é interceptação de comunicação — conduta com implicações legais sérias, incluindo o enquadramento da Lei 12.737/2012 e da legislação de sigilo de comunicações. A regra é simples e vale para todo este capítulo: **capture apenas em rede própria ou com autorização escrita**, e trate o que capturar com o mesmo cuidado de qualquer dado sensível — um `.pcap` pode conter senha, cookie de sessão e conteúdo privado em texto claro.
+
+## O que dá para ver, e o que a criptografia esconde
+
+::: {#fig-o-que-tls-esconde}
+```{.tikz}
+%%| filename: o-que-tls-esconde
+%%| alt: Camadas de um pacote HTTPS mostrando o que fica visivel na captura e o que o TLS cifra e protege
+\begin{tikzpicture}[
+    ly/.style={draw,thick,align=left,font=\scriptsize,inner sep=5pt,minimum width=8.6cm,minimum height=0.82cm,anchor=west},
+    tag/.style={font=\tiny\bfseries,anchor=west,align=left},
+    ic/.style={font=\scriptsize\bfseries},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[ly,draw=manualgreen,fill=manualgreen!12] (l1) at (0.5,7.4)
+    {\texttt{cab.\ Ethernet} --- MAC de origem e destino};
+  \node[ly,draw=manualgreen,fill=manualgreen!12] (l2) at (0.5,6.5)
+    {\texttt{cab.\ IP} --- \textbf{quem fala com quem}, IPs de origem e destino};
+  \node[ly,draw=manualgreen,fill=manualgreen!12] (l3) at (0.5,5.6)
+    {\texttt{cab.\ TCP} --- portas, flags, número de sequência};
+  \node[ly,draw=manualyellow,fill=manualyellow!22] (l4) at (0.5,4.7)
+    {\texttt{TLS ClientHello} --- \textbf{SNI: o nome do site visitado}};
+  \node[ly,draw=manualred,fill=manualred!12] (l5) at (0.5,3.6)
+    {\texttt{dados HTTP cifrados} --- URL, cabeçalhos, cookies, corpo, senha};
+
+  \node[ic,manualgreen,anchor=west] at (9.4,7.4) {visível};
+  \node[ic,manualgreen,anchor=west] at (9.4,6.5) {visível};
+  \node[ic,manualgreen,anchor=west] at (9.4,5.6) {visível};
+  \node[ic,anchor=west,text=manualyellow!80!black,align=left] at (9.4,4.7) {visível\\\tiny (metadado)};
+  \node[ic,manualred,anchor=west] at (9.4,3.6) {\textbf{cifrado}};
+
+  \node[nt,text width=13.0cm,anchor=north] at (7.0,2.9) {O TLS protege o \textbf{conteúdo}, não a existência da conversa. Mesmo sem quebrar a cifra, uma captura revela \emph{quem} falou com \emph{quem}, \emph{quando}, \emph{quanto} tráfego e --- pelo SNI, ainda enviado em claro no início do handshake --- \emph{qual site}. Isso é análise de metadados, e para muitos propósitos (mapear infraestrutura, detectar exfiltração, identificar comunicação com um servidor de controle) o metadado basta. O conteúdo em claro só aparece em protocolo sem TLS: HTTP simples, FTP, Telnet, DNS tradicional --- e é por isso que ainda existe valor em capturá-los num diagnóstico, e risco em usá-los numa rede hostil.};
+\end{tikzpicture}
+```
+O que uma captura revela de uma conexão HTTPS, e a fronteira exata onde a criptografia começa.
+:::
+
+A lição prática: não espere ler o corpo de uma requisição HTTPS num `pcap`. O que a captura entrega em tráfego cifrado são os **metadados** — endereços, portas, tamanhos, tempos, o nome do host no SNI. Para diagnóstico de conectividade (o caso da abertura), os metadados são tudo o que você precisa; para inspecionar conteúdo de aplicação cifrado, é preciso encerrar o TLS num ponto que você controla (um proxy), o que é outra ferramenta e outra discussão.
+
+## `tcpdump`: a captura em qualquer lugar
+
+O `tcpdump` está em praticamente todo Linux, roda em servidor sem interface gráfica e é a ferramenta que você vai ter à mão numa máquina remota. A anatomia de um comando:
+
+```bash
+sudo tcpdump -i any -n -c 20 'tcp port 443'
+```
+
+- **`-i any`** captura de todas as interfaces; `-i enp0s3` de uma só. `tcpdump -D` lista as disponíveis.
+- **`-n`** não resolve nomes — essencial, porque a resolução reversa gera tráfego DNS que polui a própria captura e a torna lentíssima.
+- **`-c 20`** para depois de 20 pacotes.
+- **`'tcp port 443'`** é o filtro, do qual tudo depende.
+
+Opções que mudam o que você vê:
+
+```bash
+sudo tcpdump -i any -nn -v host 10.0.0.80        # -nn nem porta resolve; -v mais detalhe
+sudo tcpdump -i any -n -A port 80                # -A mostra o payload em ASCII
+sudo tcpdump -i any -n -X port 80                # -X em hex + ASCII
+sudo tcpdump -i any -n -tttt icmp                # -tttt carimbo de tempo legível
+sudo tcpdump -i any -n -s0 -w captura.pcap host 10.0.0.80   # grava para arquivo
+```
+
+O `-w arquivo.pcap` é o mais importante para trabalho sério: em vez de decodificar na tela, grava o tráfego bruto num arquivo que você analisa depois com calma no Wireshark. O par natural é capturar no servidor com `tcpdump -w` e ler no seu desktop com a interface gráfica. E `-s0` (hoje o padrão) captura o pacote inteiro, não só o começo.
+
+Ler a saída de texto é uma habilidade em si. As *flags* TCP entre colchetes são o essencial:
+
+| Notação | Flag | Significa |
+|---|---|---|
+| `[S]` | SYN | abrindo conexão |
+| `[S.]` | SYN-ACK | aceitando a abertura |
+| `[.]` | ACK | confirmação |
+| `[P.]` | PSH-ACK | dado sendo entregue |
+| `[F.]` | FIN-ACK | fechando ordenadamente |
+| `[R]` | RST | conexão recusada ou abortada |
+
+: Flags TCP na saída do `tcpdump` {#tbl-flags-tcpdump}
+
+O handshake saudável é a sequência `[S]` → `[S.]` → `[.]`. Só `[S]` repetido, como na abertura, é conexão que não completa — firewall descartando ou destino fora do ar. Um `[R]` imediato é recusa ativa: a porta está fechada e a máquina respondeu dizendo isso. Reconhecer esses dois padrões resolve a maioria dos casos de conectividade.
+
+## BPF: a linguagem de filtro que separa sinal de ruído
+
+Numa rede movimentada, capturar sem filtro é beber de um hidrante — milhares de pacotes por segundo, o que você procura afogado no resto. A sintaxe de filtro BPF (*Berkeley Packet Filter*), compartilhada por `tcpdump`, `tshark` e Wireshark, é o que torna a captura utilizável. Ela filtra **antes** de o pacote ser copiado, no kernel, então é barata mesmo sob carga alta.
+
+Os três eixos de um filtro:
+
+```bash
+# por host, rede, direção
+host 10.0.0.80
+src host 10.0.0.20
+dst net 192.168.1.0/24
+
+# por protocolo e porta
+tcp
+udp port 53
+portrange 8000-8100
+icmp or icmp6
+
+# combinações com and / or / not
+'host 10.0.0.80 and tcp port 443'
+'port 80 or port 443'
+'tcp and not port 22'          # tudo menos o seu próprio SSH
+'src 10.0.0.20 and dst port 443'
+```
+
+Dois filtros de nível mais avançado que valem a pena, porque isolam exatamente o que interessa:
+
+```bash
+# só os pacotes que ABREM conexão (SYN sem ACK): mapeia quem tenta conectar aonde
+sudo tcpdump -i any -n 'tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn'
+
+# só resets: encontra rapidamente conexões recusadas ou derrubadas
+sudo tcpdump -i any -n 'tcp[tcpflags] & tcp-rst != 0'
+```
+
+::: {.callout-note}
+**O filtro de captura (BPF) e o filtro de exibição do Wireshark são linguagens diferentes.** BPF (`tcp port 443`) decide o que **entra** na captura e é o mesmo no `tcpdump` e no `tshark -f`. O filtro de exibição do Wireshark (`http.request.method == "POST"`, usado no `tshark -Y`) filtra o que **já foi** capturado e é muito mais expressivo. Confundir os dois — usar sintaxe de exibição em `-f`, ou vice-versa — é o erro de iniciante mais comum, e o erro que o `tshark` reporta não deixa óbvio qual foi.
+:::
+
+## `tshark`: o Wireshark sem a interface
+
+O `tshark` é o motor do Wireshark na linha de comando. Ele entende milhares de protocolos e, ao contrário do `tcpdump`, **dissecа** cada camada — mostra o campo, não só o byte. É a ferramenta para quando a pergunta é sobre o conteúdo do protocolo, não só sobre quem falou com quem.
+
+```bash
+# captura decodificando o protocolo, com filtro de captura BPF (-f) e de exibição (-Y)
+sudo tshark -i any -f 'tcp port 80' -Y 'http.request'
+
+# extrair campos específicos em colunas — a força real do tshark
+sudo tshark -i any -f 'port 53' -T fields -e dns.qry.name -e dns.flags.response
+
+# ler um pcap gravado pelo tcpdump e filtrar por conteúdo de aplicação
+tshark -r captura.pcap -Y 'http.request.method == "POST"' \
+       -T fields -e ip.src -e http.host -e http.request.uri
+
+# estatísticas: conversas, hierarquia de protocolos, endpoints
+tshark -r captura.pcap -q -z conv,tcp
+tshark -r captura.pcap -q -z io,phs
+tshark -r captura.pcap -q -z endpoints,ip
+```
+
+A extração de campos (`-T fields -e ...`) é o que transforma o `tshark` num extrator de dados de rede: ele vira uma fonte tabular que se encadeia com `sort`, `uniq`, `awk` e `jq` (@sec-cap067, @sec-cap069) para responder perguntas como "quais nomes DNS esta máquina consultou na última hora" ou "quais hosts HTTP foram acessados". As análises estatísticas (`-z`) resumem uma captura inteira: `conv,tcp` lista as conversas por volume, `io,phs` mostra a hierarquia de protocolos presente, e `endpoints,ip` ranqueia quem mais falou.
+
+A divisão de trabalho na prática: **`tcpdump` captura** (leve, presente em qualquer lugar, grava o `.pcap`), **Wireshark ou `tshark` analisa** (dissecação profunda, estatística, extração). Capturar no servidor remoto e analisar no desktop é o fluxo padrão — e pode ser feito num cano só:
+
+```bash
+ssh servidor 'sudo tcpdump -i any -U -w - -n not port 22' | wireshark -k -i -
+```
+
+Esse comando captura no servidor (excluindo o próprio SSH, para não capturar a si mesmo num laço) e transmite ao Wireshark local em tempo real, sem gravar arquivo intermediário.
+
+## O fluxo de uma análise real
+
+Juntando tudo, o caminho de uma investigação de "a conexão não funciona":
+
+1. **Capture com filtro estreito e grave.** `sudo tcpdump -i any -n -w caso.pcap host <destino> and port <porta>`. Filtro estreito desde o início mantém o arquivo pequeno e a análise focada.
+2. **Reproduza o problema** enquanto a captura roda, e pare com `Ctrl-C`.
+3. **Olhe as flags primeiro.** `tcpdump -r caso.pcap -n` e leia a sequência de handshake. `[S]` sem `[S.]` é firewall ou host morto; `[R]` é recusa; handshake completo seguido de silêncio é problema de camada de aplicação, não de rede.
+4. **Se o handshake completa, suba para a aplicação** com `tshark -r caso.pcap -Y ...`, decodificando o protocolo para ver onde a conversa trava.
+5. **Se precisar de visão geral,** as estatísticas `-z` mostram o formato do tráfego sem você ler pacote por pacote.
+
+Esse roteiro fecha o volume: da configuração (@sec-cap079) ao diagnóstico camada a camada (@sec-cap080) ao firewall que pode estar bloqueando (@sec-cap083), a captura é o tribunal de última instância.
+
+## 🐉 No Kali
+
+- **A captura é reconhecimento passivo puro, e sua legalidade é definida pela rede, não pela ferramenta.** Numa rede própria ou autorizada, `tcpdump` mapeia hosts, serviços e padrões de comunicação sem enviar um único pacote — invisível para o alvo. Na rede de terceiros, o mesmo comando é interceptação de comunicação alheia, com o enquadramento penal já citado. A diferença entre auditoria e crime não está no binário; está na autorização, e ela precisa ser escrita.
+- **Modo promíscuo e a comutação moderna.** Colocar a placa em modo promíscuo (`-p` desliga, ligado por padrão em captura) faz o kernel entregar todos os quadros que a interface vê. Numa rede com *switch* (o padrão há décadas), a interface só vê o tráfego destinado a ela e o de broadcast — por isso capturar o tráfego de outra máquina exige espelhamento de porta no switch, um *tap*, ou um ataque ativo de camada 2 (ARP spoofing, @sec-cap078), que é intrusivo e sai da esfera passiva. Em Wi-Fi aberto o modo monitor vê tudo do ar; em Wi-Fi cifrado, só metadados de rádio.
+- **`.pcap` é dado sensível de altíssimo valor.** Uma captura de rede sem TLS contém credenciais, cookies de sessão e conteúdo em claro; mesmo cifrada, entrega o mapa de quem fala com quem. Tratar um `.pcap` de engajamento com o mesmo rigor de um dump de senhas — `umask 077`, cifragem em repouso, `shred -u` ao descartar (@sec-cap071) — não é zelo excessivo, é obrigação. Um `.pcap` esquecido em `/tmp` numa máquina compartilhada é vazamento.
+- **A captura é a prova contra o host que mente.** Um `ss` (@sec-cap080) ou um `iptables -L` rodados numa máquina comprometida podem ter sido adulterados por um rootkit de espaço de usuário. A captura feita de **fora** — num tap, num roteador, noutra máquina do segmento — vê o tráfego real que o host gera, incluindo a conexão de saída para o servidor de controle que o próprio host esconde. É por isso que a investigação séria de comprometimento não confia só no que a máquina relata sobre si.
+- **Filtro estreito não é só conveniência, é discrição e correção.** Capturar tudo numa rede de engajamento gera um arquivo gigante, cheio de dados de terceiros que talvez estejam fora do escopo autorizado, e força o disco. Um filtro BPF preciso (`host <alvo> and port <serviço>`) coleta só o que o contrato permite, mantém o arquivo analisável e evita capturar comunicação que você não tem direito de ler — o que importa mesmo em rede autorizada.
+
+> **Nota sobre a família RHEL.** `tcpdump` e `tshark` são idênticos; a diferença é de empacotamento e de controle de acesso. O `tshark`/Wireshark vem no pacote `wireshark-cli`, e a permissão para usuário não-root capturar é gerida por um grupo (`wireshark`) cuja criação o instalador oferece — no Kali você tende a rodar como root direto. O SELinux, ativo no RHEL, pode restringir onde o `tcpdump` grava o `.pcap` (o domínio `netutils_t`), gerando um "permission denied" ao escrever em diretório inesperado que não menciona SELinux de forma óbvia — gravar em `/tmp` ou no home costuma contornar. O motor de captura (libpcap, AF_PACKET no kernel) é o mesmo nas duas famílias.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Toda a captura é do **próprio** tráfego da máquina — rede própria, sem envolver terceiros.
+
+1. **Liste as interfaces e faça a primeira captura.**
+
+   ```bash
+   sudo tcpdump -D
+   sudo tcpdump -i any -n -c 5 icmp &
+   ping -c 5 1.1.1.1 >/dev/null
+   wait
+   ```
+
+   Esperado: cinco pares de `ICMP echo request` / `echo reply` capturados, cada um com origem e destino. É a captura mais simples possível, do seu próprio ping.
+
+2. **Veja o handshake TCP completo, flag por flag.**
+
+   ```bash
+   sudo tcpdump -i any -n -c 10 'tcp port 443 and host exemplo.com' &
+   sleep 1
+   curl -s -o /dev/null https://exemplo.com/
+   wait
+   ```
+
+   Esperado: a sequência `[S]` → `[S.]` → `[.]` no começo (o handshake), tráfego `[P.]` no meio (dados TLS cifrados) e `[F.]` ou `[R]` no fim. Você não lê o conteúdo — está cifrado —, mas vê a conexão nascer, viver e morrer.
+
+3. **Reproduza o caso da abertura: SYN sem resposta.**
+
+   ```bash
+   sudo tcpdump -i any -n -c 6 'host 192.0.2.1 and port 4444' &
+   sleep 1
+   timeout 5 nc -w4 192.0.2.1 4444 2>/dev/null
+   wait
+   ```
+
+   Esperado: apenas pacotes `[S]` de saída, repetidos, sem nenhum `[S.]` de volta — porque `192.0.2.1` é endereço de documentação que não responde. É exatamente o padrão que identificou o firewall silencioso da abertura.
+
+4. **Veja a diferença entre descarte e recusa.**
+
+   ```bash
+   sudo tcpdump -i any -n -c 4 'tcp port 9999 and host 127.0.0.1' &
+   sleep 1
+   nc -w2 127.0.0.1 9999 2>/dev/null
+   wait
+   ```
+
+   Esperado: um `[S]` de saída seguido de um `[R.]` imediato de volta — recusa ativa, porque ninguém escuta na 9999 mas a máquina está viva e responde. Compare mentalmente com o passo anterior: silêncio é firewall, `[R]` é porta fechada num host vivo.
+
+5. **Capture conteúdo em claro — e entenda o risco.**
+
+   ```bash
+   python3 -m http.server 8080 &
+   sleep 1
+   sudo tcpdump -i lo -n -A -c 15 'tcp port 8080' &
+   sleep 1
+   curl -s "http://127.0.0.1:8080/?usuario=vitor&senha=segredo123" >/dev/null
+   wait
+   kill %1 2>/dev/null
+   ```
+
+   Esperado: com `-A`, a requisição HTTP aparece em texto legível, **incluindo os parâmetros `usuario` e `senha` da URL**. É a demonstração concreta de por que HTTP sem TLS é inseguro em rede compartilhada — e de por que um `.pcap` é dado sensível.
+
+6. **Grave para arquivo e analise depois.**
+
+   ```bash
+   mkdir -p ~/lab-captura && cd ~/lab-captura
+   sudo tcpdump -i any -n -w dns.pcap -c 20 'udp port 53' &
+   sleep 1
+   for d in exemplo.com kernel.org debian.org; do dig +short "$d" >/dev/null; done
+   wait
+   ls -lh dns.pcap
+   sudo chown "$USER" dns.pcap
+   tcpdump -r dns.pcap -n | head
+   ```
+
+   Esperado: o `.pcap` gravado e depois relido sem privilégio. Separar captura de análise é o fluxo de trabalho real — capturar no servidor, analisar no desktop.
+
+7. **Extraia campos com `tshark`, como uma fonte de dados.**
+
+   ```bash
+   cd ~/lab-captura
+   tshark -r dns.pcap -Y 'dns.flags.response == 0' \
+          -T fields -e dns.qry.name 2>/dev/null | sort -u
+   ```
+
+   Esperado: a lista limpa dos nomes DNS consultados, uma por linha — o `tshark` dissecou o protocolo e entregou só o campo pedido. É isso que encadeia com `sort`, `uniq -c` e `awk` para responder "o que esta máquina andou resolvendo".
+
+8. **Use as estatísticas para ver o formato do tráfego.**
+
+   ```bash
+   cd ~/lab-captura
+   sudo tcpdump -i any -n -w misto.pcap -c 60 'not port 22' &
+   sleep 1
+   curl -s -o /dev/null https://exemplo.com/; dig +short kernel.org >/dev/null; ping -c3 1.1.1.1 >/dev/null
+   wait; sudo chown "$USER" misto.pcap
+   tshark -r misto.pcap -q -z io,phs 2>/dev/null | head -25
+   tshark -r misto.pcap -q -z conv,ip 2>/dev/null | head -15
+   ```
+
+   Esperado: a hierarquia de protocolos (`io,phs`) mostrando as camadas presentes — eth, ip, tcp, udp, tls, dns, icmp — e as conversas (`conv,ip`) ranqueadas por volume. Uma visão geral da captura sem ler um pacote sequer.
+
+9. **Comprove que filtro de captura e de exibição são línguas diferentes.**
+
+   ```bash
+   cd ~/lab-captura
+   tshark -r misto.pcap -Y 'ip.addr == 1.1.1.1' 2>/dev/null | head -3   # exibição: OK
+   tshark -r misto.pcap -f 'ip.addr == 1.1.1.1' 2>&1 | head -3          # captura: erro
+   tshark -r misto.pcap -f 'host 1.1.1.1' 2>/dev/null | head -3         # captura correta: OK
+   ```
+
+   Esperado: a sintaxe de exibição (`ip.addr ==`) funciona com `-Y` e falha com `-f`; a sintaxe BPF (`host`) é o inverso. É o erro de iniciante mais comum, visto lado a lado.
+
+10. **Isole só as tentativas de conexão com um filtro avançado.**
+
+    ```bash
+    sudo tcpdump -i any -n -c 10 'tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn' &
+    sleep 1
+    for p in 80 443 22; do curl -s -m2 -o /dev/null "https://exemplo.com:$p/" 2>/dev/null & done
+    wait 2>/dev/null
+    ```
+
+    Esperado: só os pacotes `[S]` iniciais de cada tentativa, sem o resto do tráfego. Esse filtro é o que mapeia "quem está tentando abrir conexão para onde" numa captura movimentada.
+
+11. **Monte um pipeline de análise que responde uma pergunta.**
+
+    ```bash
+    cd ~/lab-captura
+    echo "Nomes DNS mais consultados na captura:"
+    tshark -r dns.pcap -Y 'dns.flags.response == 0' -T fields -e dns.qry.name 2>/dev/null \
+        | sort | uniq -c | sort -rn
+    ```
+
+    Esperado: a contagem por nome, do mais consultado ao menos. É o `tshark` como extrator encadeado com a caixa de ferramentas de texto do Volume 11 — captura virando informação.
+
+12. **Limpe, tratando o `.pcap` como dado sensível.**
+
+    ```bash
+    cd ~
+    shred -u ~/lab-captura/*.pcap 2>/dev/null || rm -f ~/lab-captura/*.pcap
+    rmdir ~/lab-captura 2>/dev/null || rm -rf ~/lab-captura
+    pgrep -af 'http.server' && kill %1 2>/dev/null
+    echo "capturas destruidas"
+    ```
+
+    Esperado: os arquivos apagados com `shred` (sobrescrita, não só remoção do inode), que é o tratamento correto para uma captura que pode conter credencial — como a senha em claro do passo 5.
+
+## Resumo
+
+- **Quando os logs das duas pontas discordam, o tráfego é o árbitro.** A captura mostra o que de fato aconteceu no fio — `[S]` sem `[S.]` provou o firewall silencioso da abertura que nenhum dos dois logs registrava.
+- **Capture apenas em rede própria ou com autorização escrita.** Em rede de terceiros é interceptação de comunicação, com implicações legais sérias; e todo `.pcap` é dado sensível, que pode conter credencial e conteúdo em claro.
+- **O TLS protege o conteúdo, não a existência da conversa.** A captura sempre revela quem fala com quem, quando, quanto e — pelo SNI — qual site. O corpo só aparece em claro em protocolo sem TLS.
+- **`tcpdump` captura em qualquer lugar; `tshark` e Wireshark analisam.** O fluxo padrão é `tcpdump -w` no servidor, análise no desktop. `-n` para não poluir com DNS, `-w` para gravar, flags TCP entre colchetes para ler o estado da conexão.
+- **A sequência `[S]` → `[S.]` → `[.]` é o handshake saudável.** `[S]` repetido sem resposta é firewall ou host morto; `[R]` imediato é porta fechada num host vivo. Reconhecer os dois resolve a maioria dos casos de conectividade.
+- **O filtro BPF é o que torna a captura utilizável**, e filtra no kernel antes de copiar o pacote. É o mesmo no `tcpdump` e no `tshark -f` — e é uma língua **diferente** do filtro de exibição do Wireshark (`-Y`), a confusão mais comum.
+- **`tshark -T fields -e` transforma a captura em fonte tabular** que se encadeia com a caixa de ferramentas de texto, e as estatísticas `-z` resumem uma captura inteira sem ler pacote a pacote.
+- **A captura feita de fora é a prova contra o host que mente**, porque vê o tráfego real que uma máquina comprometida esconde de suas próprias ferramentas.

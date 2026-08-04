@@ -132,13 +132,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 13 — Redes no Linux
 
-- [ ] **cap 078** - Fundamentos: interfaces, endereçamento IP e a pilha de rede - `vol13/cap078-fundamentos-interfaces-enderecamento-ip-e-a.qmd`
-- [ ] **cap 079** - Configuração de rede: ip, NetworkManager e arquivos - `vol13/cap079-configuracao-de-rede-ip-networkmanager-e.qmd`
-- [ ] **cap 080** - Diagnóstico: ping, traceroute, ss, dig e mtr - `vol13/cap080-diagnostico-ping-traceroute-ss-dig-e-mtr.qmd`
-- [ ] **cap 081** - Acesso e transferência remota: SSH, scp e rsync - `vol13/cap081-acesso-e-transferencia-remota-ssh-scp-e-rsync.qmd`
-- [ ] **cap 082** - HTTP na linha de comando: curl, wget e netcat - `vol13/cap082-http-na-linha-de-comando-curl-wget-e-netcat.qmd`
-- [ ] **cap 083** - Firewall no Linux: nftables e iptables - `vol13/cap083-firewall-no-linux-nftables-e-iptables.qmd`
-- [ ] **cap 084** - Captura e análise de tráfego: tcpdump e tshark - `vol13/cap084-captura-e-analise-de-trafego-tcpdump-e-tshark.qmd`
+- [x] **cap 078** - Fundamentos: interfaces, endereçamento IP e a pilha de rede - `vol13/cap078-fundamentos-interfaces-enderecamento-ip-e-a.qmd`
+- [x] **cap 079** - Configuração de rede: ip, NetworkManager e arquivos - `vol13/cap079-configuracao-de-rede-ip-networkmanager-e.qmd`
+- [x] **cap 080** - Diagnóstico: ping, traceroute, ss, dig e mtr - `vol13/cap080-diagnostico-ping-traceroute-ss-dig-e-mtr.qmd`
+- [x] **cap 081** - Acesso e transferência remota: SSH, scp e rsync - `vol13/cap081-acesso-e-transferencia-remota-ssh-scp-e-rsync.qmd`
+- [x] **cap 082** - HTTP na linha de comando: curl, wget e netcat - `vol13/cap082-http-na-linha-de-comando-curl-wget-e-netcat.qmd`
+- [x] **cap 083** - Firewall no Linux: nftables e iptables - `vol13/cap083-firewall-no-linux-nftables-e-iptables.qmd`
+- [x] **cap 084** - Captura e análise de tráfego: tcpdump e tshark - `vol13/cap084-captura-e-analise-de-trafego-tcpdump-e-tshark.qmd`
 
 ### Volume 14 — Segurança e o Ambiente Kali
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (70 concluidos).
+**Total:** 103 capitulos em 16 volumes (84 concluidos).
 

@@ -1,3 +1,407 @@
 # Firewall no Linux: nftables e iptables {#sec-cap083}
 
-*(em elaboracao)*
+Um administrador quis liberar acesso ao servidor web e digitou, de memória, o que sempre funcionou:
+
+```bash
+sudo iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+```
+
+A porta 80 continuou fechada. Ele tentou `-I` no lugar de `-A`, reiniciou o serviço, conferiu o `netstat` — tudo certo do lado da aplicação. O que ele não sabia é que a primeira regra da cadeia `INPUT`, colocada meses antes por outra pessoa, era um `-j DROP` genérico. A regra de liberação foi acrescentada **depois** do descarte, num ponto que o pacote nunca alcançava.
+
+Firewall no Linux é uma **lista ordenada de regras avaliada de cima para baixo, e a primeira que casa decide**. Não há placar, não há "a regra mais específica vence": há posição na fila. Quase todo erro de firewall — regra que não pega, regra que bloqueia o que devia liberar, a sessão SSH que morre no meio da configuração — é erro de ordem, não de sintaxe. Este capítulo é sobre o modelo por baixo das duas ferramentas, para que a ordem deixe de ser adivinhação.
+
+## Um motor, duas interfaces
+
+No kernel, o subsistema de filtragem é o **Netfilter**: um conjunto de ganchos (*hooks*) em pontos fixos do caminho do pacote. Tudo o que você digita em `iptables` ou `nftables` são regras penduradas nesses ganchos. As duas ferramentas são interfaces para o mesmo motor.
+
+- **`iptables`** é a interface clássica, de 1998. Sintaxe consolidada, montanhas de documentação, e o vocabulário em que praticamente todo tutorial de firewall foi escrito. Está em modo de manutenção.
+- **`nftables`** é a substituta oficial desde o kernel 3.13 (2014). Uma sintaxe só para IPv4, IPv6, ARP e ponte; conjuntos e mapas nativos; avaliação mais eficiente. No Kali e no Debian atuais, **o próprio `iptables` é um invólucro que fala com o `nftables` por baixo** (`iptables-nft`).
+
+Vale aprender os dois em camadas: o `iptables` porque é o que você vai **encontrar** em sistema existente e em documentação, e o `nftables` porque é o que você vai **escrever** em sistema novo. O modelo mental — ganchos, cadeias, ordem, política padrão — é idêntico nos dois.
+
+## O caminho do pacote pelos ganchos
+
+Entender onde cada gancho fica no trajeto do pacote é o que explica por que uma regra vai em `INPUT` e outra em `FORWARD`, e por que NAT tem dois momentos.
+
+::: {#fig-caminho-netfilter}
+```{.tikz}
+%%| filename: caminho-netfilter
+%%| alt: O caminho de um pacote pelos ganchos do Netfilter separando trafego destinado a maquina local do trafego roteado
+\begin{tikzpicture}[
+    hook/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.0cm,minimum height=0.85cm},
+    proc/.style={rounded corners=8pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.2cm,minimum height=0.85cm,draw=manualblue,fill=manualblue!10},
+    dec/.style={draw,thick,align=center,font=\tiny,inner sep=2pt,minimum width=1.6cm,minimum height=0.8cm,draw=manualyellow,fill=manualyellow!22},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[hook,draw=manualgray,fill=manualgray!10] (in) at (0.8,5.6) {entra\\na placa};
+  \node[dec] (rot) at (3.4,5.6) {destino?\\(routing)};
+  \node[hook,draw=manualred,fill=manualred!12] (pre) at (3.4,7.0) {\texttt{prerouting}\\\tiny DNAT};
+
+  % ramo local
+  \node[hook,draw=manualgreen,fill=manualgreen!14] (inp) at (6.2,6.7) {\texttt{input}};
+  \node[proc] (proc) at (9.0,6.7) {processo\\local};
+  \node[hook,draw=manualgreen,fill=manualgreen!14] (out) at (9.0,4.4) {\texttt{output}};
+
+  % ramo encaminhado
+  \node[hook,draw=manualblue,fill=manualblue!12] (fwd) at (6.2,4.4) {\texttt{forward}};
+
+  \node[dec] (rot2) at (11.4,5.55) {routing};
+  \node[hook,draw=manualred,fill=manualred!12] (post) at (11.4,7.0) {\texttt{postrouting}\\\tiny SNAT};
+  \node[hook,draw=manualgray,fill=manualgray!10] (fim) at (13.0,4.0) {sai\\na placa};
+
+  \draw[fl] (in) -- (rot);
+  \draw[fl] (rot) -- node[lb,left]{} (pre);
+  \draw[fl] (pre.east) .. controls (5.0,7.0) .. (inp.north);
+  \draw[fl] (rot) -- node[lb,above,pos=0.55]{p/ a máquina} (inp);
+  \draw[fl] (inp) -- (proc);
+  \draw[fl] (rot) |- node[lb,below,pos=0.75]{de passagem} (fwd);
+  \draw[fl] (proc) -- (out);
+  \draw[fl] (out) -- (rot2);
+  \draw[fl] (fwd) -| (rot2);
+  \draw[fl] (rot2) -- (post);
+  \draw[fl] (rot2) -- (fim);
+  \draw[fl] (post.east) .. controls (13.0,7.0) .. (fim.north);
+
+  \node[nt,text width=13.2cm,anchor=north] at (6.8,3.1) {A decisão de roteamento (@sec-cap078) parte o fluxo em dois, e é ela que determina qual gancho o pacote vê. \textbf{Tráfego para a própria máquina} passa por \texttt{input}; \textbf{tráfego de passagem} (a máquina roteando entre redes) passa por \texttt{forward} e nunca toca \texttt{input}. É o erro clássico de quem monta um roteador ou gateway de VPN: escreve regra em \texttt{input} e o pacote que devia ser filtrado está em \texttt{forward}. O \texttt{prerouting} vê o pacote antes da decisão (onde mora o DNAT, redirecionamento de porta) e o \texttt{postrouting} vê depois (onde mora o SNAT, o mascaramento que dá saída à rede interna).};
+\end{tikzpicture}
+```
+O caminho de um pacote pelos ganchos do Netfilter, separando o que é destinado à máquina do que é roteado.
+:::
+
+Os três ganchos que importam para um firewall de estação são `input` (o que chega para mim), `output` (o que eu emito) e `forward` (o que passa por mim). Os dois de NAT, `prerouting` e `postrouting`, entram quando a máquina é gateway.
+
+## Estado da conexão: a regra que muda tudo
+
+O salto conceitual que separa um firewall ingênuo de um utilizável é o **rastreamento de conexão** (*conntrack*). O kernel lembra das conexões que já viu e classifica cada pacote:
+
+- **`new`** — o primeiro pacote, tentando abrir conexão.
+- **`established`** — pertence a uma conexão já aceita.
+- **`related`** — uma conexão nova mas ligada a outra existente (o canal de dados do FTP, um erro ICMP).
+- **`invalid`** — não casa com estado nenhum; quase sempre lixo, a descartar.
+
+Por que isso é central: sem estado, para permitir que você navegue você teria de abrir manualmente todas as portas altas por onde as **respostas** voltam — o que é impossível de prever e abriria a máquina inteira. Com estado, uma única regra resolve:
+
+```
+aceite tudo que for established ou related
+```
+
+A partir daí, você só precisa decidir o que **inicia** conexão (`new`). A resposta vem de graça, porque pertence a uma conexão que aquela regra já aceitou. Toda base de firewall sensata começa assim:
+
+```bash
+# permite o retorno de tudo que já foi aceito, e o tráfego interno da própria máquina
+nft add rule inet filter input ct state established,related accept
+nft add rule inet filter input iif lo accept
+nft add rule inet filter input ct state invalid drop
+```
+
+A regra do `lo` (loopback) não é opcional: incontáveis serviços conversam consigo mesmos por `127.0.0.1`, e uma política padrão `drop` sem liberar o loopback quebra metade do sistema de formas que não parecem problema de firewall.
+
+## `nftables` na prática
+
+O `nftables` organiza tudo em **tabelas** (contêineres por família de protocolo) que contêm **cadeias** (penduradas nos ganchos) que contêm **regras**. A família `inet` cobre IPv4 e IPv6 de uma vez — é a que você quer.
+
+Um conjunto de regras completo e comentado, do jeito que se escreve num arquivo:
+
+```bash
+# /etc/nftables.conf
+#!/usr/sbin/nft -f
+
+flush ruleset                          # começa do zero, de forma idempotente
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        ip protocol icmp accept            # ping e diagnóstico
+        ip6 nexthdr icmpv6 accept          # NDP é essencial em IPv6
+
+        tcp dport 22 ct state new accept   # SSH
+        tcp dport { 80, 443 } ct state new accept   # web
+
+        # limita a taxa de novas conexões SSH: contém força bruta
+        # tcp dport 22 ct state new limit rate 4/minute accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+```
+
+Carregar, conferir e persistir:
+
+```bash
+sudo nft -f /etc/nftables.conf         # aplica o arquivo inteiro, atomicamente
+sudo nft list ruleset                  # mostra o estado atual
+sudo systemctl enable nftables         # carrega /etc/nftables.conf no boot
+```
+
+Duas vantagens do `nftables` que a figura não mostra e que valem o custo de aprender a sintaxe nova:
+
+**Aplicação atômica.** `nft -f arquivo` troca o conjunto inteiro de uma vez — não existe a janela em que metade das regras está no ar e a outra metade não, que no `iptables` deixa a máquina momentaneamente sem proteção ou sem acesso.
+
+**Conjuntos e mapas nativos.** Bloquear cem endereços é um conjunto, não cem regras:
+
+```bash
+nft add rule inet filter input ip saddr { 10.0.0.5, 192.0.2.0/24, 203.0.113.7 } drop
+```
+
+E conjuntos nomeados podem ser preenchidos dinamicamente — a base de um `fail2ban` moderno.
+
+## `iptables`: o que você vai encontrar
+
+Você precisa saber ler e ajustar `iptables` porque é o que está instalado no sistema legado e escrito no tutorial. A tradução do conjunto acima:
+
+```bash
+# política padrão: bloquear o que entra e o que passa, permitir o que sai
+sudo iptables -P INPUT DROP
+sudo iptables -P FORWARD DROP
+sudo iptables -P OUTPUT ACCEPT
+
+# a base com estado
+sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+sudo iptables -A INPUT -i lo -j ACCEPT
+sudo iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+
+# serviços
+sudo iptables -A INPUT -p icmp -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 443 -m conntrack --ctstate NEW -j ACCEPT
+```
+
+As opções que resolvem o caso da abertura e os erros vizinhos:
+
+| Opção | Efeito | Cuidado |
+|---|---|---|
+| `-A cadeia` | **A**crescenta ao fim | vai **depois** de um `DROP` já existente e nunca é alcançada |
+| `-I cadeia [n]` | **I**nsere no topo (ou na posição `n`) | a forma de pôr uma regra antes das outras |
+| `-D cadeia ...` | apaga a regra que casa | |
+| `-P cadeia alvo` | define a **política padrão** da cadeia | `-P INPUT DROP` sem antes liberar SSH tranca você para fora |
+| `-L -n -v --line-numbers` | lista com números e contadores | a forma de **ver a ordem real** |
+| `-F` | esvazia a cadeia | com política `DROP`, corta todo o acesso na hora |
+
+: Opções de `iptables` e onde cada uma morde {#tbl-iptables}
+
+O comando de diagnóstico é sempre o mesmo, e teria mostrado o problema da abertura em uma linha:
+
+```bash
+sudo iptables -L INPUT -n -v --line-numbers
+```
+
+A coluna de contadores (`pkts`) é ouro: uma regra que deveria estar pegando tráfego e mostra `0 packets` não está sendo alcançada — ou está na posição errada, ou o tráfego não é o que você pensa.
+
+::: {.callout-warning}
+**Política padrão `DROP` na cadeia `INPUT` corta a sessão SSH atual no mesmo instante**, se a regra que libera o SSH ainda não estiver no lugar. A ordem correta e inegociável em máquina remota: primeiro insira a regra de `established,related` e a de SSH, **confirme numa segunda conexão que elas funcionam**, e só então mude a política para `DROP`. Melhor ainda, agende uma rede de segurança que restaura tudo em 5 minutos caso você se tranque: `echo 'iptables -P INPUT ACCEPT; iptables -F' | sudo at now + 5 minutes` (@sec-cap043). Se tudo der certo, `sudo atrm` cancela o resgate.
+:::
+
+## Persistência: o firewall que não sobrevive ao boot
+
+Regra de `iptables` e `nft` digitada na mão vive na memória do kernel e some no reboot — o mesmo problema de camadas do @sec-cap079. Persistir depende da ferramenta:
+
+- **`nftables`**: o serviço `nftables.service` carrega `/etc/nftables.conf` no boot. Escreva o arquivo, `systemctl enable nftables`, pronto.
+- **`iptables`**: o pacote `iptables-persistent` grava as regras em `/etc/iptables/rules.v4` e `rules.v6` e as recarrega. `sudo netfilter-persistent save` captura o estado atual.
+
+```bash
+sudo apt install iptables-persistent      # pergunta se quer salvar o estado atual
+sudo netfilter-persistent save            # salva as regras correntes
+sudo nft list ruleset > /etc/nftables.conf  # exporta o nft atual para o arquivo de boot
+```
+
+O erro clássico: configurar tudo na mão, testar, comemorar, reiniciar — e a máquina volta sem firewall nenhum. Persistir é um passo separado, sempre.
+
+## NAT e mascaramento: transformando a máquina em gateway
+
+Quando a máquina roteia uma rede interna para a internet — o caso do namespace do @sec-cap079 que ficou sem saída —, faltam duas coisas: habilitar o encaminhamento e mascarar o endereço de origem.
+
+```bash
+# 1. habilitar roteamento no kernel (temporário; para persistir, /etc/sysctl.d/)
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# 2. mascarar: trocar o IP de origem privado pelo da interface de saída
+sudo nft add table ip nat
+sudo nft add chain ip nat postrouting { type nat hook postrouting priority 100 \; }
+sudo nft add rule ip nat postrouting oifname "enp0s3" masquerade
+```
+
+O `masquerade` é o SNAT que acontece no `postrouting` (depois da decisão de rota, quando a interface de saída já é conhecida) e reescreve o endereço privado da rede interna para o endereço público da máquina. É exatamente o que o roteador doméstico faz, e o que faltava para o namespace do capítulo anterior alcançar a internet. Redirecionamento de porta (DNAT) é o espelho disso no `prerouting`:
+
+```bash
+sudo nft add rule ip nat prerouting iif "enp0s3" tcp dport 8080 dnat to 192.168.99.2:80
+```
+
+## 🐉 No Kali
+
+- **O Kali não vem com firewall carregado, de propósito.** `sudo nft list ruleset` numa instalação nova retorna vazio, e `iptables -L` mostra as três cadeias com política `ACCEPT`. Não é falha: uma máquina de teste precisa que o tráfego flua sem obstáculo para não confundir "o firewall bloqueou" com "o alvo não respondeu". A contrapartida é que **a proteção é responsabilidade sua** — e uma máquina Kali em Wi-Fi público sem regra nenhuma expõe tudo o que estiver escutando (@sec-cap080).
+- **Firewall de saída é o que contém o shell reverso, e quase ninguém configura.** Todo mundo filtra o que entra; poucos filtram o que sai. Mas o padrão de um comprometimento (@sec-cap082) é uma conexão de **saída**, iniciada pela máquina invadida, para uma porta alta num servidor de controle. Uma política `output` que só permite o que a máquina de fato precisa emitir transforma um comprometimento em uma tentativa frustrada visível no log. É a medida defensiva com a melhor relação custo-benefício, e a mais negligenciada.
+- **`conntrack` é ferramenta de análise, não só de firewall.** `conntrack -L` lista todas as conexões que o kernel rastreia neste instante, com origem, destino, estado e contadores. Num host sob suspeita, é a visão em tempo real do que está conectado agora — complementar ao `ss` (@sec-cap080) e mais difícil de um processo de espaço de usuário falsear, porque vive no kernel.
+- **Limitar taxa de conexão nova é contenção de força bruta na origem.** A regra `tcp dport 22 ct state new limit rate 4/minute` derruba a eficiência dos 41 mil ataques diários do @sec-cap081 sem depender de daemon externo. É a versão nativa do que o `fail2ban` faz de forma mais elaborada, e roda no kernel, antes de o `sshd` gastar um ciclo.
+- **Testar o próprio firewall exige gerar o tráfego, e é aí que o laboratório fecha o ciclo.** Regra escrita não é regra testada: monte a política, e do namespace ou de outra VM dispare `nc -zv`, `curl` e `ping` contra ela (@sec-cap082), conferindo os contadores de `nft list ruleset` para ver qual regra pegou cada pacote. Firewall que nunca viu tráfego de teste é firewall que você **acha** que funciona.
+
+> **Nota sobre a família RHEL.** A diferença é grande e prática. O RHEL usa **`firewalld`** por cima do Netfilter — um daemon com o conceito de *zonas* (`public`, `internal`, `trusted`), configurado por `firewall-cmd`, e que vem **ativo e restritivo de fábrica**. Liberar um serviço é `sudo firewall-cmd --add-service=https --permanent && sudo firewall-cmd --reload`, não uma regra `nft` direta — e mexer no `nftables` por baixo do `firewalld` gera conflito, porque o daemon reescreve o conjunto. É por isso que um serviço recém-instalado no RHEL responde `timeout` de fora enquanto no Kali, sem firewall, conecta na hora (@sec-cap080). Por baixo, o motor é o mesmo Netfilter; o que muda é quem escreve as regras.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali **pelo console**, não por SSH — a política padrão `DROP` corta conexão remota. Todo o exercício é reversível e termina limpando o estado.
+
+1. **Confirme que o Kali começa sem firewall.**
+
+   ```bash
+   sudo nft list ruleset
+   sudo iptables -L -n -v
+   ```
+
+   Esperado: o `nft` não retorna nada e o `iptables` mostra as três cadeias com política `ACCEPT` e contadores zerados. É o estado de fábrica.
+
+2. **Suba serviços de teste e confirme que respondem sem filtro.**
+
+   ```bash
+   python3 -m http.server 8080 &
+   sudo systemctl start ssh 2>/dev/null || true
+   sleep 1
+   nc -zv 127.0.0.1 8080
+   nc -zv 127.0.0.1 22
+   ```
+
+   Esperado: as duas portas aceitam conexão. É a linha de base — tudo aberto.
+
+3. **Monte a base com estado, com rede de segurança.**
+
+   ```bash
+   echo 'nft flush ruleset' | sudo at now + 5 minutes    # resgate automático
+   sudo nft add table inet filter
+   sudo nft 'add chain inet filter input { type filter hook input priority 0; policy drop; }'
+   sudo nft add rule inet filter input ct state established,related accept
+   sudo nft add rule inet filter input iif lo accept
+   sudo nft add rule inet filter input ct state invalid drop
+   sudo nft list chain inet filter input
+   ```
+
+   Esperado: a cadeia com política `drop` e as três primeiras regras. O `at` garante que, se você se trancar, tudo é limpo em 5 minutos. Note que ainda **não** liberamos porta de serviço nenhuma.
+
+4. **Veja o loopback importar.**
+
+   ```bash
+   curl -s -m3 -o /dev/null -w 'loopback: %{http_code}\n' http://127.0.0.1:8080/ \
+       || echo "loopback bloqueado"
+   ```
+
+   Esperado: funciona, porque a regra `iif lo accept` já está no lugar. Remova-a mentalmente e o resultado seria um sistema pela metade — é por isso que ela nunca é opcional.
+
+5. **Comprove que a porta 8080 está fechada e então libere-a.**
+
+   ```bash
+   nc -zv -w2 127.0.0.1 8080 || echo "8080 bloqueada, como esperado (nao e loopback puro)"
+   sudo nft add rule inet filter input tcp dport 8080 ct state new accept
+   nc -zv -w2 127.0.0.1 8080 && echo "8080 liberada"
+   ```
+
+   Esperado: antes da regra, a conexão pela pilha externa é barrada; depois, aceita. (Pelo `127.0.0.1` puro o `lo` já deixaria passar; o teste fica mais claro contra o IP real da interface, se quiser repetir com ele.)
+
+6. **Reproduza o caso da abertura: a regra que não pega.**
+
+   ```bash
+   sudo iptables -N labchain 2>/dev/null; sudo iptables -F labchain
+   sudo iptables -A labchain -j DROP
+   sudo iptables -A labchain -p tcp --dport 80 -j ACCEPT      # depois do DROP: inútil
+   sudo iptables -L labchain -n -v --line-numbers
+   ```
+
+   Esperado: a listagem mostra o `ACCEPT` **abaixo** do `DROP`. Os contadores confirmam que o `ACCEPT` nunca é alcançado. Agora corrija com `-I`:
+
+   ```bash
+   sudo iptables -I labchain 1 -p tcp --dport 80 -j ACCEPT
+   sudo iptables -L labchain -n -v --line-numbers
+   sudo iptables -F labchain && sudo iptables -X labchain
+   ```
+
+   Esperado: com `-I 1` a regra vai para o topo, antes do `DROP`, e passa a valer. Ordem, não sintaxe.
+
+7. **Bloqueie um conjunto de endereços de uma vez.**
+
+   ```bash
+   sudo nft add rule inet filter input ip saddr { 192.0.2.10, 198.51.100.0/24 } drop
+   sudo nft list chain inet filter input | grep saddr
+   ```
+
+   Esperado: uma única regra cobrindo um host e uma faixa inteira — o que no `iptables` seriam várias linhas. É a vantagem de conjunto nativo.
+
+8. **Limite a taxa de novas conexões.**
+
+   ```bash
+   sudo nft add rule inet filter input tcp dport 22 ct state new limit rate 4/minute accept
+   sudo nft add rule inet filter input tcp dport 22 ct state new drop
+   sudo nft -a list chain inet filter input | tail -5
+   ```
+
+   Esperado: as duas regras juntas aceitam até 4 conexões novas de SSH por minuto e descartam o excesso — contenção de força bruta feita no kernel.
+
+9. **Leia os contadores para ver qual regra pegou o quê.**
+
+   ```bash
+   sudo nft list ruleset | grep -A20 'chain input'
+   nc -zv -w2 127.0.0.1 8080
+   sudo nft list ruleset | grep -A20 'chain input'
+   ```
+
+   Esperado: o contador de pacotes/bytes da regra da 8080 sobe entre as duas listagens. É o equivalente `nft` da coluna `pkts` do `iptables`, e a forma objetiva de saber que uma regra está sendo usada.
+
+10. **Monte NAT para o namespace do capítulo anterior alcançar a internet.**
+
+    ```bash
+    sudo ip netns add lab 2>/dev/null
+    sudo ip link add veth0 type veth peer name veth1 2>/dev/null
+    sudo ip link set veth1 netns lab
+    sudo ip addr add 192.168.99.1/24 dev veth0 2>/dev/null
+    sudo ip link set veth0 up
+    sudo ip netns exec lab ip addr add 192.168.99.2/24 dev veth1 2>/dev/null
+    sudo ip netns exec lab ip link set veth1 up
+    sudo ip netns exec lab ip link set lo up
+    sudo ip netns exec lab ip route add default via 192.168.99.1
+    IF=$(ip route | awk '/^default/{print $5; exit}')
+    sudo sysctl -w net.ipv4.ip_forward=1
+    sudo nft add table ip nat
+    sudo nft "add chain ip nat postrouting { type nat hook postrouting priority 100 ; }"
+    sudo nft add rule ip nat postrouting oifname "$IF" masquerade
+    sudo iptables -P FORWARD ACCEPT   # (ou uma regra forward especifica)
+    sudo ip netns exec lab ping -c2 1.1.1.1
+    ```
+
+    Esperado: agora o namespace alcança a internet. O que faltava no @sec-cap079 eram estas duas peças — `ip_forward` e `masquerade`. O `ping` responde saindo mascarado pelo IP da sua interface.
+
+11. **Restaure a máquina ao estado de fábrica.**
+
+    ```bash
+    sudo nft flush ruleset
+    sudo iptables -F; sudo iptables -X
+    sudo iptables -P INPUT ACCEPT; sudo iptables -P FORWARD ACCEPT
+    sudo sysctl -w net.ipv4.ip_forward=0
+    sudo ip netns del lab 2>/dev/null
+    sudo atrm $(atq | awk '{print $1}') 2>/dev/null || true
+    kill %1 2>/dev/null
+    sudo nft list ruleset; echo "--- firewall limpo ---"
+    ping -c1 -W2 1.1.1.1 && echo "conectividade ok"
+    ```
+
+    Esperado: conjunto de regras vazio, políticas de volta em `ACCEPT`, o resgate do `at` cancelado e a conectividade intacta. A máquina está como começou.
+
+## Resumo
+
+- **Firewall é uma lista ordenada avaliada de cima para baixo, e a primeira regra que casa decide.** Quase todo erro é de ordem: uma regra de `ACCEPT` colocada com `-A` depois de um `DROP` genérico nunca é alcançada — o caso da abertura.
+- **`iptables` e `nftables` são duas interfaces para o mesmo motor, o Netfilter.** No Kali atual o `iptables` já é um invólucro do `nftables`. Aprenda `iptables` para ler o que existe, `nftables` para escrever o que é novo.
+- **A decisão de roteamento parte o fluxo:** tráfego para a máquina passa por `input`, tráfego de passagem por `forward`. Escrever regra em `input` num gateway é o erro clássico — o pacote a filtrar está em `forward`.
+- **Rastreamento de estado é o que torna o firewall utilizável.** Uma regra que aceita `established,related` faz toda resposta voltar de graça; você só decide o que inicia conexão (`new`). E `iif lo accept` nunca é opcional.
+- **Política padrão `DROP` corta a sessão SSH no instante em que é aplicada** se a regra de SSH ainda não estiver no lugar. Ordem inegociável: regras primeiro, testar em conexão nova, política depois — com uma rede de segurança agendada por `at`.
+- **A coluna de contadores diz a verdade.** Uma regra que deveria pegar tráfego e mostra `0 packets` está na posição errada ou vê tráfego diferente do que você imagina.
+- **Persistir é um passo separado.** Regra na memória some no reboot; `nftables.service` carrega `/etc/nftables.conf`, `iptables-persistent` salva as cadeias. Configurar, testar e reiniciar sem salvar volta sem firewall.
+- **Firewall de saída contém o shell reverso** e quase ninguém configura; `masquerade` no `postrouting` mais `ip_forward` transformam a máquina em gateway — as duas peças que faltavam para o namespace do capítulo anterior alcançar a internet.
