@@ -1,3 +1,457 @@
 # O kernel Linux: módulos, /proc e /sys {#sec-cap098}
 
-*(em elaboracao)*
+O adaptador USB de Wi-Fi funcionava. Na terça-feira, depois de um `apt full-upgrade` e do reboot que ele pediu, `ip link` mostra apenas `lo` e `eth0`. O adaptador está fisicamente no lugar, o LED acende, `lsusb` lista o dispositivo — e nenhuma interface `wlan0` aparece. Nada no journal chama atenção. O sistema está funcionando perfeitamente, exceto pela parte que importa.
+
+O que aconteceu é simples e invisível: o `full-upgrade` instalou um kernel novo, o módulo do driver tinha sido compilado contra o kernel antigo, e ninguém recompilou nada. O dispositivo existe, o driver não. Para diagnosticar isso é preciso descer um degrau abaixo de tudo o que este manual fez até aqui — abaixo dos processos do @sec-cap027, dos serviços do @sec-cap040, dos sistemas de arquivos do @sec-cap047 e das interfaces do @sec-cap078. Todos eles são fachadas de uma única peça de software que executa por baixo: o kernel.
+
+Este capítulo abre essa caixa. Não para escrever drivers, mas para saber onde olhar, o que perguntar ao sistema e como responder a "por que o Linux não está vendo esse hardware".
+
+## Onde o kernel começa e o seu programa termina
+
+Um processador moderno executa código em pelo menos dois níveis de privilégio. No nível privilegiado — chamado de *kernel space*, ou anel 0 — o código pode acessar qualquer endereço de memória física, falar diretamente com dispositivos e desligar interrupções. No nível não privilegiado — *user space* — nada disso é possível: uma tentativa de acessar memória alheia termina em `SIGSEGV`, e uma instrução de E/S direta termina em falha.
+
+Todo programa que você executou até aqui vive em user space. `ls`, `bash`, `nmap`, o navegador: nenhum deles consegue ler um bloco de disco. O que eles conseguem é **pedir**. A fronteira entre os dois mundos é a **chamada de sistema** (*system call*, ou syscall): uma instrução especial que transfere o controle para o kernel num ponto de entrada controlado, com um número que identifica o serviço desejado.
+
+::: {#fig-camadas-kernel}
+```{.tikz}
+%%| filename: camadas-kernel
+%%| alt: Camadas do sistema, de aplicacoes em user space ate o hardware, com a fronteira de syscall no meio
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum height=0.95cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.7mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!10,minimum width=11.6cm] (app) at (0,5.4)
+    {\textbf{aplicações} --- \tiny bash, ls, nmap, Firefox, seus scripts};
+  \node[bx,draw=manualblue,fill=manualblue!16,minimum width=11.6cm] (lib) at (0,4.2)
+    {\textbf{bibliotecas de sistema} --- \tiny glibc, libssl, libpcap};
+
+  \draw[dashed,very thick,manualred] (-6.2,3.35) -- (6.2,3.35);
+  \node[font=\scriptsize,manualred,anchor=west] at (-6.2,3.08) {fronteira de privilégio: a chamada de sistema};
+
+  \node[bx,draw=manualgreen,fill=manualgreen!12,minimum width=11.6cm] (sys) at (0,2.2)
+    {\textbf{tabela de chamadas de sistema} --- \tiny open, read, write, fork, execve, mmap, socket};
+
+  \node[bx,draw=manualgreen,fill=manualgreen!8,minimum width=2.7cm] (sched) at (-4.4,0.85) {escalonador\\\tiny processos};
+  \node[bx,draw=manualgreen,fill=manualgreen!8,minimum width=2.7cm] (mm)    at (-1.45,0.85){memória\\\tiny páginas e cache};
+  \node[bx,draw=manualgreen,fill=manualgreen!8,minimum width=2.7cm] (vfs)   at (1.45,0.85) {VFS\\\tiny ext4, Btrfs, proc};
+  \node[bx,draw=manualgreen,fill=manualgreen!8,minimum width=2.7cm] (net)   at (4.4,0.85)  {pilha de rede\\\tiny TCP/IP, netfilter};
+
+  \node[bx,draw=manualyellow,fill=manualyellow!22,minimum width=11.6cm] (drv) at (0,-0.5)
+    {\textbf{drivers de dispositivo} --- \tiny em geral módulos carregáveis (.ko em /lib/modules)};
+  \node[bx,draw=manualgray,fill=manualgray!12,minimum width=11.6cm] (hw) at (0,-1.7)
+    {\textbf{hardware} --- \tiny CPU, RAM, discos, placas de rede, USB};
+
+  \draw[fl] (app) -- (lib);
+  \draw[fl] (lib) -- (sys);
+  \draw[fl] (sys) -- (sched);
+  \draw[fl] (sys) -- (mm);
+  \draw[fl] (sys) -- (vfs);
+  \draw[fl] (sys) -- (net);
+  \draw[fl] (0,0.35) -- (drv);
+  \draw[fl] (drv) -- (hw);
+
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=2.5cm,anchor=west] (procfs) at (6.7,2.2)
+    {\texttt{/proc}\\\tiny processos e kernel};
+  \node[bx,draw=manualred,fill=manualred!10,minimum width=2.5cm,anchor=west] (sysfs) at (6.7,0.85)
+    {\texttt{/sys}\\\tiny dispositivos};
+  \draw[fl,manualred] (procfs.west) -- (5.9,2.2);
+  \draw[fl,manualred] (sysfs.west) -- (5.9,0.85);
+
+  \node[nt,text width=12.6cm,anchor=north] at (0,-2.5)
+    {Tudo acima da linha vermelha pode apenas \emph{pedir}. Tudo abaixo dela executa com privilégio total. As duas caixas à direita são a via de inspeção: \texttt{/proc} e \texttt{/sys} não são diretórios em disco, e sim sistemas de arquivos virtuais que expõem estruturas internas do kernel como se fossem arquivos de texto --- o que permite examinar e ajustar o kernel com \texttt{cat} e \texttt{echo}.};
+\end{tikzpicture}
+```
+As camadas do sistema, da aplicação ao hardware, e a fronteira de privilégio no meio.
+:::
+
+Quantas syscalls existem? Perto de 350 no x86-64. Você pode listar as que um programa usa — é o assunto do @sec-cap102 —, mas o número relevante aqui é outro: **uma**. Basta uma syscall mal implementada para comprometer a máquina inteira, e é por isso que a superfície de ataque do kernel importa tanto quanto a das aplicações, tema que o @sec-cap085 tratou do lado defensivo.
+
+## Monolítico, mas modular
+
+Linux é um kernel **monolítico**: escalonador, gerência de memória, sistemas de arquivos e pilha de rede executam todos no mesmo espaço de endereçamento privilegiado. A alternativa histórica, o micronúcleo, empurra o máximo possível para user space; a discussão rendeu um dos debates mais famosos da história da computação, e o Linux ganhou na prática por desempenho.
+
+Monolítico não quer dizer, porém, bloco único e imutável. O Linux carrega e descarrega código em tempo de execução por meio de **módulos**: arquivos `.ko` (de *kernel object*) que passam a fazer parte do kernel quando carregados. É por isso que uma única imagem de kernel funciona em milhares de combinações de hardware — ela carrega só os drivers do que encontra.
+
+```bash
+uname -r                       # versao do kernel em execucao: 6.12.13-amd64
+uname -a                       # tudo: kernel, arquitetura, data de compilacao
+ls /boot/vmlinuz-*             # as imagens de kernel instaladas
+ls /lib/modules/$(uname -r)/kernel/drivers/ | head
+```
+
+O diretório `/lib/modules/$(uname -r)/` é a peça central e explica de imediato o problema da abertura: **cada versão de kernel tem o seu próprio conjunto de módulos**. Um módulo compilado para o `6.12.13` não carrega no `6.12.20`; o kernel recusa por incompatibilidade da `vermagic`. Instalar um kernel novo sem recompilar os módulos externos deixa exatamente aquele buraco.
+
+### Inspecionando e carregando módulos
+
+```bash
+lsmod                          # o que esta carregado, tamanho e quem depende
+lsmod | wc -l                  # tipicamente 100 a 200 modulos numa maquina normal
+modinfo e1000e                 # autor, licenca, descricao, parametros, vermagic
+modinfo -F depends btrfs       # so o campo de dependencias
+```
+
+O `lsmod` nada mais é do que uma apresentação de `/proc/modules` — o primeiro exemplo de sistema de arquivos virtual que veremos com atenção adiante.
+
+Para carregar e descarregar:
+
+```bash
+sudo modprobe dummy            # carrega, resolvendo dependencias automaticamente
+sudo modprobe -r dummy         # descarrega, se ninguem estiver usando
+sudo modprobe -v vfat          # -v mostra o que foi carregado em cascata
+
+sudo insmod ./meu_modulo.ko    # carrega o arquivo direto, SEM resolver dependencias
+sudo rmmod meu_modulo          # descarrega pelo nome
+```
+
+A distinção entre `modprobe` e `insmod` é a mesma que existe entre `apt` e `dpkg` (@sec-cap035): `modprobe` conhece o grafo de dependências — construído por `depmod` e gravado em `modules.dep` — e resolve o que falta; `insmod` faz exatamente o que você mandou e falha com `Unknown symbol in module` se algum pré-requisito não estiver presente. Use `modprobe` sempre, exceto ao testar um `.ko` recém-compilado que ainda não foi instalado.
+
+::: {.callout-warning}
+**Descarregar módulo em produção não é operação inócua.** `modprobe -r` num driver de disco, de sistema de arquivos montado ou da placa de rede pela qual você está conectado por SSH derruba o serviço na hora — e, no caso do driver de rede, derruba a sua própria sessão sem chance de desfazer. O kernel se recusa a descarregar um módulo com uso registrado (a coluna `Used by` do `lsmod`), mas essa contagem nem sempre reflete todo o uso real. Ensaie em VM descartável.
+:::
+
+### Configuração persistente: `/etc/modprobe.d` e `/etc/modules-load.d`
+
+Carregar na mão vale para teste. O que persiste entre reboots vive em arquivos:
+
+```bash
+# forcar o carregamento de um modulo no boot
+echo 'dummy' | sudo tee /etc/modules-load.d/lab.conf
+
+# passar parametros a um modulo
+echo 'options iwlwifi power_save=0' | sudo tee /etc/modprobe.d/iwlwifi.conf
+
+# impedir o carregamento automatico de um driver
+printf 'blacklist nouveau\ninstall nouveau /bin/false\n' \
+  | sudo tee /etc/modprobe.d/blacklist-nouveau.conf
+sudo update-initramfs -u        # ESSENCIAL: a blacklist tambem entra no initramfs
+```
+
+O par `blacklist` mais `install ... /bin/false` merece explicação, porque a diferença já custou muitas horas: `blacklist` impede apenas o carregamento **automático por alias**, quando o udev detecta o hardware; não impede que outro módulo, ao declarar dependência, puxe o proibido. A linha `install <mod> /bin/false` fecha essa porta substituindo a ação de carregamento por um comando que sempre falha. O caso clássico é o driver livre `nouveau` de placas NVIDIA, que precisa sair de cena antes de o driver proprietário entrar.
+
+O `update-initramfs -u` é o passo esquecido com mais frequência. O **initramfs** é um sistema de arquivos mínimo carregado na memória antes da raiz real (@sec-cap039); ele contém a sua própria cópia dos módulos e da configuração do `modprobe`. Se a blacklist só existir no disco, o módulo indesejado já terá sido carregado pelo initramfs quando o sistema real subir.
+
+### Assinatura, Secure Boot e o kernel "contaminado"
+
+Kernels de distribuições modernas verificam assinaturas criptográficas de módulos. Com Secure Boot ativo, um módulo não assinado simplesmente não carrega — o erro é `Key was rejected by service` ou `Required key not available`, mensagem que quase nunca sugere a causa real. As saídas são assinar o módulo com uma chave MOK registrada no firmware, ou desativar o Secure Boot na máquina de laboratório.
+
+Carregar código externo também "contamina" o kernel:
+
+```bash
+cat /proc/sys/kernel/tainted   # 0 = limpo; qualquer outro numero e um mapa de bits
+dmesg | grep -i taint
+```
+
+Um kernel contaminado não está quebrado — apenas contém código que os mantenedores não podem auditar (driver proprietário, módulo fora da árvore oficial, `insmod --force`). O valor é um mapa de bits documentado em `admin-guide/tainted-kernels`, no fonte do kernel, e é a primeira coisa que um mantenedor pergunta quando você reporta um bug.
+
+### DKMS: o mecanismo que resolve o problema da abertura
+
+**DKMS** (*Dynamic Kernel Module Support*) mantém o fonte de um módulo registrado no sistema e o **recompila automaticamente** toda vez que um kernel novo é instalado.
+
+```bash
+sudo apt install dkms linux-headers-$(uname -r)
+dkms status                      # o que esta registrado e para quais kernels
+sudo dkms autoinstall            # recompila o que faltar para o kernel atual
+sudo dkms install -m realtek-rtl88xxau -v 5.6.4.2
+```
+
+O pacote `linux-headers-$(uname -r)` é o pré-requisito absoluto: sem os cabeçalhos correspondentes ao kernel em execução não há como compilar módulo nenhum, e o erro que aparece é sempre uma variação de "kernel source not found". No caso da abertura deste capítulo, o diagnóstico completo tem três comandos: `dkms status` mostra o módulo registrado apenas para o kernel antigo, `apt install linux-headers-$(uname -r)` traz os cabeçalhos novos e `dkms autoinstall` reconstrói. O adaptador volta.
+
+## `/proc`: processos e kernel como arquivos de texto
+
+`/proc` não ocupa um byte de disco. É um sistema de arquivos virtual (tipo `proc`, montado em `/proc`) cujos "arquivos" são gerados sob demanda por funções do kernel quando alguém os lê. Foi criado para expor informação de processos — daí o nome — e virou o depósito histórico de quase toda a introspecção do sistema.
+
+```bash
+mount | grep ' /proc '           # proc on /proc type proc (rw,nosuid,nodev,noexec)
+ls /proc | head -20              # numeros = PIDs; nomes = informacao global
+```
+
+Cada processo tem um diretório `/proc/<PID>/`, e é dele que `ps`, `top` e `htop` (@sec-cap028) tiram tudo o que mostram:
+
+| Caminho | O que contém |
+|---|---|
+| `/proc/<PID>/cmdline` | linha de comando completa, campos separados por byte nulo |
+| `/proc/<PID>/status` | estado, UID, threads, memória e capabilities em formato legível |
+| `/proc/<PID>/maps` | mapa de memória virtual: bibliotecas, pilha, heap |
+| `/proc/<PID>/fd/` | links simbólicos para cada descritor aberto |
+| `/proc/<PID>/environ` | variáveis de ambiente do processo, separadas por nulo |
+| `/proc/<PID>/limits` | limites de recursos em vigor (@sec-cap032) |
+| `/proc/<PID>/ns/` | os namespaces do processo — assunto do @sec-cap099 |
+
+: Os arquivos mais úteis dentro de `/proc/<PID>/` {#tbl-proc-pid}
+
+```bash
+tr '\0' ' ' < /proc/$$/cmdline; echo      # cmdline legivel: os nulos viram espacos
+grep -E 'Name|State|Threads' /proc/self/status
+ls -l /proc/self/fd                        # 0, 1, 2 e o que mais estiver aberto
+```
+
+`/proc/self` é um atalho que sempre aponta para o processo que está lendo — inclusive dentro de scripts, onde `$$` às vezes surpreende por causa de subshells (@sec-cap074).
+
+Fora dos PIDs, `/proc` guarda o retrato global:
+
+```bash
+cat /proc/version          # versao do kernel e do compilador usado
+cat /proc/cmdline          # os parametros com que o GRUB iniciou o kernel
+grep 'model name' /proc/cpuinfo | head -1
+grep -E 'MemTotal|MemAvailable' /proc/meminfo
+cat /proc/loadavg          # as tres medias de carga e o PID mais recente
+cat /proc/interrupts | head # interrupcoes por CPU e por dispositivo
+cat /proc/mounts           # o que esta montado, do ponto de vista do kernel
+```
+
+O `/proc/cmdline` é subestimado: responde de imediato a perguntas como "este sistema está com `mitigations=off`?", "o IOMMU está ligado?", "qual raiz o GRUB passou?".
+
+### `/proc/sys` e o `sysctl`: os botões do kernel
+
+Um ramo de `/proc` é especial porque é **gravável**: `/proc/sys` expõe parâmetros ajustáveis em tempo de execução. `sysctl` é a interface oficial para eles e traduz caminho em nome pontuado — `/proc/sys/net/ipv4/ip_forward` vira `net.ipv4.ip_forward`.
+
+```bash
+sysctl -a | wc -l                        # mais de mil parametros
+sysctl net.ipv4.ip_forward               # ler
+sudo sysctl -w net.ipv4.ip_forward=1     # gravar; vale ate o proximo boot
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward   # exatamente a mesma coisa
+
+# persistente:
+echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-lab.conf
+sudo sysctl --system                     # recarrega todos os arquivos de configuracao
+```
+
+| Parâmetro | Efeito | Onde apareceu |
+|---|---|---|
+| `net.ipv4.ip_forward` | encaminhar pacotes entre interfaces | roteamento e NAT (@sec-cap083) |
+| `kernel.dmesg_restrict` | só root lê o buffer do kernel | hardening (@sec-cap085) |
+| `kernel.yama.ptrace_scope` | quem pode depurar quem | `strace` (@sec-cap102) |
+| `kernel.unprivileged_userns_clone` | usuário comum pode criar namespace | contêineres (@sec-cap099) |
+| `vm.swappiness` | agressividade da troca para swap | memória (@sec-cap032) |
+| `fs.file-max` | teto global de descritores abertos | limites (@sec-cap032) |
+| `net.ipv4.conf.all.rp_filter` | descarta pacote com origem implausível | anti-spoofing |
+
+: Parâmetros de `sysctl` que aparecem com mais frequência {#tbl-sysctl-uteis}
+
+## `/sys`: o modelo de dispositivos
+
+`/proc` cresceu sem plano e virou um sótão. `/sys` — o **sysfs** — nasceu depois com uma regra clara: representar a árvore de dispositivos do kernel de forma estruturada, um valor por arquivo. Onde `/proc/cpuinfo` despeja um bloco de texto para o humano ler, o sysfs prefere `/sys/class/net/eth0/mtu` contendo exatamente `1500`.
+
+```bash
+ls /sys
+ls /sys/class/net/                 # uma entrada por interface de rede
+cat /sys/class/net/eth0/address    # o MAC, sem precisar analisar a saida do `ip`
+cat /sys/class/net/eth0/operstate  # up ou down
+ls /sys/block/                     # discos e dispositivos de bloco
+cat /sys/block/sda/queue/rotational # 1 = disco mecanico, 0 = SSD
+ls /sys/module/                    # um diretorio por modulo carregado
+cat /sys/module/iwlwifi/parameters/power_save
+```
+
+Os subdiretórios que mais rendem no dia a dia:
+
+- `/sys/class/` — visões por **função**: `net`, `block`, `tty`, `power_supply`, `thermal`, `leds`.
+- `/sys/block/` — dispositivos de bloco, com filas, agendador de E/S e estatísticas.
+- `/sys/devices/` — a árvore física real, do barramento ao dispositivo; tudo em `class` e `block` são links simbólicos para cá.
+- `/sys/module/` — parâmetros de cada módulo carregado, muitos deles graváveis em tempo real.
+- `/sys/fs/cgroup/` — a hierarquia de cgroups, peça central do @sec-cap099.
+
+### udev: quem transforma hardware detectado em driver carregado
+
+O elo entre "o kernel viu um dispositivo" e "o módulo certo foi carregado" é o **udev**, hoje `systemd-udevd`. Quando o kernel detecta hardware, emite um *uevent* contendo um `MODALIAS` — uma cadeia que codifica fabricante, dispositivo e classe. O udev casa esse alias com a tabela `modules.alias` e chama `modprobe`.
+
+::: {#fig-caminho-driver}
+```{.tikz}
+%%| filename: caminho-driver
+%%| alt: Cadeia da deteccao de hardware ate a interface disponivel, passando por uevent, udev e modprobe
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.5cm,minimum height=1.25cm},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    fl/.style={-{Latex[length=1.7mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualgray,fill=manualgray!12]   (h) at (0,0)     {\textbf{hardware}\\\tiny adaptador USB\\\tiny conectado};
+  \node[bx,draw=manualblue,fill=manualblue!12]   (k) at (3.1,0)   {\textbf{kernel}\\\tiny emite \emph{uevent}\\\tiny com MODALIAS};
+  \node[bx,draw=manualblue,fill=manualblue!12]   (u) at (6.2,0)   {\textbf{systemd-udevd}\\\tiny consulta\\\tiny modules.alias};
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (m) at (9.3,0)   {\textbf{modprobe}\\\tiny carrega o .ko\\\tiny e dependências};
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (s) at (12.4,0)  {\textbf{/sys e /dev}\\\tiny wlan0 aparece,\\\tiny regras rodam};
+
+  \draw[fl] (h) -- (k);
+  \draw[fl] (k) -- (u);
+  \draw[fl] (u) -- (m);
+  \draw[fl] (m) -- (s);
+
+  \node[bx,draw=manualred,fill=manualred!10] (f) at (9.3,-2.3)
+    {\textbf{falha silenciosa}\\\tiny módulo ausente,\\\tiny vermagic errada\\\tiny ou blacklist};
+  \draw[fl,manualred] (m) -- (f);
+
+  \node[nt,anchor=north,text width=13.4cm] at (6.2,-3.6)
+    {É no quarto passo que o adaptador da abertura morre: o kernel novo não tem o módulo, o udev pede, o \texttt{modprobe} não acha --- e ninguém reclama alto. Ferramentas de diagnóstico por etapa: \texttt{lsusb} e \texttt{lspci -nnk} na primeira, \texttt{dmesg -w} e \texttt{udevadm monitor} na segunda e na terceira, \texttt{modinfo} e \texttt{dkms status} na quarta, \texttt{ip link} e \texttt{ls /sys/class/net} na última.};
+\end{tikzpicture}
+```
+Do hardware conectado à interface utilizável: a cadeia que o udev fecha.
+:::
+
+```bash
+udevadm monitor --udev              # acompanhe e conecte o dispositivo: eventos aparecem
+udevadm info /sys/class/net/eth0    # todas as propriedades, inclusive o MODALIAS
+lspci -nnk | grep -A3 -i network    # "Kernel driver in use" e a linha decisiva
+lsusb -t                            # arvore USB com o driver de cada dispositivo
+```
+
+Como a @fig-caminho-driver mostra, a linha `Kernel driver in use:` do `lspci -nnk` é o veredito: se ela existe, o driver está ligado ao dispositivo; se aparece apenas `Kernel modules:` sem `driver in use`, o kernel sabe qual módulo serviria e não conseguiu carregá-lo.
+
+Regras de udev também permitem nomes estáveis para dispositivos, o padrão que evita `/dev/sdb` virar `/dev/sdc` depois de um reboot:
+
+```bash
+# /etc/udev/rules.d/70-meu-adaptador.rules
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="00:11:22:33:44:55", NAME="wlan-lab"
+
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+## O buffer de log do kernel
+
+O kernel escreve num anel de memória de tamanho fixo. `dmesg` lê esse anel:
+
+```bash
+dmesg -T                      # com data e hora legiveis, nao segundos desde o boot
+dmesg -w                      # acompanha em tempo real; conecte o dispositivo e veja
+dmesg -l err,warn             # so o que importa quando algo quebrou
+dmesg -H                      # paginado e colorido
+journalctl -k -b -1           # o buffer do BOOT ANTERIOR, que o dmesg ja perdeu
+```
+
+O `journalctl -k -b -1` é o comando que salva a investigação de um travamento: `dmesg` mostra apenas o boot atual, e a mensagem que explica o desligamento ficou no anterior. Isso pressupõe journal persistente (@sec-cap042).
+
+Em sistemas endurecidos, `kernel.dmesg_restrict=1` faz `dmesg` sem privilégio retornar vazio — o que é intencional, já que endereços de kernel vazados no log ajudam a explorar vulnerabilidades locais.
+
+## 🐉 No Kali
+
+- **O Kali é a distribuição em que "recompilar módulo" acontece mais.** Adaptadores Wi-Fi USB com chipsets Realtek (`rtl8812au`, `rtl88xxau`) e Atheros são a base do trabalho com redes sem fio, e vários deles não têm driver na árvore oficial do kernel. O caminho suportado é o par cabeçalhos mais DKMS: `sudo apt install realtek-rtl88xxau-dkms` registra o fonte, e cada `apt full-upgrade` que traz kernel novo dispara a recompilação. Se o adaptador sumir depois de um upgrade, a sequência é sempre `apt install linux-headers-$(uname -r)`, `dkms status`, `sudo dkms autoinstall`, reboot.
+- **Modo monitor e injeção dependem do driver, não da placa.** `iw list | grep -A8 'Supported interface modes'` diz se o driver carregado suporta `monitor`. Dois drivers diferentes para o mesmo chipset podem divergir nisso — é por isso que a comunidade mantém forks de driver, e por isso que `modinfo` e `dkms status` fazem parte do diagnóstico de "o `airmon-ng` não coloca a placa em modo monitor".
+- **Ferramentas do Kali dependem de módulos e de botões de `sysctl` específicos.** `nftables` e `iptables` (@sec-cap083) carregam módulos `nf_*` sob demanda; um ataque de intermediário em laboratório exige `net.ipv4.ip_forward=1`; captura promíscua exige a capability `CAP_NET_RAW` (@sec-cap087) e um driver que a suporte. Antes de concluir que a ferramenta está com defeito, verifique se o módulo está carregado e se o botão do kernel está na posição certa.
+- **`/proc` é fonte primária tanto para forense quanto para pós-exploração — e por isso é alvo de leitura restrita.** `/proc/<PID>/environ`, `/proc/<PID>/cmdline` e `/proc/<PID>/maps` de processos de outros usuários revelam credenciais passadas por variável de ambiente e por linha de comando. A contramedida do lado defensivo é montar `/proc` com `hidepid=2` (`sudo mount -o remount,hidepid=2 /proc`), que esconde de cada usuário os processos alheios. Use esse conhecimento apenas em sistemas próprios ou em teste autorizado: acesso não autorizado a sistema informático é crime pela Lei 12.737/2012.
+- **Rootkits de kernel são, tecnicamente, módulos.** Um módulo malicioso carregado com privilégio de root pode interceptar chamadas de sistema e ocultar processos, arquivos e conexões — o que torna inútil qualquer ferramenta de user space rodando na mesma máquina. As defesas práticas: manter `kernel.modules_disabled=1` depois do boot em servidores estáveis, o que proíbe qualquer carregamento novo até o próximo reboot; exigir assinatura de módulo; monitorar `lsmod` e o bit de *taint*; e — a lição mais importante — investigar máquina suspeita a partir de mídia externa ou de imagem, nunca a partir do sistema em execução.
+
+> **Nota sobre a família RHEL.** A mecânica é a mesma; mudam nomes e ferramentas. Os cabeçalhos vêm de `kernel-devel` e `kernel-headers` em vez de `linux-headers-*`, o initramfs é regerado com `dracut -f` em vez de `update-initramfs -u`, e o Secure Boot com módulos externos é a norma — o que torna a assinatura com MOK (`mokutil --import`) um passo obrigatório, não opcional. RHEL, CentOS Stream e Fedora também trazem SELinux ativo (@sec-cap088), o que adiciona uma camada de negação acima das permissões tradicionais em `/sys` e `/proc`.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Nenhum passo altera hardware real, e o passo 9 desfaz o que os anteriores fizeram.
+
+1. **Identifique o kernel e o seu conjunto de módulos.**
+
+   ```bash
+   uname -r
+   ls /boot/vmlinuz-* /boot/initrd.img-*
+   ls /lib/modules/
+   ls /lib/modules/$(uname -r)/kernel/drivers/net/ | head
+   ```
+
+   Esperado: a versão de `uname -r` corresponde a um diretório em `/lib/modules/`. Se houver mais de um diretório ali, são kernels antigos ainda instalados — cada um com o seu conjunto próprio de módulos.
+
+2. **Leia o estado dos módulos carregados.**
+
+   ```bash
+   lsmod | head
+   lsmod | wc -l
+   head -3 /proc/modules
+   modinfo dummy | head -12
+   ```
+
+   Esperado: as primeiras colunas de `lsmod` e as de `/proc/modules` contêm exatamente a mesma informação — `lsmod` é só um formatador. O `modinfo` mostra `filename`, `license`, `description` e a `vermagic` com a versão de kernel de destino.
+
+3. **Carregue um módulo inofensivo e observe as três interfaces reagindo.**
+
+   ```bash
+   sudo dmesg -C                       # limpa o buffer para isolar o que vem a seguir
+   sudo modprobe dummy numdummies=2
+   lsmod | grep dummy
+   ls /sys/module/dummy/
+   cat /sys/module/dummy/parameters/numdummies
+   ip -brief link show type dummy
+   dmesg | tail -5
+   ```
+
+   Esperado: `lsmod` lista o módulo, `/sys/module/dummy/` passa a existir com o parâmetro que você passou, e duas interfaces `dummy0` e `dummy1` aparecem. O módulo `dummy` cria interfaces de rede falsas — é a maneira mais segura de exercitar tudo isso sem tocar em hardware.
+
+4. **Percorra `/proc` a partir de um processo real.**
+
+   ```bash
+   sleep 600 &
+   pid=$!
+   tr '\0' ' ' < /proc/$pid/cmdline; echo
+   grep -E '^(Name|State|PPid|Threads|Uid)' /proc/$pid/status
+   ls -l /proc/$pid/fd
+   ls /proc/$pid/ns
+   kill $pid
+   ```
+
+   Esperado: `cmdline` mostra `sleep 600`, `status` mostra o estado `S (sleeping)` e o PPid do seu shell, `fd` lista os três descritores padrão, e `ns` lista sete ou oito namespaces — que é o ponto de partida do @sec-cap099.
+
+5. **Compare `/proc` e `/sys` para a mesma informação.**
+
+   ```bash
+   ip link show dummy0 | head -2
+   cat /sys/class/net/dummy0/address
+   cat /sys/class/net/dummy0/mtu
+   cat /sys/class/net/dummy0/operstate
+   readlink -f /sys/class/net/dummy0
+   ```
+
+   Esperado: o `ip link` traz tudo num bloco para o humano ler; o sysfs traz um valor por arquivo, cada um trivial de consumir em script. O `readlink -f` revela que `/sys/class/net/dummy0` é um link para a árvore real em `/sys/devices/` — a organização descrita acima.
+
+6. **Ajuste um parâmetro do kernel e depois reverta.**
+
+   ```bash
+   sysctl net.ipv4.ip_forward
+   sudo sysctl -w net.ipv4.ip_forward=1
+   cat /proc/sys/net/ipv4/ip_forward          # o mesmo valor pelo outro caminho
+   sudo sysctl -w net.ipv4.ip_forward=0
+   sysctl -a 2>/dev/null | wc -l              # quantos parametros existem no total
+   ```
+
+   Esperado: os dois caminhos — `sysctl` e o arquivo em `/proc/sys` — leem e escrevem exatamente a mesma posição de memória. A contagem final costuma passar de mil.
+
+7. **Torne um ajuste persistente e valide sem reiniciar.**
+
+   ```bash
+   printf '# laboratorio do capitulo 98\nvm.swappiness = 10\n' \
+     | sudo tee /etc/sysctl.d/99-lab-cap098.conf
+   sudo sysctl --system 2>&1 | tail -5
+   sysctl vm.swappiness
+   ```
+
+   Esperado: `vm.swappiness` passa a valer 10, e o valor sobreviveria a um reboot. Repare que `sysctl --system` lê `/etc/sysctl.d/` inteiro, na ordem numérica dos nomes — a mesma convenção de `/etc/systemd/` e `/etc/modprobe.d/`.
+
+8. **Diagnostique hardware como faria no caso da abertura.**
+
+   ```bash
+   lspci -nnk | head -20
+   lspci -nnk | grep -B1 -A3 -i 'ethernet\|network'
+   lsusb
+   udevadm info /sys/class/net/dummy0 | grep -E 'DEVPATH|SUBSYSTEM|ID_'
+   cat /proc/sys/kernel/tainted
+   ```
+
+   Esperado: para cada dispositivo, `lspci -nnk` mostra `Kernel driver in use:` (driver ativo) e `Kernel modules:` (candidatos). Numa VM, a placa aparece como dispositivo virtio ou e1000. Valor de `tainted` diferente de zero indica que algum código fora da árvore foi carregado — em VM, costuma ser o módulo do hipervisor.
+
+9. **Observe a detecção em tempo real e depois limpe tudo.**
+
+   ```bash
+   sudo udevadm monitor --udev &        # deixa o monitor rodando
+   sudo modprobe -r dummy               # os eventos de remocao aparecem
+   sleep 2; kill %1
+   ip -brief link show type dummy || echo "dummy0 e dummy1 removidas"
+   sudo rm -f /etc/sysctl.d/99-lab-cap098.conf
+   sudo sysctl --system >/dev/null && sysctl vm.swappiness
+   ```
+
+   Esperado: o `udevadm monitor` imprime os eventos `remove` das duas interfaces, `ip link` não lista mais nenhuma dummy, e `vm.swappiness` volta ao padrão da distribuição (60 na maioria dos casos). O sistema está exatamente como antes do laboratório.
+
+## Resumo
+
+- **O kernel é a única peça de software que executa com privilégio total**, e a fronteira entre ele e todo o resto é a chamada de sistema. Aplicações não acessam hardware: elas pedem.
+- **Linux é monolítico com módulos carregáveis.** Cada versão de kernel tem o seu próprio `/lib/modules/`, e um módulo compilado para outra versão não carrega — é a causa mais comum de hardware que "some" depois de um upgrade.
+- **`modprobe` resolve dependências, `insmod` não.** A configuração persistente vive em `/etc/modprobe.d/` (opções e blacklist) e `/etc/modules-load.d/`; blacklist sem `update-initramfs -u` não funciona no boot.
+- **DKMS recompila módulos externos a cada kernel novo**, desde que os cabeçalhos correspondentes estejam instalados. É a solução estrutural para drivers fora da árvore oficial.
+- **`/proc` expõe processos e estado global como arquivos de texto**; `/proc/sys` é o ramo gravável, e `sysctl` é a interface oficial para ele, com persistência em `/etc/sysctl.d/`.
+- **`/sys` é o modelo de dispositivos**, um valor por arquivo, organizado por função em `/sys/class/` e pela topologia real em `/sys/devices/`. O udev é quem liga um dispositivo detectado ao módulo correspondente.
+- **`dmesg -T`, `dmesg -w` e `journalctl -k -b -1`** são o trio de diagnóstico do kernel; `lspci -nnk` responde à pergunta decisiva de qual driver está de fato ligado ao dispositivo.
+- **No Kali, driver de Wi-Fi USB via DKMS é rotina**, e `/proc` é fonte tanto de forense quanto de pós-exploração — o que faz de `hidepid`, assinatura de módulo e `modules_disabled` medidas defensivas concretas, não teóricas.

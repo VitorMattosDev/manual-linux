@@ -164,7 +164,7 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 16 — Kernel, Contêineres e Virtualização
 
-- [ ] **cap 098** - O kernel Linux: módulos, /proc e /sys - `vol16/cap098-o-kernel-linux-modulos-proc-e-sys.qmd`
+- [x] **cap 098** - O kernel Linux: módulos, /proc e /sys - `vol16/cap098-o-kernel-linux-modulos-proc-e-sys.qmd`
 - [ ] **cap 099** - Contêineres por dentro: namespaces, cgroups e Docker - `vol16/cap099-conteineres-por-dentro-namespaces-cgroups-e.qmd`
 - [ ] **cap 100** - Virtualização: KVM, QEMU e o laboratório de estudos - `vol16/cap100-virtualizacao-kvm-qemu-e-o-laboratorio-de.qmd`
 - [ ] **cap 101** - Compilação, toolchains e o ecossistema de desenvolvimento - `vol16/cap101-compilacao-toolchains-e-o-ecossistema-de.qmd`
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (97 concluidos).
+**Total:** 103 capitulos em 16 volumes (98 concluidos).
 
