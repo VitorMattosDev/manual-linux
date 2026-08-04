@@ -1,3 +1,319 @@
 # Zsh, plugins e o prompt do Kali {#sec-cap093}
 
-*(em elaboracao)*
+Quatro abas abertas: duas na máquina local, uma no laboratório, uma no servidor de produção que ninguém deveria estar tocando naquele dia. O prompt de todas dizia `$`. A pessoa digitou `systemctl stop nginx`, apertou Enter, e só depois olhou o título da janela.
+
+O prompt não é enfeite. É a instrumentação permanente da sua sessão — o único lugar onde o sistema te diz, continuamente e sem você pedir, **quem você é, onde você está e o que acabou de acontecer**. Um prompt que diz apenas `$` desperdiça a linha mais lida do terminal. É por isso que o Kali gasta esforço num prompt elaborado, e por isso que este capítulo trata prompt e plugins como ferramenta de trabalho, não como decoração.
+
+O capítulo anterior estabeleceu *onde* a configuração mora. Este trata do *que* colocar lá quando o shell é o Zsh — que é o padrão do Kali desde a versão 2020.4.
+
+## O que o Zsh entrega além do Bash
+
+O Zsh é compatível com o Bash no que você usa todo dia: mesma sintaxe de pipe, redirecionamento, `if`, `for`, funções, aspas. Migrar não exige reaprender nada. O que ele acrescenta se concentra em quatro áreas.
+
+**Completação programável de verdade.** No Bash, completar `git checkout <TAB>` exige um script de completação que alguém escreveu à mão. No Zsh, o sistema `compsys` completa opções lendo a página de manual, entende subcomandos, oferece menu navegável com setas e mostra descrição ao lado de cada candidato. Habilita-se com duas linhas:
+
+```zsh
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select                    # menu navegavel com setas
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'  # completa ignorando caixa
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}" # cores iguais as do ls
+```
+
+**Globbing muito mais expressivo.** O Zsh tem `**` recursivo sem precisar de `shopt`, e *qualificadores de glob* — um sufixo entre parênteses que filtra por metadado do arquivo:
+
+```zsh
+ls **/*.log(.)            # so arquivos regulares
+ls **/*.log(.mh-2)        # modificados nas ultimas 2 horas
+ls **/*(.Lm+10)           # arquivos regulares maiores que 10 MB
+ls *(/)                   # so diretorios
+ls **/*(.om[1,5])         # os 5 mais recentes, ordenados por mtime
+```
+
+Isso substitui, em muitos casos, um `find` inteiro (@sec-cap017). O ganho é grande no uso interativo; em script, `find` continua sendo a escolha portável.
+
+**Correção de digitação e navegação.** `setopt correct` sugere a correção quando você erra o nome de um comando. `setopt auto_cd` entra no diretório quando você digita só o nome dele. E o `cd` do Zsh mantém uma pilha de diretórios navegável.
+
+**Histórico compartilhado entre sessões, de verdade.** É o problema que o Bash resolve pela metade com `histappend`:
+
+```zsh
+HISTFILE=~/.zsh_history
+HISTSIZE=50000
+SAVEHIST=50000
+setopt share_history          # abas veem o historico umas das outras, ao vivo
+setopt hist_ignore_all_dups   # remove duplicata antiga ao repetir um comando
+setopt hist_ignore_space      # linha comecada por espaco nao entra
+setopt hist_verify            # ao expandir !!, mostra antes de executar
+setopt extended_history       # grava carimbo de tempo e duracao
+setopt inc_append_history     # grava na hora, nao so ao sair
+```
+
+O `share_history` faz o que quase todo mundo espera do histórico e não recebe: um comando digitado numa aba fica imediatamente disponível na seta-para-cima de outra aba já aberta.
+
+## Anatomia do prompt
+
+O prompt do Zsh é a variável `PROMPT` (ou `PS1`), interpretada com uma linguagem de escapes de porcentagem. `RPROMPT` desenha um prompt à direita da linha, que desaparece sozinho quando o comando digitado cresce — espaço grátis para informação secundária.
+
+::: {#fig-anatomia-prompt}
+```{.tikz}
+%%| filename: anatomia-prompt
+%%| alt: Segmentos de um prompt do Zsh e o que cada escape de porcentagem informa
+\begin{tikzpicture}[
+    seg/.style={rounded corners=2pt,draw,thick,align=center,font=\ttfamily\small,inner sep=4pt,minimum height=0.72cm},
+    quad/.style={draw,thick,minimum size=3.2mm,inner sep=0pt},
+    lb/.style={font=\scriptsize,align=left,anchor=west},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[seg,draw=manualblue,fill=manualblue!16,minimum width=1.5cm]   (u) at (0,6.6)   {kali};
+  \node[font=\ttfamily\small]                                          (a) at (1.05,6.6) {@};
+  \node[seg,draw=manualgreen,fill=manualgreen!16,minimum width=1.5cm] (h) at (2.1,6.6)  {kali};
+  \node[seg,draw=manualyellow,fill=manualyellow!28,minimum width=2.6cm](p) at (4.35,6.6) {\textasciitilde/lab-zsh};
+  \node[seg,draw=manualred,fill=manualred!16,minimum width=0.8cm]     (s) at (6.2,6.6)  {\$};
+  \node[seg,draw=manualgray,fill=manualgray!16,minimum width=2.4cm]   (r) at (11.5,6.6) {1 \quad 12:04};
+
+  \node[nt,anchor=west] at (7.2,6.6) {\ldots\ seu comando \ldots};
+
+  \node[quad,draw=manualblue,fill=manualblue!16]     (q1) at (0.2,5.3) {};
+  \node[lb] at (0.55,5.3) {\texttt{\%n} --- \textbf{usuário}: quem você é \emph{agora}. Muda sob \texttt{sudo -i}, e é o primeiro campo a conferir antes de um comando destrutivo.};
+
+  \node[quad,draw=manualgreen,fill=manualgreen!16]   (q2) at (0.2,4.5) {};
+  \node[lb] at (0.55,4.5) {\texttt{\%m} --- \textbf{máquina}: nome curto do host. É o campo que teria evitado o \texttt{systemctl stop} na máquina errada.};
+
+  \node[quad,draw=manualyellow,fill=manualyellow!28] (q3) at (0.2,3.7) {};
+  \node[lb] at (0.55,3.7) {\texttt{\%\textasciitilde} --- \textbf{diretório atual}, com o home abreviado como til. Use \texttt{\%(4\textasciitilde|.../\%3\textasciitilde|\%\textasciitilde)} para truncar caminhos longos.};
+
+  \node[quad,draw=manualred,fill=manualred!16]       (q4) at (0.2,2.9) {};
+  \node[lb] at (0.55,2.9) {\texttt{\%\#} --- \textbf{privilégio}: \texttt{\%} para usuário comum, \texttt{\#} para root. Sinal visual de que tudo dali em diante executa sem rede de proteção.};
+
+  \node[quad,draw=manualgray,fill=manualgray!16]     (q5) at (0.2,2.1) {};
+  \node[lb] at (0.55,2.1) {\texttt{RPROMPT} --- à direita e some sozinho: \texttt{\%?} (código de saída do último comando) e \texttt{\%*} (hora). Informação útil sem ocupar a linha de digitação.};
+
+  \node[nt,text width=12.4cm,anchor=north] at (6.0,1.4)
+    {Os escapes são interpretados a cada redesenho do prompt. Para que uma variável mude de valor entre um comando e outro (código de saída, ramo do Git), o prompt precisa de \texttt{setopt prompt\_subst}, que reavalia a expansão a cada vez --- sem isso, o valor congela no que era quando o \texttt{.zshrc} foi lido.};
+\end{tikzpicture}
+```
+Cada segmento do prompt e a informação que ele carrega.
+:::
+
+Montando um prompt do zero, com cor:
+
+```zsh
+setopt prompt_subst                    # reavalia a expansao a cada redesenho
+PROMPT='%F{cyan}%n%f@%F{green}%m%f:%F{yellow}%~%f %# '
+RPROMPT='%(?..%F{red}[%?]%f )%F{8}%*%f'
+```
+
+`%F{cor}` abre uma cor de frente e `%f` fecha. O `%(?..X)` é um condicional: "se o último código de saída **não** for zero, mostre `X`" — de modo que o `RPROMPT` fica limpo quando tudo dá certo e acende em vermelho o código de erro quando algo falha. É a informação que mais se procura e a que menos aparece em prompt padrão.
+
+::: {.callout-note}
+**Todo texto não imprimível dentro do prompt precisa estar marcado como tal.** No Zsh, use `%{` e `%}` ao redor de códigos de escape crus; no Bash, `\[` e `\]`. Sem isso o shell conta os bytes invisíveis da cor como largura visível, erra o cálculo do cursor, e a linha começa a se sobrescrever quando você usa histórico ou edita um comando longo. É a causa número um do sintoma "meu prompt embaralha o texto ao apertar seta para cima". Usando `%F{}`/`%f` em vez de escapes crus, o Zsh cuida disso sozinho.
+:::
+
+## O prompt do Kali por dentro
+
+O Kali não usa framework externo. O prompt vem do pacote `kali-defaults`, definido no `~/.zshrc` do usuário, e é controlado por uma variável no topo do arquivo:
+
+```zsh
+# ~/.zshrc do Kali (trecho)
+PROMPT_ALTERNATIVE=twoline     # twoline | oneline | backtrack
+NEWLINE_BEFORE_PROMPT=yes
+```
+
+- **`twoline`** — o padrão, com a moldura de duas linhas. A vantagem real não é estética: o comando que você digita sempre começa na coluna 1 da segunda linha, então caminhos longos nunca empurram o cursor para a direita e copiar-colar fica previsível.
+- **`oneline`** — compacto, para telas pequenas ou quando você grava a sessão.
+- **`backtrack`** — imita o prompt do BackTrack, a distribuição antecessora do Kali.
+
+O mesmo `~/.zshrc` traz `zsh-syntax-highlighting` e `zsh-autosuggestions` já configurados, e detecta se o terminal suporta 256 cores antes de aplicar o esquema colorido. Vale ler o arquivo inteiro uma vez: é um exemplo bem escrito de configuração defensiva.
+
+O `kali-tweaks` (@sec-cap036) troca essas variantes pela interface, sem você editar arquivo. É a forma recomendada, porque uma atualização do pacote pode sobrescrever suas edições manuais nos arquivos gerenciados.
+
+## Plugins: os dois que valem sozinhos
+
+Dois plugins mudam o uso diário mais do que qualquer framework, e ambos já vêm no Kali:
+
+```bash
+sudo apt install zsh-autosuggestions zsh-syntax-highlighting
+```
+
+```zsh
+# no ~/.zshrc — a ORDEM importa
+source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh   # sempre por ultimo
+```
+
+- **`zsh-autosuggestions`** completa em cinza, enquanto você digita, o comando mais recente do histórico que começa igual. Seta para a direita aceita. Transforma o histórico de algo que você consulta em algo que se oferece.
+- **`zsh-syntax-highlighting`** colore a linha *enquanto você digita*: comando existente em verde, inexistente em vermelho, string fechada corretamente em amarelo. O comando vermelho antes do Enter pega erro de digitação **antes** da execução — e num terminal onde comandos apagam disco, isso não é conveniência, é segurança.
+
+::: {.callout-warning}
+**O `zsh-syntax-highlighting` tem de ser o último `source` do seu `.zshrc`.** Ele funciona instalando ganchos no widget de edição de linha do Zsh, e qualquer plugin carregado depois dele pode substituir esses ganchos, desativando o realce silenciosamente. Não há mensagem de erro: a cor simplesmente não aparece, e você passa meia hora procurando o pacote que não instalou.
+:::
+
+## Frameworks: quando compensam e quanto custam
+
+O **Oh My Zsh** empacota centenas de plugins e temas atrás de uma linha de configuração. É a porta de entrada mais comum e tem um custo real: ele carrega muita coisa em toda abertura de shell, e um `.zshrc` com dez plugins facilmente passa de meio segundo de inicialização — perceptível, multiplicado por dezenas de aberturas por dia.
+
+As alternativas, em ordem crescente de controle:
+
+| Opção | O que dá | O que custa |
+|---|---|---|
+| Só o `.zshrc` do Kali | prompt e os dois plugins essenciais | nada; é o padrão |
+| Dois plugins via `apt` | autosuggestions e highlighting | duas linhas de `source` |
+| `zinit` / `antidote` | gerenciador com carga preguiçosa | aprender a ferramenta |
+| Oh My Zsh | ecossistema grande, tudo pronto | inicialização lenta, muita coisa que você não usa |
+| `starship` | prompt único para Bash, Zsh e Fish | binário externo; só o prompt |
+
+: Formas de configurar o Zsh, do mínimo ao completo {#tbl-frameworks-zsh}
+
+Medir antes de otimizar, como sempre:
+
+```bash
+time zsh -i -c exit            # tempo de inicializacao de um shell interativo
+for i in $(seq 5); do /usr/bin/time -f %e zsh -i -c exit; done 2>&1
+```
+
+Abaixo de 200 ms você não percebe. Acima de 500 ms, incomoda. Se passar disso, o culpado quase sempre é um `compinit` sem cache ou um plugin que consulta a rede.
+
+O **`starship`** merece menção à parte por resolver um problema específico: se você alterna entre Bash e Zsh — o que acontece o tempo todo quando se administra máquinas variadas — manter dois prompts sincronizados é chato. O `starship` é um binário único que gera o prompt para os dois a partir de um `~/.config/starship.toml`, e mostra contexto de Git, versão de linguagem e duração do último comando sem configuração adicional.
+
+::: {.callout-note}
+**Prompts elaborados costumam depender de uma Nerd Font.** Os símbolos de ramo do Git, de pasta e de sistema operacional não existem nas fontes comuns — sem a fonte certa, o terminal mostra retângulos vazios ou o famoso losango com interrogação. A instalação é do lado do **cliente**: se você acessa a máquina por SSH, quem precisa da fonte é o terminal na sua mesa, não o servidor. Um prompt que fica ilegível em metade das máquinas em que você trabalha é pior do que um prompt simples.
+:::
+
+## Migrar do Bash sem quebrar nada
+
+Duas armadilhas concretas na migração:
+
+**O `.bashrc` não é lido pelo Zsh.** Aliases e funções precisam ser movidos para o `~/.zshrc`. A maior parte migra literalmente; o que dá trabalho é código que usa `shopt` (o equivalente é `setopt`, com nomes diferentes) e arrays.
+
+**Arrays começam em 1 no Zsh, em 0 no Bash.** Um laço que percorre `${arr[0]}` funciona em Bash e devolve vazio no Zsh. Se precisar de compatibilidade, `setopt ksh_arrays` restaura a indexação a partir de zero — mas é melhor evitar arrays em código compartilhado entre os dois.
+
+E a regra que salva de tudo isso: **script tem shebang, e o shebang manda**. Um script com `#!/bin/bash` roda em Bash mesmo que o seu shell interativo seja Zsh (@sec-cap057). A escolha de shell interativo é pessoal e não afeta scripts — desde que o shebang esteja correto e você não confie em nada do `.zshrc` dentro de um script.
+
+## 🐉 No Kali
+
+- **O Zsh é padrão desde o Kali 2020.4, e a migração foi feita com cuidado.** O `~/.zshrc` que vem no `kali-defaults` já traz completação com menu, histórico compartilhado, os dois plugins essenciais e o prompt de duas linhas. Na prática, você não precisa configurar nada para ter uma experiência boa — o valor de entender o arquivo é saber o que mudar quando quiser, e não quebrar o que já funciona.
+- **`kali-tweaks` é o caminho oficial para trocar o prompt.** Ele altera `PROMPT_ALTERNATIVE` e os arquivos gerenciados sem que você precise editá-los. Edições manuais nesses arquivos podem ser sobrescritas na próxima atualização do pacote — o lugar seguro para personalização própria é o seu `~/.zshrc`, depois do bloco que o Kali fornece.
+- **O prompt de root do Kali é visualmente distinto, e isso é decisão de segurança.** Ao entrar com `sudo -i` (@sec-cap026), o `%#` vira `#` e o esquema de cor muda. Num sistema onde a maior parte das ferramentas roda com privilégio, esse sinal permanente é a diferença entre "vou apagar meu diretório de testes" e "vou apagar o diretório de testes do sistema". Não remova essa distinção ao personalizar.
+- **Num shell de pentest, informação no prompt vale mais do que estética.** Quando você trabalha em várias sessões simultâneas — a máquina local, um pivô, um alvo autorizado —, `%m` e o código de saída no `RPROMPT` são o que impede confundir uma com a outra. Vale acrescentar o IP da interface de teste ou o nome do engajamento ao prompt durante um trabalho autorizado: é o mesmo raciocínio de rastreabilidade do @sec-cap089, aplicado à sua própria sessão. E gravar a sessão com `script` ou pelo `tmux` (@sec-cap031) para o relatório é hábito da casa.
+- **Cuidado com prompt que executa comando a cada linha.** Um prompt que consulta o estado do Git roda `git status` toda vez que você aperta Enter. Dentro de um repositório grande, ou de um diretório montado por rede, isso trava o terminal por segundos a cada comando. O `starship` e o `powerlevel10k` têm limites configuráveis para isso; um prompt caseiro com `$(git branch)` no meio não tem nenhum.
+
+> **Nota sobre a família RHEL e outras distribuições.** O Zsh é o mesmo shell em qualquer lugar — `dnf install zsh zsh-syntax-highlighting`. O que muda é o caminho dos plugins: no Debian e no Kali eles ficam em `/usr/share/zsh-<plugin>/`, no Fedora em `/usr/share/zsh/site-functions/` ou `/usr/share/zsh-syntax-highlighting/`. Dotfiles portáveis testam `[[ -r caminho ]]` antes de dar `source`, como no capítulo anterior, em vez de fixar o caminho de uma distribuição. O macOS usa Zsh como shell padrão desde o Catalina, o que torna a configuração do Zsh a mais portável entre sistemas diferentes.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Cada passo é reversível; o passo 10 restaura tudo.
+
+1. **Confirme o shell e salve o estado.**
+
+   ```bash
+   echo $SHELL; ps -p $$ -o comm=
+   mkdir -p ~/lab-zsh
+   cp -a ~/.zshrc ~/lab-zsh/zshrc.original
+   grep -n 'PROMPT_ALTERNATIVE\|NEWLINE_BEFORE_PROMPT' ~/.zshrc
+   ```
+
+   Esperado: `zsh` como shell atual e a variável `PROMPT_ALTERNATIVE` valendo `twoline`. Este é o prompt do Kali que você vê na tela.
+
+2. **Troque a variante do prompt e veja a diferença.**
+
+   ```bash
+   sed -i 's/^PROMPT_ALTERNATIVE=.*/PROMPT_ALTERNATIVE=oneline/' ~/.zshrc
+   exec zsh                      # reinicia o shell na mesma janela
+   ```
+
+   Esperado: o prompt de duas linhas vira compacto. Repita com `backtrack` e depois volte para `twoline`. Repare em qual você prefere para caminho longo e para copiar-colar.
+
+3. **Monte um prompt do zero, com código de saída à direita.**
+
+   ```bash
+   setopt prompt_subst
+   PROMPT='%F{cyan}%n%f@%F{green}%m%f:%F{yellow}%~%f %# '
+   RPROMPT='%(?..%F{red}[%?]%f )%F{8}%*%f'
+   ls /diretorio-que-nao-existe
+   ```
+
+   Esperado: depois do comando que falha, o `RPROMPT` mostra `[2]` em vermelho — o código de saída do `ls`. Rode um comando bem-sucedido e o vermelho some. Esta é a informação que prompt padrão não dá e que você mais quer.
+
+4. **Comprove o problema do escape não marcado.**
+
+   ```bash
+   PROMPT=$'\e[1;31mERRADO\e[0m$ '        # escape cru, sem marcacao
+   ```
+
+   Digite um comando longo (uns 80 caracteres) e aperte seta para cima algumas vezes. Esperado: a linha se sobrescreve e o texto embaralha, porque o shell conta os bytes invisíveis como largura. Agora o certo:
+
+   ```bash
+   PROMPT='%F{red}CERTO%f$ '
+   ```
+
+   Esperado: mesmo comando longo, sem embaralhar. É a diferença entre `%F{}` e escape cru.
+
+5. **Ligue a completação com menu.**
+
+   ```bash
+   autoload -Uz compinit && compinit
+   zstyle ':completion:*' menu select
+   zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+   ```
+
+   Digite `systemctl st` e aperte TAB duas vezes. Esperado: um menu de subcomandos navegável com as setas, com descrição ao lado. É a diferença mais visível em relação ao Bash.
+
+6. **Use os qualificadores de glob.**
+
+   ```bash
+   cd ~/lab-zsh
+   touch a.log b.log c.txt; mkdir sub; touch sub/d.log
+   print -l **/*.log(.)          # so arquivos regulares, recursivo
+   print -l *(/)                 # so diretorios
+   print -l **/*(.om[1,2])       # os 2 mais recentes por mtime
+   ```
+
+   Esperado: cada linha filtra por um metadado diferente sem chamar `find`. Compare com o `find . -name '*.log' -type f` equivalente e note quanto do `find` isso substitui no uso interativo.
+
+7. **Ative os dois plugins e observe o efeito.**
+
+   ```bash
+   sudo apt install -y zsh-autosuggestions zsh-syntax-highlighting
+   source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+   source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+   ```
+
+   Digite `sudo apt updat` — sem apertar Enter. Esperado: `updat` aparece em vermelho (comando/argumento não reconhecido) e o histórico sugere a continuação em cinza. Corrija para `update` e veja o verde. **Não execute**; o objetivo é ver o erro antes do Enter.
+
+8. **Configure o histórico compartilhado e prove que funciona.**
+
+   ```bash
+   setopt share_history hist_ignore_all_dups hist_ignore_space extended_history
+   echo "marcador-aba-um"
+   ```
+
+   Abra **outra aba** do terminal, rode `setopt share_history` e aperte seta para cima. Esperado: o `marcador-aba-um`, digitado na primeira aba e nunca fechado, já aparece na segunda. É o comportamento que o `histappend` do Bash não entrega.
+
+9. **Meça o custo de inicialização.**
+
+   ```bash
+   for i in 1 2 3; do
+       /usr/bin/time -f "%e s" zsh -i -c exit
+   done
+   ```
+
+   Esperado: algo entre 0,05 e 0,3 s no Kali padrão. Guarde o número: se um dia você instalar um framework e o terminal ficar lento, é este o valor de comparação. Medir antes de otimizar vale aqui como em qualquer outro lugar.
+
+10. **Restaure.**
+
+    ```bash
+    cp -a ~/lab-zsh/zshrc.original ~/.zshrc
+    rm -rf ~/lab-zsh
+    exec zsh
+    ```
+
+    Esperado: o prompt volta ao padrão do Kali e o `.zshrc` ao original. O `exec zsh` substitui o shell atual sem abrir um novo processo, que é a forma limpa de recarregar a configuração.
+
+## Resumo
+
+- **O prompt é instrumentação, não decoração.** `%n`, `%m`, `%~` e `%#` respondem quem-você-é, onde-está e com-qual-privilégio — as três perguntas cuja resposta errada custa caro. O código de saída no `RPROMPT` é a informação mais útil que prompts padrão omitem.
+- **Escape de cor não marcado embaralha a linha.** Use `%F{cor}`/`%f` no Zsh ou `\[...\]` no Bash; sem isso o shell erra o cálculo de largura e o texto se sobrescreve ao navegar no histórico.
+- **O Zsh acrescenta ao Bash quatro coisas que importam:** completação com menu e descrição, qualificadores de glob que substituem muito `find` interativo, correção de digitação e histórico realmente compartilhado entre abas.
+- **Dois plugins valem mais que qualquer framework:** `zsh-autosuggestions` e `zsh-syntax-highlighting` — este último sempre como **último** `source` do arquivo, ou os ganchos são substituídos e o realce some sem aviso.
+- **Framework tem custo mensurável.** `time zsh -i -c exit` antes e depois; acima de 500 ms incomoda, e o culpado costuma ser `compinit` sem cache ou plugin que consulta a rede ou o Git a cada prompt.
+- **No Kali, `kali-tweaks` troca o prompt pelo caminho oficial** e `PROMPT_ALTERNATIVE` escolhe entre `twoline`, `oneline` e `backtrack`. O prompt de root é visualmente distinto de propósito — não remova essa distinção.
+- **O shell interativo não afeta scripts:** o shebang manda. Mas aliases e funções do `.bashrc` não migram sozinhos para o `.zshrc`, e arrays do Zsh começam em 1, não em 0.
