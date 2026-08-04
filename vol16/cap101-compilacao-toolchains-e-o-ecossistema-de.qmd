@@ -1,3 +1,487 @@
 # Compilação, toolchains e o ecossistema de desenvolvimento {#sec-cap101}
 
-*(em elaboracao)*
+A ferramenta que você precisa não está no repositório. O autor publicou o código no GitHub, o README diz "just run make", e o `make` responde com quarenta linhas terminando em `fatal error: openssl/ssl.h: No such file or directory`. Meia hora depois, resolvido esse, aparece `undefined reference to 'pcap_open_live'`. Meia hora depois disso, o binário compila, executa e morre com `error while loading shared libraries: libpcap.so.0.8: cannot open shared object file`.
+
+Três erros, três etapas diferentes do mesmo processo, três soluções que não têm nada a ver umas com as outras. Quem conhece a sequência que transforma código-fonte em processo em execução lê cada mensagem dessas e sabe imediatamente onde intervir. Quem não conhece tenta `sudo apt install` no que o nome da mensagem sugere, e acerta às vezes.
+
+O @sec-cap037 mostrou o roteiro prático de compilar a partir do fonte. Este capítulo abre o que acontece por dentro dele — e por que os três erros acima são de natureza distinta.
+
+## As quatro etapas entre o `.c` e o processo
+
+Chamar `gcc programa.c -o programa` esconde quatro programas diferentes executados em sequência. Cada um consome a saída do anterior, e cada um falha com um tipo próprio de erro.
+
+::: {#fig-pipeline-compilacao}
+```{.tikz}
+%%| filename: pipeline-compilacao
+%%| alt: As quatro etapas da compilacao, do codigo fonte ao executavel, com os arquivos intermediarios
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.35cm,minimum height=1.1cm},
+    ar/.style={rounded corners=2pt,draw,thin,align=center,font=\tiny,inner sep=3pt,fill=white,minimum width=1.5cm},
+    nt/.style={font=\scriptsize,manualgray,align=center},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualgray,fill=manualgray!12]     (f)  at (0,0)     {\textbf{fonte}\\\texttt{prog.c}};
+  \node[bx,draw=manualblue,fill=manualblue!12]     (pp) at (2.85,0)  {\textbf{pré-processador}\\\tiny cpp};
+  \node[bx,draw=manualblue,fill=manualblue!16]     (cc) at (5.7,0)   {\textbf{compilador}\\\tiny cc1};
+  \node[bx,draw=manualgreen,fill=manualgreen!12]   (as) at (8.55,0)  {\textbf{montador}\\\tiny as};
+  \node[bx,draw=manualyellow,fill=manualyellow!22] (ld) at (11.4,0)  {\textbf{ligador}\\\tiny ld};
+
+  \draw[fl] (f) -- (pp);
+  \draw[fl] (pp) -- (cc);
+  \draw[fl] (cc) -- (as);
+  \draw[fl] (as) -- (ld);
+  \draw[fl] (ld) -- (13.9,0);
+  \node[bx,draw=manualred,fill=manualred!12,anchor=west,minimum width=2.0cm] at (13.95,0) {\textbf{ELF}\\\texttt{prog}};
+
+  \node[ar] at (1.42,0.95)  {\texttt{gcc -E}};
+  \node[ar] at (4.27,0.95)  {\texttt{gcc -S}};
+  \node[ar] at (7.12,0.95)  {\texttt{gcc -c}};
+  \node[ar] at (9.97,0.95)  {\texttt{gcc}};
+
+  \node[ar,fill=manualblue!8] at (1.42,-1.0)  {\texttt{prog.i}\\ texto expandido};
+  \node[ar,fill=manualblue!8] at (4.27,-1.0)  {\texttt{prog.s}\\ assembly};
+  \node[ar,fill=manualgreen!8] at (7.12,-1.0) {\texttt{prog.o}\\ objeto};
+  \node[ar,fill=manualyellow!12] at (9.97,-1.0) {+ bibliotecas\\ \texttt{-lpcap}};
+
+  \node[nt,anchor=north,text width=6.6cm,align=left] at (3.6,-2.0)
+    {\textbf{Erros do início da linha:}\\\tiny \texttt{No such file or directory} num \texttt{.h} --- falta o pacote \texttt{-dev} com o cabeçalho;\\\tiny erro de sintaxe --- é o seu código.};
+  \node[nt,anchor=north,text width=6.6cm,align=left] at (11.0,-2.0)
+    {\textbf{Erros do fim da linha:}\\\tiny \texttt{undefined reference} --- falta \texttt{-l<biblioteca>} na ligação;\\\tiny \texttt{cannot open shared object} --- falta a biblioteca em \emph{execução}, não em compilação.};
+\end{tikzpicture}
+```
+As quatro etapas da compilação, os arquivos intermediários e onde cada erro nasce.
+:::
+
+Como a @fig-pipeline-compilacao organiza, o diagnóstico dos três erros da abertura fica direto:
+
+1. `openssl/ssl.h: No such file` nasce no **pré-processador**: falta o cabeçalho, que vem no pacote `libssl-dev`.
+2. `undefined reference to 'pcap_open_live'` nasce no **ligador**: o cabeçalho existia, o símbolo foi declarado, mas ninguém disse onde encontrar a implementação — falta `-lpcap`.
+3. `error while loading shared libraries` nasce **depois de tudo**, na carga do programa: a biblioteca existia na compilação e não está no caminho de busca em tempo de execução.
+
+Vale executar cada etapa isoladamente uma vez na vida:
+
+```bash
+cat > prog.c <<'EOF'
+#include <stdio.h>
+#define SAUDACAO "ola, kernel"
+int main(void) { printf("%s\n", SAUDACAO); return 0; }
+EOF
+
+gcc -E prog.c -o prog.i    # pre-processador: expande #include e #define
+wc -l prog.c prog.i        # de 4 linhas para ~800: o stdio.h inteiro entrou
+gcc -S prog.c -o prog.s    # compilador: gera assembly
+gcc -c prog.s -o prog.o    # montador: gera codigo objeto
+gcc prog.o -o prog         # ligador: resolve simbolos e produz o executavel
+./prog
+```
+
+O crescimento de 4 para 800 linhas no primeiro passo é a demonstração mais direta do que `#include` significa: inclusão textual, literalmente.
+
+## O que é um ELF, e como interrogá-lo
+
+O formato dos executáveis, bibliotecas e objetos no Linux é o **ELF** (*Executable and Linkable Format*). Ele guarda o código, os dados, a tabela de símbolos e a lista do que o programa precisa para rodar. Há um comando para cada pergunta:
+
+```bash
+file prog                 # ELF 64-bit LSB pie executable, x86-64, dynamically linked
+readelf -h prog           # cabecalho: arquitetura, tipo, ponto de entrada
+readelf -d prog           # secao dinamica: as bibliotecas requeridas (NEEDED)
+ldd prog                  # as bibliotecas resolvidas e onde cada uma foi achada
+nm -D prog                # simbolos dinamicos; U = indefinido, T = definido aqui
+objdump -d prog | head -40 # desmontagem do codigo
+strings prog | head        # cadeias de texto embutidas
+size prog                  # tamanho de texto, dados e bss
+```
+
+| Pergunta | Comando |
+|---|---|
+| É executável, biblioteca ou objeto? Estático ou dinâmico? | `file` |
+| De quais bibliotecas depende? | `ldd`, `readelf -d` |
+| Qual símbolo está faltando? | `nm -D --undefined-only` |
+| Tem símbolos de depuração? | `file`, `readelf -S \| grep debug` |
+| Qual é o código de verdade? | `objdump -d` |
+
+: Qual ferramenta responde a qual pergunta sobre um binário {#tbl-ferramentas-elf}
+
+Esse conjunto é o mesmo usado em engenharia reversa e em análise de binário suspeito — a diferença está na intenção, não nas ferramentas.
+
+## Ligação estática e dinâmica
+
+Um programa **estaticamente ligado** carrega dentro de si o código de todas as bibliotecas que usa. Um **dinamicamente ligado** guarda apenas os nomes, e o carregador resolve tudo no momento da execução.
+
+```bash
+gcc prog.c -o prog-dyn                 # padrao: dinamico
+gcc prog.c -o prog-est -static         # tudo embutido
+ls -lh prog-dyn prog-est               # ~16 KB contra ~800 KB
+ldd prog-dyn                           # lista libc e o carregador
+ldd prog-est                           # "not a dynamic executable"
+```
+
+| | Estático | Dinâmico |
+|---|---|---|
+| Tamanho do binário | grande | pequeno |
+| Memória com N cópias | N vezes o código | uma cópia compartilhada |
+| Correção de falha na biblioteca | recompilar tudo | atualizar a biblioteca |
+| Portabilidade para outra máquina | alta | depende do que houver lá |
+
+: Ligação estática e dinâmica {#tbl-estatico-dinamico}
+
+A linha da portabilidade é a que mais importa na prática: um binário estático roda em quase qualquer Linux da mesma arquitetura, o que o torna a escolha certa para uma ferramenta que precisa funcionar numa máquina onde você não pode instalar nada.
+
+### Como o carregador encontra as bibliotecas
+
+::: {#fig-ligacao-dinamica}
+```{.tikz}
+%%| filename: ligacao-dinamica
+%%| alt: Ordem de busca do carregador dinamico por uma biblioteca compartilhada em tempo de execucao
+\begin{tikzpicture}[
+    bx/.style={rounded corners=3pt,draw,thick,align=left,font=\scriptsize,inner sep=4pt,minimum width=7.2cm,minimum height=0.78cm},
+    nt/.style={font=\scriptsize,manualgray,align=left},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray}
+  ]
+  \node[bx,draw=manualgray,fill=manualgray!12] (e) at (0,4.7)
+    {\texttt{./prog} \tiny --- execve; o kernel vê INTERP e chama o carregador};
+  \node[bx,draw=manualred,fill=manualred!12] (p) at (0,3.75)
+    {\textbf{1.} \texttt{LD\_PRELOAD} \tiny --- carregado antes de tudo, sobrepõe símbolos};
+  \node[bx,draw=manualblue,fill=manualblue!14] (r) at (0,2.85)
+    {\textbf{2.} \texttt{RPATH} / \texttt{RUNPATH} \tiny --- caminho gravado dentro do próprio ELF};
+  \node[bx,draw=manualblue,fill=manualblue!10] (l) at (0,1.95)
+    {\textbf{3.} \texttt{LD\_LIBRARY\_PATH} \tiny --- variável de ambiente da sessão};
+  \node[bx,draw=manualgreen,fill=manualgreen!12] (c) at (0,1.05)
+    {\textbf{4.} cache de \texttt{/etc/ld.so.conf} \tiny --- consultada via \texttt{ldconfig -p}};
+  \node[bx,draw=manualgreen,fill=manualgreen!8] (d) at (0,0.15)
+    {\textbf{5.} \texttt{/lib} e \texttt{/usr/lib} \tiny --- os diretórios padrão, por último};
+
+  \draw[fl] (e) -- (p);
+  \draw[fl] (p) -- (r);
+  \draw[fl] (r) -- (l);
+  \draw[fl] (l) -- (c);
+  \draw[fl] (c) -- (d);
+
+  \node[bx,draw=manualred,fill=manualred!8,minimum width=3.4cm,anchor=west] (err) at (4.3,-0.85)
+    {\texttt{cannot open shared object}\\\tiny nenhum dos cinco tinha};
+  \draw[fl,manualred] (d.south) -- (0,-0.85) -- (err.west);
+
+  \node[nt,text width=12.2cm,anchor=north] at (0,-1.9)
+    {A ordem importa e é explorável: quem controla \texttt{LD\_PRELOAD} ou um diretório de \texttt{RPATH} gravável substitui qualquer função de biblioteca de um programa alheio. É a técnica por trás tanto de ferramentas legítimas de instrumentação quanto de uma classe inteira de escalada de privilégio --- e é por isso que o carregador \textbf{ignora} \texttt{LD\_PRELOAD} e \texttt{LD\_LIBRARY\_PATH} em binários SUID.};
+\end{tikzpicture}
+```
+A ordem em que o carregador dinâmico procura uma biblioteca compartilhada.
+:::
+
+```bash
+ldconfig -p | grep libpcap        # o que o cache conhece
+ldconfig -p | wc -l               # milhares de bibliotecas registradas
+echo /opt/minha-lib/lib | sudo tee /etc/ld.so.conf.d/minha-lib.conf
+sudo ldconfig                     # reconstroi o cache: /etc/ld.so.cache
+LD_LIBRARY_PATH=/opt/minha-lib/lib ./prog    # so para esta execucao
+```
+
+Como a @fig-ligacao-dinamica mostra, o terceiro erro da abertura tem quatro soluções possíveis, em ordem de qualidade: instalar o pacote da biblioteca, registrar o diretório em `/etc/ld.so.conf.d/` e rodar `ldconfig`, gravar um `RUNPATH` no binário na compilação (`-Wl,-rpath,/opt/lib`), ou exportar `LD_LIBRARY_PATH` — esta última sendo a mais frágil, porque some quando o programa é chamado de outro contexto.
+
+### Construindo uma biblioteca compartilhada
+
+```bash
+cat > soma.c <<'EOF'
+int soma(int a, int b) { return a + b; }
+EOF
+gcc -fPIC -c soma.c -o soma.o        # -fPIC: codigo independente de posicao
+gcc -shared soma.o -o libsoma.so.1
+ln -sf libsoma.so.1 libsoma.so       # convencao: link sem versao para o ligador
+gcc usa.c -L. -lsoma -o usa          # -L diz onde procurar, -l diz qual
+LD_LIBRARY_PATH=. ./usa
+```
+
+O `-fPIC` é obrigatório em biblioteca compartilhada e a razão é direta: o código será carregado num endereço diferente em cada processo, então não pode conter endereços absolutos.
+
+## Bibliotecas de desenvolvimento e `pkg-config`
+
+A distinção entre `libssl3` e `libssl-dev` é a origem do primeiro erro da abertura. Distribuições Debian separam:
+
+- **pacote de runtime** (`libpcap0.8`) — o `.so` necessário para *executar* programas que já usam a biblioteca;
+- **pacote de desenvolvimento** (`libpcap-dev`) — os cabeçalhos `.h` e o link `.so` sem versão, necessários para *compilar* contra ela.
+
+```bash
+apt search libpcap                      # veja o par: runtime e -dev
+sudo apt install libpcap-dev libssl-dev
+dpkg -L libpcap-dev | grep '\.h$'       # os cabecalhos que o pacote trouxe
+apt-file search openssl/ssl.h           # de qual pacote vem um cabecalho especifico
+```
+
+O `apt-file` é a ferramenta que fecha o ciclo: dada uma mensagem de erro com um cabeçalho, ele diz qual pacote instalar — o inverso do `dpkg -L`.
+
+Descobrir os *flags* corretos na mão é trabalhoso, e é para isso que existe o `pkg-config`:
+
+```bash
+pkg-config --cflags --libs openssl
+# -I/usr/include/openssl -lssl -lcrypto
+gcc prog.c $(pkg-config --cflags --libs libpcap) -o prog
+pkg-config --list-all | wc -l
+```
+
+## Sistemas de construção
+
+Compilar um arquivo é `gcc`. Compilar quarenta, recompilando apenas o que mudou, é trabalho para um sistema de construção.
+
+### `make`
+
+```makefile
+CC      = gcc
+CFLAGS  = -Wall -Wextra -O2 -g
+LDLIBS  = -lpcap
+OBJS    = main.o rede.o saida.o
+
+prog: $(OBJS)
+	$(CC) $(OBJS) $(LDLIBS) -o $@
+
+%.o: %.c comum.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) prog
+
+.PHONY: clean
+```
+
+::: {.callout-warning}
+**A indentação de uma receita do `make` tem de ser TAB, não espaços.** É a causa do erro `Makefile:7: *** missing separator. Stop.`, e o editor que converte TAB em espaços automaticamente (@sec-cap096) é o culpado mais frequente. Em `vim`, `:set noexpandtab` no arquivo resolve.
+:::
+
+```bash
+make            # so recompila o que tem fonte mais novo que o objeto
+make -j$(nproc) # paraleliza: o ganho mais barato numa compilacao grande
+make clean
+make -n         # mostra o que faria, sem fazer
+```
+
+### Autotools, CMake e Meson
+
+O trio `./configure && make && sudo make install` do @sec-cap037 é a interface dos **Autotools**. O `configure` é um script gigantesco que testa o ambiente — quais cabeçalhos existem, qual compilador, quais funções a libc tem — e gera o `Makefile` correspondente.
+
+```bash
+./configure --prefix=/usr/local --help | head -40
+./configure --prefix=/opt/ferramenta
+make -j$(nproc) && sudo make install
+sudo make uninstall             # quando existe; nem sempre existe
+```
+
+**CMake** e **Meson** são as gerações seguintes, e o padrão nos projetos novos:
+
+```bash
+# CMake
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build -j$(nproc)
+sudo cmake --install build
+
+# Meson + Ninja
+meson setup build --prefix=/usr/local
+ninja -C build && sudo ninja -C build install
+```
+
+| Sistema | Como se reconhece | Sequência |
+|---|---|---|
+| Make puro | `Makefile` no repositório | `make` |
+| Autotools | `configure`, `configure.ac`, `Makefile.am` | `./configure && make && make install` |
+| CMake | `CMakeLists.txt` | `cmake -S . -B build && cmake --build build` |
+| Meson | `meson.build` | `meson setup build && ninja -C build` |
+
+: Identificando o sistema de construção pelo conteúdo do repositório {#tbl-build-systems}
+
+::: {.callout-important}
+**`sudo make install` instala fora do controle do gerenciador de pacotes.** Os arquivos não aparecem em `dpkg -L`, não são removidos por `apt remove` e podem sobrescrever arquivos de pacotes. Duas mitigações: instalar sempre em `--prefix=/opt/<nome>` ou `/usr/local`, que o FHS (@sec-cap005) reserva para isso; ou empacotar, com `checkinstall` gerando um `.deb` rudimentar a partir do `make install`, o que devolve o software ao controle do `apt`.
+:::
+
+## Compilação cruzada
+
+Compilar para uma arquitetura diferente da máquina exige uma *toolchain* de destino. O nome dela segue a convenção de tripleta `arquitetura-fabricante-sistema-abi`:
+
+```bash
+sudo apt install gcc-aarch64-linux-gnu gcc-mingw-w64
+aarch64-linux-gnu-gcc prog.c -o prog-arm64 -static
+file prog-arm64          # ELF 64-bit LSB, ARM aarch64
+x86_64-w64-mingw32-gcc prog.c -o prog.exe
+file prog.exe            # PE32+ executable for MS Windows
+```
+
+Para *executar* o binário ARM no PC, `qemu-user-static` traduz as syscalls transparentemente — a mesma ideia do @sec-cap100, num nível mais leve:
+
+```bash
+sudo apt install qemu-user-static
+qemu-aarch64-static ./prog-arm64
+```
+
+## Símbolos de depuração e otimização
+
+```bash
+gcc -O0 -g prog.c -o prog-debug     # sem otimizacao, com simbolos: para depurar
+gcc -O2 prog.c -o prog-rapido       # otimizado
+gcc -Os prog.c -o prog-pequeno      # otimizado para tamanho
+strip prog-rapido                   # remove a tabela de simbolos
+ls -l prog-debug prog-rapido
+```
+
+`-O0 -g` durante o desenvolvimento, `-O2` na entrega. Combinar `-O2` com `-g` é possível e comum em pacotes de distribuição, que separam os símbolos em pacotes `-dbgsym`; o efeito colateral é que o depurador às vezes mostra a execução "pulando" linhas, porque o otimizador reordenou o código.
+
+Para código novo, três flags de robustez merecem entrar por padrão, na mesma lógica do `set -euo pipefail` do @sec-cap071:
+
+```bash
+gcc -Wall -Wextra -Werror -fstack-protector-strong -D_FORTIFY_SOURCE=2 -O2 prog.c
+```
+
+## 🐉 No Kali
+
+- **Compilar exploits públicos é rotina no laboratório, e falha quase sempre pelo mesmo punhado de motivos.** Código do Exploit-DB costuma ser antigo e presumir 32 bits: `gcc -m32` exige `gcc-multilib` e `libc6-dev-i386` instalados. Exploits que serão executados no alvo devem ser compilados com `-static`, porque a máquina de destino raramente tem as bibliotecas certas — é o argumento prático mais forte da @tbl-estatico-dinamico. E, se o alvo tiver kernel ou libc muito antigos, compilar **dentro** de um contêiner com uma imagem base da mesma época (@sec-cap099) resolve o descompasso de ABI. Tudo isso, evidentemente, em máquinas de laboratório ou em teste autorizado por escrito.
+- **`x86_64-w64-mingw32-gcc` já vem no Kali** e é o caminho para gerar binários Windows a partir do Linux em exercícios de equipe vermelha autorizados. O mesmo par de ferramentas serve à análise: um binário PE suspeito pode ser inspecionado com `objdump`, `strings` e `readelf` sem executá-lo — o que é sempre o primeiro passo defensivo.
+- **`LD_PRELOAD` é conhecimento de duas mãos.** Do lado ofensivo, é vetor de persistência e de escalada quando há um binário SUID que respeita variáveis de ambiente ou um `RPATH` apontando para diretório gravável. Do lado defensivo, a auditoria é objetiva: procurar por `/etc/ld.so.preload`, que aplica pré-carga a *todo* processo do sistema e é um sinal clássico de rootkit em user space; conferir `RPATH`/`RUNPATH` de binários privilegiados com `readelf -d`; e garantir que nenhum diretório de biblioteca seja gravável por usuário comum.
+- **Compilar módulo de kernel é caso especial e reencontra o @sec-cap098.** Um `.ko` não se compila com `gcc arquivo.c`: ele usa o sistema de construção do próprio kernel (`make -C /lib/modules/$(uname -r)/build M=$PWD modules`) e exige o pacote de cabeçalhos correspondente. É a mecânica que o DKMS automatiza.
+- **Ferramenta compilada do fonte não é atualizada pelo `apt`.** No Kali rolling, em que o sistema inteiro se move toda semana, uma ferramenta instalada com `sudo make install` em `/usr/local` fica congelada e um dia para de funcionar por incompatibilidade de biblioteca. Registre o que você compilou — um arquivo no repositório de dotfiles (@sec-cap097) com nome, versão, origem e prefixo — e revise essa lista de tempos em tempos. É o item de manutenção que todo mundo descobre tarde demais.
+
+> **Nota sobre a família RHEL.** Os pacotes de desenvolvimento terminam em `-devel` em vez de `-dev` (`openssl-devel`, `libpcap-devel`), e o conjunto básico vem de `sudo dnf group install "Development Tools"`. O equivalente do `apt-file` é `dnf provides '*/ssl.h'`, que aceita o caminho do arquivo direto. Uma diferença estrutural: RHEL mantém compiladores alternativos em `/opt/rh/` via *Software Collections* e `scl enable`, o que permite compilar com um GCC mais novo que o do sistema sem substituí-lo.
+
+## 🧪 Laboratório
+
+Roteiro numa VM do Kali. Tudo acontece num diretório descartável, removido no passo 10.
+
+1. **Prepare o ambiente e o programa de teste.**
+
+   ```bash
+   sudo apt install -y build-essential pkg-config apt-file libpcap-dev
+   mkdir -p ~/lab-cap101 && cd ~/lab-cap101
+   cat > prog.c <<'EOF'
+   #include <stdio.h>
+   #include <string.h>
+   #define SAUDACAO "ola, toolchain"
+   int main(void) { printf("%s (%zu bytes)\n", SAUDACAO, strlen(SAUDACAO)); return 0; }
+   EOF
+   gcc --version | head -1
+   ```
+
+   Esperado: GCC instalado e o fonte no lugar. O `build-essential` é o metapacote que traz compilador, `make` e os cabeçalhos da libc.
+
+2. **Execute as quatro etapas separadamente.**
+
+   ```bash
+   gcc -E prog.c -o prog.i && wc -l prog.c prog.i
+   gcc -S prog.c -o prog.s && head -15 prog.s
+   gcc -c prog.s -o prog.o && file prog.o
+   gcc prog.o -o prog && ./prog
+   ```
+
+   Esperado: `prog.i` tem centenas ou milhares de linhas contra as cinco do fonte; `prog.s` é assembly legível; `prog.o` é "ELF relocatable"; `prog` é "ELF executable" e imprime a mensagem. Cada arquivo é a entrada da etapa seguinte.
+
+3. **Interrogue o binário.**
+
+   ```bash
+   file prog
+   readelf -h prog | grep -E 'Type|Machine|Entry'
+   readelf -d prog | grep NEEDED
+   ldd prog
+   nm -D prog | head
+   size prog
+   ```
+
+   Esperado: `NEEDED` lista `libc.so.6`, `ldd` mostra onde ela foi encontrada e qual é o carregador (`ld-linux-x86-64.so.2`), e `nm -D` marca `printf` com `U` — indefinido, a ser resolvido em tempo de execução.
+
+4. **Compare estático e dinâmico.**
+
+   ```bash
+   gcc prog.c -o prog-est -static
+   ls -lh prog prog-est
+   ldd prog-est || echo "not a dynamic executable: correto"
+   file prog-est
+   ```
+
+   Esperado: o estático é dezenas de vezes maior e não depende de nada externo. É esse binário que rodaria numa máquina sem as bibliotecas certas.
+
+5. **Reproduza o erro de cabeçalho ausente e resolva pelo caminho certo.**
+
+   ```bash
+   printf '#include <pcap.h>\nint main(void){ return pcap_lib_version()==0; }\n' > usa-pcap.c
+   sudo apt remove -y libpcap-dev >/dev/null 2>&1
+   gcc usa-pcap.c -o usa-pcap 2>&1 | head -3
+   sudo apt-file update >/dev/null 2>&1
+   apt-file search /usr/include/pcap.h | head -2
+   sudo apt install -y libpcap-dev
+   gcc usa-pcap.c -o usa-pcap 2>&1 | head -3
+   ```
+
+   Esperado: sem o pacote, o erro é `pcap.h: No such file or directory` — etapa de pré-processamento. O `apt-file` aponta `libpcap-dev`. Depois de instalá-lo o erro **muda** para `undefined reference to 'pcap_lib_version'`: o cabeçalho passou, e agora quem reclama é o ligador.
+
+6. **Resolva o erro de ligação e confirme com `pkg-config`.**
+
+   ```bash
+   gcc usa-pcap.c -lpcap -o usa-pcap && echo "ligou"
+   pkg-config --cflags --libs libpcap
+   gcc usa-pcap.c $(pkg-config --cflags --libs libpcap) -o usa-pcap && echo "ligou via pkg-config"
+   ldd usa-pcap | grep pcap
+   ```
+
+   Esperado: com `-lpcap` a compilação passa. O `pkg-config` produz exatamente os mesmos flags — a diferença é que ele funciona sem você saber o nome da biblioteca de antemão.
+
+7. **Construa uma biblioteca compartilhada e observe o carregador procurando por ela.**
+
+   ```bash
+   printf 'int soma(int a,int b){return a+b;}\n' > soma.c
+   printf '#include <stdio.h>\nint soma(int,int);\nint main(void){printf("%%d\\n",soma(2,3));return 0;}\n' > usa.c
+   gcc -fPIC -c soma.c -o soma.o && gcc -shared soma.o -o libsoma.so.1
+   ln -sf libsoma.so.1 libsoma.so
+   gcc usa.c -L. -lsoma -o usa
+   ./usa || echo "cannot open shared object: a biblioteca nao esta no caminho"
+   LD_LIBRARY_PATH=. ./usa
+   gcc usa.c -L. -lsoma -Wl,-rpath,'$ORIGIN' -o usa-rpath && ./usa-rpath
+   readelf -d usa-rpath | grep -i path
+   ```
+
+   Esperado: `./usa` falha exatamente com o terceiro erro da abertura; `LD_LIBRARY_PATH=.` faz funcionar naquela execução; e a versão com `RUNPATH` gravado funciona sempre, porque o caminho está dentro do binário. São os três primeiros degraus da @fig-ligacao-dinamica em ação.
+
+8. **Veja `LD_PRELOAD` substituindo uma função.**
+
+   ```bash
+   cat > espia.c <<'EOF'
+   #define _GNU_SOURCE
+   #include <stdio.h>
+   int soma(int a, int b) { fprintf(stderr, "[espia] soma(%d,%d)\n", a, b); return 999; }
+   EOF
+   gcc -fPIC -shared espia.c -o libespia.so
+   LD_LIBRARY_PATH=. ./usa
+   LD_PRELOAD=./libespia.so LD_LIBRARY_PATH=. ./usa
+   ls -l /etc/ld.so.preload 2>/dev/null || echo "sem ld.so.preload global: correto"
+   ```
+
+   Esperado: a execução normal imprime `5`; com `LD_PRELOAD`, imprime a linha do "espião" e `999`. A função original nunca foi chamada. A verificação de `/etc/ld.so.preload` é a mesma que se faz ao procurar rootkit em user space.
+
+9. **Escreva um `Makefile` e comprove a recompilação incremental.**
+
+   ```bash
+   printf 'CFLAGS = -Wall -Wextra -O2\n\nprog: prog.c\n\t$(CC) $(CFLAGS) prog.c -o prog\n\nclean:\n\trm -f prog *.o *.i *.s\n\n.PHONY: clean\n' > Makefile
+   cat -A Makefile | grep -c '\^I' && echo "as receitas usam TAB"
+   make
+   make            # sem alterar nada
+   touch prog.c && make
+   make -n clean
+   ```
+
+   Esperado: o primeiro `make` compila; o segundo responde `'prog' is up to date` sem fazer nada; depois do `touch`, compila de novo. É a regra inteira do `make`: comparar datas de modificação. O `cat -A` confirma o TAB — se ali houver espaços, o `make` falha com `missing separator`.
+
+10. **Compile para outra arquitetura e limpe.**
+
+    ```bash
+    sudo apt install -y gcc-aarch64-linux-gnu qemu-user-static
+    aarch64-linux-gnu-gcc prog.c -static -o prog-arm64
+    file prog-arm64
+    qemu-aarch64-static ./prog-arm64
+    cd ~ && rm -rf ~/lab-cap101
+    ls ~/lab-cap101 2>/dev/null || echo "laboratorio removido"
+    ```
+
+    Esperado: `file` identifica um binário ARM aarch64 e o `qemu-aarch64-static` o executa no seu x86, imprimindo a mesma mensagem. É a demonstração de que compilação e execução são problemas separados — e a base para analisar binários de dispositivos embarcados sem ter o hardware.
+
+## Resumo
+
+- **Compilar são quatro etapas**: pré-processador, compilador, montador e ligador. Cada uma falha de um jeito, e a mensagem de erro diz em qual delas você está.
+- **Cabeçalho ausente é problema de pacote `-dev`; `undefined reference` é falta de `-l<biblioteca>` na ligação; `cannot open shared object` acontece só em tempo de execução** e não tem relação com a compilação ter dado certo.
+- **`file`, `ldd`, `readelf -d`, `nm -D` e `objdump -d` respondem a perguntas distintas sobre um ELF** — é o conjunto básico tanto para depurar uma build quanto para inspecionar um binário desconhecido.
+- **Estático é grande e portátil; dinâmico é pequeno e compartilha memória.** Para rodar numa máquina que você não controla, `-static`.
+- **O carregador procura bibliotecas em cinco lugares, nesta ordem:** `LD_PRELOAD`, `RPATH`/`RUNPATH`, `LD_LIBRARY_PATH`, o cache de `ldconfig` e os diretórios padrão. A ordem é o que torna `LD_PRELOAD` poderoso e perigoso.
+- **`pkg-config` produz os flags corretos** sem você precisar decorar nomes de biblioteca; `apt-file search` faz o caminho inverso, de um cabeçalho ausente ao pacote que o contém.
+- **Reconheça o sistema de construção pelo arquivo no repositório:** `Makefile`, `configure`, `CMakeLists.txt` ou `meson.build` — cada um tem a sua sequência de três comandos.
+- **`sudo make install` escapa do gerenciador de pacotes.** Use `--prefix=/usr/local` ou `/opt`, e registre o que instalou; no Kali rolling, software compilado do fonte é o primeiro a quebrar depois de alguns meses.
