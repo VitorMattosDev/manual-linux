@@ -1,3 +1,420 @@
 # Capabilities, isolamento e menor privilégio {#sec-cap087}
 
-*(em elaboracao)*
+O `ping` precisa abrir um socket cru para montar um pacote ICMP à mão — uma operação que o kernel só permite a quem tem privilégio. Durante décadas, a solução foi o bit SUID: `/bin/ping` pertencia a `root` e rodava **inteiro** como `root`, com direito a ler `/etc/shadow`, matar qualquer processo, montar sistemas de arquivos e reconfigurar a rede. Tudo isso para mandar um pacote de 64 bytes.
+
+Rode o comando hoje num Kali atual:
+
+```bash
+ls -l /usr/bin/ping
+# -rwxr-xr-x 1 root root ... /usr/bin/ping     <- nenhum SUID
+getcap /usr/bin/ping
+# /usr/bin/ping cap_net_raw=ep
+```
+
+Sem SUID. O que ele tem é **uma** permissão específica: `CAP_NET_RAW`. O resto do poder de `root` não está lá. Se alguém encontrar uma falha no `ping`, o que ganha é a capacidade de forjar pacotes — não a máquina.
+
+Essa é a ideia central deste capítulo. **Menor privilégio não é um conselho, é uma engenharia**: o kernel Linux quebrou o poder monolítico de `root` em peças nomeadas, e existe um conjunto de mecanismos — capabilities, `no_new_privs`, namespaces, cgroups e as diretivas de sandbox do systemd — para entregar a cada processo exatamente as peças de que ele precisa.
+
+## O problema do `root` monolítico
+
+No modelo Unix clássico existe uma única verificação em todo o kernel: **UID 0 pode tudo, os outros passam pelas checagens normais**. Isso torna a escalada de privilégio um alvo binário e desproporcionalmente valioso: qualquer falha em qualquer código privilegiado entrega o sistema inteiro, porque não há gradação entre "pode um pouco" e "pode tudo".
+
+O SUID (@sec-cap023) piora a situação ao multiplicar a superfície: cada binário SUID é um pedaço de código que qualquer usuário pode executar como `root`. É por isso que o inventário `find / -perm -4000` do @sec-cap085 é uma peça central de auditoria — cada linha é um caminho potencial de usuário comum até controle total.
+
+As **capabilities POSIX**, introduzidas no kernel 2.2, dividem esse poder em cerca de 40 permissões independentes.
+
+::: {#fig-capabilities}
+```{.tikz}
+%%| filename: capabilities
+%%| alt: O poder monolitico de root quebrado em capabilities independentes, com exemplos de uso
+\begin{tikzpicture}[
+    bloco/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.4cm,minimum height=1.5cm},
+    pec/.style={rounded corners=3pt,draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=3.9cm,minimum height=0.78cm},
+    fl/.style={-{Latex[length=1.8mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bloco,draw=manualred,fill=manualred!16] (root) at (0,4.4) {\textbf{UID 0}\\\tiny uma única verificação\\\tiny no kernel inteiro:\\\tiny \textbf{pode tudo}};
+
+  \node[pec,draw=manualblue,fill=manualblue!12]   (c1) at (5.6,6.3) {\texttt{CAP\_NET\_RAW}\\socket cru --- \texttt{ping}, \texttt{tcpdump}};
+  \node[pec,draw=manualgreen,fill=manualgreen!14] (c2) at (5.6,5.35) {\texttt{CAP\_NET\_BIND\_SERVICE}\\escutar em porta abaixo de 1024};
+  \node[pec,draw=manualgreen,fill=manualgreen!14] (c3) at (5.6,4.4) {\texttt{CAP\_CHOWN}\\trocar o dono de um arquivo};
+  \node[pec,draw=manualyellow,fill=manualyellow!20] (c4) at (5.6,3.45) {\texttt{CAP\_KILL}\\sinalizar processo de outro dono};
+  \node[pec,draw=manualred,fill=manualred!14]     (c5) at (5.6,2.5) {\texttt{CAP\_SYS\_ADMIN}\\montar, \texttt{namespace}, \ldots\\\textbf{equivale a root}};
+
+  \draw[fl] (root.east) -- (c1.west);
+  \draw[fl] (root.east) -- (c2.west);
+  \draw[fl] (root.east) -- (c3.west);
+  \draw[fl] (root.east) -- (c4.west);
+  \draw[fl] (root.east) -- (c5.west);
+
+  \node[nt,text width=12.4cm,anchor=north] at (2.8,1.6) {Cada peça é verificada de forma independente pelo kernel, e um processo pode receber uma sem receber as outras: o \texttt{ping} tem \texttt{CAP\_NET\_RAW} e nada mais. A quebra não é uniforme, porém --- \texttt{CAP\_SYS\_ADMIN} acumulou tantas operações ao longo dos anos (montagem, criação de \emph{namespaces}, escrita em interfaces privilegiadas) que concedê-la é, na prática, conceder \texttt{root}. Conceder capability é útil quando a peça é pequena; \texttt{CAP\_SYS\_ADMIN} não é uma peça pequena.};
+\end{tikzpicture}
+```
+O poder monolítico de `root` quebrado em capabilities independentes — e a peça que não é pequena.
+:::
+
+## As capabilities que aparecem no dia a dia
+
+| Capability | O que libera | Quem usa |
+|---|---|---|
+| `CAP_NET_RAW` | sockets crus e pacotes forjados | `ping`, `tcpdump`, `nmap` |
+| `CAP_NET_BIND_SERVICE` | escutar em porta menor que 1024 | servidor web sem `root` |
+| `CAP_NET_ADMIN` | configurar interfaces, rotas, firewall | `ip`, `nft`, VPN |
+| `CAP_CHOWN` | mudar o dono de arquivo alheio | instaladores, gerenciadores de pacote |
+| `CAP_DAC_OVERRIDE` | ignorar toda checagem de permissão | `root` na prática; evite conceder |
+| `CAP_KILL` | sinalizar processo de outro usuário | supervisores de processo |
+| `CAP_SETUID` / `CAP_SETGID` | assumir outra identidade | `login`, servidores que largam privilégio |
+| `CAP_SYS_PTRACE` | inspecionar memória de outro processo | depuradores |
+| `CAP_SYS_MODULE` | carregar módulo de kernel | **equivale a controle total** |
+| `CAP_SYS_ADMIN` | montar, criar namespaces, dezenas de outras | **equivale a `root`** |
+
+: As capabilities que você vai encontrar {#tbl-capabilities}
+
+Três delas — `CAP_SYS_ADMIN`, `CAP_SYS_MODULE` e `CAP_DAC_OVERRIDE` — não representam redução de privilégio nenhuma. Conceder qualquer uma é conceder a máquina por um caminho ligeiramente mais longo. `CAP_SYS_PTRACE` e `CAP_SETUID` são quase tão ruins.
+
+### Ler e conceder
+
+```bash
+getcap /usr/bin/ping                # de um arquivo
+getcap -r /usr/bin 2>/dev/null      # inventario recursivo
+capsh --print                       # do processo (shell) atual
+grep Cap /proc/self/status          # os conjuntos em hexadecimal
+capsh --decode=0000000000003000     # traduz o hexadecimal para nomes
+```
+
+```bash
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/meuservidor   # concede
+sudo setcap -r /usr/local/bin/meuservidor                          # remove
+```
+
+O sufixo `=+ep` são os **conjuntos** de capability, e vale entender porque ele muda o comportamento:
+
+- **Permitido (`p`)** — o teto: o que o processo *pode* ativar.
+- **Efetivo (`e`)** — o que está ativo agora e é de fato verificado pelo kernel.
+- **Herdável (`i`)** — o que sobrevive a um `execve()` para um binário também marcado.
+- **Ambiente** — mecanismo moderno que permite herança sem marcar cada binário.
+- **Limitante (*bounding*)** — o teto absoluto do processo e de todos os seus descendentes; capability removida daqui não volta nem para `root`.
+
+O conjunto limitante é a peça mais valiosa para confinamento, porque é irreversível na direção segura: `capsh --drop=cap_net_raw -- -c 'ping -c1 1.1.1.1'` faz o `ping` falhar mesmo se o binário tiver a capability marcada.
+
+::: {.callout-warning}
+**Nunca conceda capability a um interpretador.** `sudo setcap cap_setuid=+ep /usr/bin/python3` transforma o Python numa máquina de escalada de privilégio de duas linhas — qualquer usuário abre um interpretador que já pode virar `root`:
+
+```python
+import os; os.setuid(0); os.system("/bin/bash")
+```
+
+Vale para `python`, `perl`, `ruby`, `node`, `gdb` e qualquer coisa que execute código arbitrário fornecido pelo usuário. A regra geral: **capability vai em binário que faz uma coisa só**, com entrada controlada. O mesmo raciocínio se aplica ao SUID e às regras de `sudo` que apontam para interpretadores ou para programas com escape para shell (`vim`, `less`, `find -exec`, `awk 'BEGIN{system()}'`).
+:::
+
+## `no_new_privs`: a chave que fecha a porta
+
+Existe uma flag por processo, `no_new_privs`, que faz uma promessa simples e forte: **nem este processo nem nenhum descendente dele ganhará privilégio via `execve()`**. Com ela ativa, o bit SUID é ignorado e capability marcada em arquivo não é adquirida.
+
+```bash
+grep NoNewPrivs /proc/self/status         # 0 normalmente
+setpriv --no-new-privs id -u              # a partir daqui, nao ha ganho de privilegio
+setpriv --no-new-privs sudo id            # falha: sudo nao consegue elevar
+```
+
+É uma flag de mão única — uma vez ativa, não se desativa. É por isso que ela é a base de todo sandbox moderno: um processo que a define antes de carregar código não confiável garante que esse código não sairá por um SUID esquecido no sistema.
+
+## Largar privilégio de forma correta
+
+Um serviço que precisa escutar na porta 443 tem duas soluções e uma delas é errada.
+
+A errada é rodar como `root` para sempre. A tradicional é subir como `root`, chamar `bind()` e imediatamente trocar para um usuário sem privilégio com `setgid()` seguido de `setuid()` — nessa ordem, porque depois de largar o UID já não há poder para largar o GID. A moderna evita `root` por completo:
+
+```bash
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/meuservidor
+```
+
+Melhor ainda, deixar o systemd fazer isso, sem tocar em bit nenhum de arquivo:
+
+```ini
+[Service]
+User=meuservico
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+```
+
+## O systemd como ferramenta de menor privilégio
+
+Aqui está a parte de maior retorno prático do capítulo. O systemd (@sec-cap040) embute um sandbox completo, e ativá-lo custa algumas linhas num arquivo de unidade — sem recompilar nada, sem escrever perfil de confinamento, sem contêiner.
+
+```ini
+# /etc/systemd/system/meuservico.service
+[Unit]
+Description=Servico de exemplo, confinado
+
+[Service]
+ExecStart=/usr/local/bin/meuservico
+User=meuservico
+Group=meuservico
+
+# --- identidade e escalada ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# --- sistema de arquivos ---
+ProtectSystem=strict          # todo o sistema em somente-leitura
+ProtectHome=yes               # /home, /root e /run/user invisiveis
+PrivateTmp=yes                # /tmp proprio, isolado dos outros
+StateDirectory=meuservico     # o unico lugar gravavel: /var/lib/meuservico
+ReadWritePaths=/var/log/meuservico
+
+# --- kernel e dispositivos ---
+ProtectKernelTunables=yes     # /proc/sys e /sys em somente-leitura
+ProtectKernelModules=yes      # nao carrega modulo
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+PrivateDevices=yes            # so os dispositivos inocuos (/dev/null etc.)
+
+# --- processos e rede ---
+PrivateUsers=yes
+ProtectProc=invisible         # nao enxerga processo de outro usuario em /proc
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes    # sem paginas gravaveis e executaveis
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Por baixo, essas diretivas usam **namespaces** (montagem, PID, usuário, rede), **cgroups** e **seccomp** — os mesmos mecanismos que sustentam contêineres, tema do Volume 16. A vantagem é que aqui eles vêm em forma declarativa, num arquivo de texto, aplicáveis a um serviço que já existe.
+
+E o systemd traz um analisador que dá nota:
+
+```bash
+systemd-analyze security                    # placar de TODOS os servicos
+systemd-analyze security meuservico.service # detalhado, com o que falta
+```
+
+A saída lista cada diretiva, se está ativa e quanto de exposição ela representa, com um índice de 0 (blindado) a 10 (exposto). É a forma mais direta de descobrir que o serviço que você herdou roda como `root` sem restrição nenhuma — e a lista de tarefas para consertar isso.
+
+::: {.callout-note}
+**Aperte o parafuso aos poucos, com o log aberto.** `ProtectSystem=strict` e `SystemCallFilter` quebram serviço que grava fora dos caminhos previstos ou faz chamada de sistema incomum, e o sintoma costuma ser opaco (`Permission denied` num caminho que existe e tem permissão correta, ou `Operation not permitted` sem contexto). O método: adicione um bloco por vez, `systemctl daemon-reload && systemctl restart`, e acompanhe `journalctl -fu servico` (@sec-cap042). Para descobrir o que foi bloqueado por seccomp: `journalctl -u servico | grep -i seccomp` e `dmesg | grep -i 'audit.*seccomp'`.
+:::
+
+## O outro lado: capability como caminho de escalada
+
+Menor privilégio mal aplicado abre exatamente o buraco que pretendia fechar. Como o inventário de capabilities é curto e legível, ele é uma das primeiras coisas que se enumera numa avaliação autorizada de um host — e uma das primeiras que você, como administrador, deve enumerar no seu próprio sistema:
+
+```bash
+sudo getcap -r / 2>/dev/null
+```
+
+Se essa lista contiver algo além dos suspeitos habituais (`ping`, `dumpcap`, `mtr-packet`, `gnome-keyring-daemon`), há uma pergunta a fazer. Os padrões perigosos:
+
+- **`cap_setuid` em qualquer coisa** — escalada direta e trivial.
+- **Qualquer capability em interpretador** — o caso do quadro acima.
+- **`cap_dac_override` ou `cap_dac_read_search`** — leitura de qualquer arquivo, incluindo `/etc/shadow` e chaves privadas.
+- **`cap_sys_admin`, `cap_sys_module`, `cap_sys_ptrace`** — controle total por caminhos diferentes.
+- **`cap_chown`** — mudar o dono de arquivo alheio permite reescrever a rota até `root`.
+
+O mesmo raciocínio vale para as regras de `sudo` (@sec-cap022): `usuario ALL=(ALL) NOPASSWD: /usr/bin/find` parece restrito e não é, porque `find . -exec /bin/sh \;` é um shell como `root`. **Um privilégio concedido a um programa que executa código arbitrário é privilégio irrestrito**, e essa frase resume metade da escalada de privilégio local que existe.
+
+## 🐉 No Kali
+
+- **O Kali é um museu vivo de capabilities aplicadas corretamente**, porque as ferramentas de rede precisam de privilégio e não podem ser SUID. `sudo getcap -r /usr 2>/dev/null` numa instalação padrão mostra `dumpcap` com `cap_net_raw,cap_net_admin=eip` — a peça que permite ao Wireshark capturar tráfego (@sec-cap084) com o usuário `kali`, sem rodar a interface gráfica inteira como `root`, que seria muito pior.
+- **`sudo dpkg-reconfigure wireshark-common` é a decisão certa quando você quer capturar sem `sudo`.** Ela cria o grupo `wireshark`, dá a capability ao `dumpcap` e restringe a execução ao grupo. Rodar o Wireshark completo como `root` expõe um decodificador de protocolos gigantesco — historicamente uma fonte generosa de CVEs — a tráfego arbitrário da rede, com privilégio total. É o exemplo didático perfeito de menor privilégio: privilégio mínimo, no menor componente possível, pelo menor tempo.
+- **O `nmap` moderno não é SUID, e isso muda o que ele consegue fazer.** `nmap -sS` (varredura SYN) precisa de socket cru; sem `CAP_NET_RAW` ou `sudo`, o `nmap` cai silenciosamente para `-sT` (conexão completa via `connect()`), que é mais lento, mais barulhento no log do alvo e dá resultado diferente. Ver `nmap` "funcionando" e produzindo resultado estranho quase sempre é isto — e é o mesmo mecanismo do `ping`, visto do outro lado.
+- **Enumerar capabilities e SUID é etapa padrão de pós-exploração, e é por isso que você deve enumerá-las primeiro.** Ferramentas como `linpeas` fazem exatamente o inventário desta seção. Rodá-las **na sua própria máquina** é auditoria legítima e o melhor uso possível delas: `sudo getcap -r / 2>/dev/null` e `sudo find / -perm -4000 -type f 2>/dev/null` levam dez segundos e respondem a pergunta que importa. Contra sistema de terceiro sem autorização escrita, é crime pela Lei 12.737/2012.
+- **`systemd-analyze security` na sua VM do Kali é uma revelação desconfortável.** Vários serviços comuns aparecem com índice acima de 8. Nem todos precisam ser corrigidos numa máquina de laboratório — mas o exercício ensina a ler o placar, e o mesmo comando num servidor de produção vira uma lista de tarefas concreta e priorizada.
+
+> **Nota sobre a família RHEL.** Capabilities, `no_new_privs` e as diretivas de sandbox do systemd são idênticas — são recursos do kernel e do systemd, não da distribuição. A diferença é que o RHEL empilha o **SELinux** (@sec-cap088) por cima: mesmo um processo com `CAP_DAC_OVERRIDE` esbarra na política de tipo, que é verificada **depois** e de forma independente das capabilities. Um `httpd_t` com todas as capabilities do mundo continua sem conseguir ler `/home` se a política não permitir. É defesa em profundidade literal — duas verificações desacopladas, e o invasor precisa de ambas.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali descartável. Os passos 4 e 5 **criam e depois removem** uma escalada de privilégio real — faça em VM com snapshot e execute a limpeza.
+
+1. **Compare o modelo antigo com o novo.**
+
+   ```bash
+   ls -l /usr/bin/ping /usr/bin/passwd /usr/bin/sudo
+   getcap /usr/bin/ping
+   sudo getcap -r /usr 2>/dev/null
+   ```
+
+   Esperado: `passwd` e `sudo` com `s` no lugar do `x` (SUID); `ping` sem SUID e com `cap_net_raw=ep`. A lista completa de capabilities do sistema tem poucas linhas.
+
+2. **Veja os conjuntos de capability do seu shell.**
+
+   ```bash
+   capsh --print | head -5
+   grep Cap /proc/self/status
+   capsh --decode=$(awk '/CapBnd/{print $2}' /proc/self/status)  | head -20
+   sudo capsh --print | grep 'Current:'
+   ```
+
+   Esperado: como usuário comum, `Current:` vazio e um `CapBnd` cheio (o teto); sob `sudo`, o conjunto efetivo traz tudo. É a diferença entre "poderia ter" e "tem".
+
+3. **Comprove que a capability é o que faz o `ping` funcionar.**
+
+   ```bash
+   cp /usr/bin/ping /tmp/ping-sem-cap
+   getcap /tmp/ping-sem-cap                     # vazio: a copia perdeu a capability
+   /tmp/ping-sem-cap -c1 1.1.1.1
+   ```
+
+   Esperado: a cópia falha com `Operation not permitted` — copiar um arquivo **não** copia sua capability, do mesmo modo que não copia o bit SUID. Agora restaure e confirme:
+
+   ```bash
+   sudo setcap cap_net_raw=+ep /tmp/ping-sem-cap
+   /tmp/ping-sem-cap -c1 1.1.1.1 | tail -2
+   ```
+
+   Esperado: funciona de novo. Uma linha de configuração é a diferença entre um binário privilegiado e um binário comum.
+
+4. **Demonstre por que interpretador nunca recebe capability.**
+
+   ```bash
+   cp /usr/bin/python3 /tmp/python-perigoso
+   sudo setcap cap_setuid=+ep /tmp/python-perigoso
+   getcap /tmp/python-perigoso
+   /tmp/python-perigoso -c 'import os; os.setuid(0); print("UID agora:", os.getuid())'
+   ```
+
+   Esperado: `UID agora: 0`. Um usuário comum acabou de virar `root` em uma linha. Este é o motivo de a regra do quadro de aviso ser categórica, e o motivo de `cap_setuid` num inventário de `getcap -r /` ser um achado grave. **Remova imediatamente:**
+
+   ```bash
+   sudo rm -f /tmp/python-perigoso
+   ls /tmp/python-perigoso 2>&1
+   ```
+
+5. **Veja `no_new_privs` fechar a porta.**
+
+   ```bash
+   grep NoNewPrivs /proc/self/status
+   setpriv --no-new-privs grep NoNewPrivs /proc/self/status
+   setpriv --no-new-privs sudo id 2>&1 | tail -2
+   ```
+
+   Esperado: dentro do `setpriv`, `NoNewPrivs: 1`, e o `sudo` falha porque não consegue mais adquirir privilégio via SUID. Uma flag, e a categoria inteira de escalada por binário SUID deixa de existir para aquela árvore de processos.
+
+6. **Descarte uma capability do conjunto limitante.**
+
+   ```bash
+   ping -c1 -W1 1.1.1.1 > /dev/null && echo "ping normal: OK"
+   sudo capsh --drop=cap_net_raw -- -c 'ping -c1 -W1 1.1.1.1' 2>&1 | tail -2
+   ```
+
+   Esperado: mesmo executado por `sudo`, o `ping` falha — o conjunto limitante é um teto que nem `root` recupera dentro daquele processo. É o mecanismo que o `CapabilityBoundingSet=` do systemd usa.
+
+7. **Monte um serviço confinado e meça o antes e o depois.**
+
+   ```bash
+   sudo tee /usr/local/bin/lab-servico > /dev/null <<'EOF'
+   #!/usr/bin/env bash
+   while true; do
+     echo "vivo em $(date +%T) como $(id -un)"
+     ls /root > /dev/null 2>&1 && echo "  CONSIGO ler /root" || echo "  nao leio /root"
+     touch /etc/lab-marcador 2>/dev/null && echo "  CONSIGO escrever em /etc" \
+       || echo "  nao escrevo em /etc"
+     sleep 5
+   done
+   EOF
+   sudo chmod +x /usr/local/bin/lab-servico
+   sudo tee /etc/systemd/system/lab-servico.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Servico de laboratorio SEM confinamento
+   [Service]
+   ExecStart=/usr/local/bin/lab-servico
+   EOF
+   sudo systemctl daemon-reload && sudo systemctl start lab-servico
+   sleep 6 && journalctl -u lab-servico -n 4 --no-pager
+   systemd-analyze security lab-servico.service | tail -3
+   ```
+
+   Esperado: o serviço roda como `root`, lê `/root`, escreve em `/etc`, e o `systemd-analyze` dá um índice alto (perto de 9) com o veredito `UNSAFE`.
+
+8. **Aplique o confinamento e veja o placar mudar.**
+
+   ```bash
+   sudo tee /etc/systemd/system/lab-servico.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Servico de laboratorio CONFINADO
+   [Service]
+   ExecStart=/usr/local/bin/lab-servico
+   DynamicUser=yes
+   NoNewPrivileges=yes
+   CapabilityBoundingSet=
+   ProtectSystem=strict
+   ProtectHome=yes
+   PrivateTmp=yes
+   PrivateDevices=yes
+   ProtectKernelTunables=yes
+   ProtectKernelModules=yes
+   ProtectControlGroups=yes
+   ProtectProc=invisible
+   RestrictNamespaces=yes
+   RestrictSUIDSGID=yes
+   RestrictRealtime=yes
+   LockPersonality=yes
+   MemoryDenyWriteExecute=yes
+   SystemCallFilter=@system-service
+   SystemCallErrorNumber=EPERM
+   EOF
+   sudo systemctl daemon-reload && sudo systemctl restart lab-servico
+   sleep 6 && journalctl -u lab-servico -n 4 --no-pager
+   systemd-analyze security lab-servico.service | tail -3
+   ```
+
+   Esperado: agora o serviço roda com um usuário efêmero, **não** lê `/root`, **não** escreve em `/etc`, e o índice cai para a faixa de 1 a 3. Nenhuma linha do programa mudou — só o arquivo de unidade.
+
+9. **Confirme o confinamento por dentro do processo.**
+
+   ```bash
+   PID=$(systemctl show -p MainPID --value lab-servico)
+   sudo cat /proc/$PID/status | grep -E 'Uid|NoNewPrivs|CapEff|Seccomp'
+   sudo capsh --decode=$(sudo awk '/CapEff/{print $2}' /proc/$PID/status)
+   ```
+
+   Esperado: UID diferente de 0, `NoNewPrivs: 1`, `CapEff: 0000000000000000` (nenhuma capability efetiva) e `Seccomp: 2` (filtro ativo). É a prova, vista do kernel, de que as diretivas viraram restrição real.
+
+10. **Rode o placar em todo o sistema.**
+
+    ```bash
+    systemd-analyze security --no-pager | head -25
+    ```
+
+    Esperado: uma tabela ordenada por exposição. Os serviços do topo são a lista de trabalho de qualquer esforço sério de menor privilégio nesta máquina.
+
+11. **Faça o inventário de escalada da própria máquina.**
+
+    ```bash
+    echo "=== capabilities ==="; sudo getcap -r / 2>/dev/null
+    echo "=== SUID ==="; sudo find / -xdev -perm -4000 -type f 2>/dev/null | head -20
+    echo "=== regras de sudo ==="; sudo grep -rhvE '^\s*(#|$)' /etc/sudoers /etc/sudoers.d/ 2>/dev/null
+    ```
+
+    Esperado: listas curtas e explicáveis. Qualquer `cap_setuid`, `cap_dac_override` ou capability em interpretador é achado grave; qualquer regra `NOPASSWD` apontando para `find`, `vim`, `less`, `awk` ou um interpretador é privilégio irrestrito disfarçado.
+
+12. **Limpe tudo.**
+
+    ```bash
+    sudo systemctl stop lab-servico && sudo systemctl disable lab-servico 2>/dev/null
+    sudo rm -f /etc/systemd/system/lab-servico.service /usr/local/bin/lab-servico
+    sudo rm -f /tmp/ping-sem-cap /tmp/python-perigoso /etc/lab-marcador
+    sudo systemctl daemon-reload
+    sudo getcap -r /tmp 2>/dev/null; echo "--- limpo ---"
+    ```
+
+    Esperado: nada sobra em `/tmp` com capability, e o serviço de laboratório desapareceu. Conferir a limpeza de um exercício que criou escalada de privilégio não é formalidade.
+
+## Resumo
+
+- **`root` monolítico torna toda falha em código privilegiado um comprometimento total.** As capabilities POSIX quebram esse poder em cerca de 40 peças verificadas independentemente pelo kernel — o `ping` moderno tem `CAP_NET_RAW` e mais nada.
+- **A quebra não é uniforme:** `CAP_SYS_ADMIN`, `CAP_SYS_MODULE` e `CAP_DAC_OVERRIDE` equivalem a `root` por caminhos mais longos. Conceder uma delas não é reduzir privilégio.
+- **Capability nunca vai em interpretador.** `cap_setuid` no `python3` é escalada de uma linha. A regra vale igualmente para SUID e para regras de `sudo` que apontam para programas com escape para shell.
+- **`no_new_privs` elimina de uma vez a escalada por SUID** em toda uma árvore de processos, e é de mão única — a base de todo sandbox moderno.
+- **O systemd é a ferramenta de menor privilégio de maior retorno**: `NoNewPrivileges`, `CapabilityBoundingSet`, `ProtectSystem=strict`, `PrivateTmp`, `SystemCallFilter` transformam um serviço exposto num serviço confinado sem tocar no código.
+- **`systemd-analyze security` dá nota a cada serviço** e converte "deveríamos endurecer isso" numa lista priorizada e verificável.
+- **Aperte o parafuso aos poucos, com `journalctl -fu` aberto.** Diretiva de confinamento quebra serviço de forma opaca, e a diferença entre um ajuste de cinco minutos e uma tarde perdida é ter o log na tela.

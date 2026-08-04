@@ -1,3 +1,318 @@
 # O ecossistema de ferramentas do Kali: categorias e fluxos {#sec-cap090}
 
-*(em elaboracao)*
+Quem instala o Kali pela primeira vez abre o menu de aplicações e encontra centenas de ferramentas distribuídas em treze categorias com nomes intimidadores. A reação comum é escolher a de nome mais chamativo, apontar para algum alvo e ver o que acontece. É a forma errada de usar a distribuição, e também a forma mais provável de cometer um crime sem entender o que se fez.
+
+As ferramentas não são o assunto. O **fluxo** é. Um teste de segurança sério não é uma coleção de ferramentas disparadas ao acaso — é uma sequência de fases, cada uma respondendo a uma pergunta específica, cada uma alimentando a seguinte com informação. As ferramentas do Kali estão organizadas exatamente segundo essas fases, e entender o mapa vale mais do que decorar o nome de qualquer programa. Este capítulo é esse mapa, e a moldura legal e ética sem a qual ele não deve ser usado.
+
+## Antes de qualquer ferramenta: a autorização
+
+Não há como discutir o Kali honestamente sem começar por aqui, porque é o que separa o profissional do criminoso, e a diferença **não está na técnica** — os comandos são exatamente os mesmos. Está na autorização.
+
+No Brasil, a **Lei 12.737/2012** (Lei Carolina Dieckmann, que alterou o Código Penal) tipifica a invasão de dispositivo informático alheio, mediante violação indevida de mecanismo de segurança, com pena de detenção. "Alheio" e "indevida" são as palavras que importam: acessar um sistema que não é seu, sem autorização de quem pode dá-la, é crime — independentemente de ter causado dano, independentemente da intenção declarada, independentemente de a ferramenta ser pública. Escanear as portas de um servidor de terceiro é o começo do que a lei descreve. A **LGPD** (Lei 13.709/2018) acrescenta responsabilidade sobre qualquer dado pessoal que um teste venha a tocar.
+
+Um teste legítimo exige **autorização escrita, específica e prévia** — o documento que a indústria chama de *scope of work* ou *rules of engagement*, e que responde, no papel, antes de o primeiro comando rodar:
+
+- **Quais alvos** — endereços IP, domínios e faixas exatos. O que está fora da lista está fora do teste, e um IP vizinho no mesmo bloco não está incluído por proximidade.
+- **Quais técnicas** — negação de serviço, engenharia social e exploração ativa costumam ser excluídas ou tratadas à parte.
+- **Qual janela** — datas e horários. Testar fora deles é agir sem autorização.
+- **Quem autoriza** — assinado por quem tem poder legal sobre os sistemas. O administrador de um servidor pode não ser quem pode autorizar um teste contra ele.
+- **Contato de emergência** — para quando algo sai do previsto, porque às vezes sai.
+
+::: {.callout-important}
+**A ferramenta é idêntica; o que muda é o papel.** `nmap`, `hydra`, `sqlmap` e `metasploit` fazem exatamente a mesma coisa nas mãos de um pentester contratado e nas de um criminoso. A lei, o contrato e a ética não distinguem os dois pela ferramenta — distinguem pela existência de autorização válida para aquele alvo, naquela janela, com aquelas técnicas. Todo laboratório deste capítulo e deste volume roda **contra a própria máquina ou contra alvos deliberadamente vulneráveis feitos para treino** (Metasploitable, DVWA, as máquinas do TryHackMe e do Hack The Box). Esse é o único alvo cuja autorização é indiscutível, e é onde toda prática deve acontecer.
+:::
+
+## O fluxo de um teste, e onde cada categoria entra
+
+As categorias do menu do Kali seguem, com pouca folga, o ciclo de vida de um teste de intrusão. Vê-las nessa ordem transforma uma lista intimidadora num processo compreensível.
+
+::: {#fig-fluxo-pentest}
+```{.tikz}
+%%| filename: fluxo-pentest
+%%| alt: As fases de um teste de intrusao em ciclo, da reconhecimento ao relatorio, com as ferramentas do Kali em cada fase
+\begin{tikzpicture}[
+    fase/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=3.2cm,minimum height=1.15cm},
+    fl/.style={-{Latex[length=1.8mm]},very thick,manualgray},
+    tool/.style={font=\ttfamily\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[fase,draw=manualblue,fill=manualblue!12]     (rec) at (0,7.0)   {\textbf{1. Reconhecimento}\\\tiny mapear sem tocar};
+  \node[fase,draw=manualblue,fill=manualblue!12]     (enu) at (4.6,7.0) {\textbf{2. Varredura}\\\tiny e enumeração};
+  \node[fase,draw=manualyellow,fill=manualyellow!20] (vul) at (9.2,7.0) {\textbf{3. Análise de}\\\textbf{vulnerabilidade}};
+  \node[fase,draw=manualred,fill=manualred!14]       (exp) at (9.2,4.7) {\textbf{4. Exploração}};
+  \node[fase,draw=manualred,fill=manualred!14]       (pos) at (4.6,4.7) {\textbf{5. Pós-exploração}\\\tiny escalar, pivotar};
+  \node[fase,draw=manualgreen,fill=manualgreen!14]   (rel) at (0,4.7)   {\textbf{6. Relatório}\\\tiny o entregável real};
+
+  \draw[fl] (rec) -- (enu);
+  \draw[fl] (enu) -- (vul);
+  \draw[fl] (vul) -- (exp);
+  \draw[fl] (exp) -- (pos);
+  \draw[fl] (pos) -- (rel);
+  \draw[fl] (pos.north) .. controls (6.9,6.0) .. (vul.south);
+
+  \node[tool,anchor=south] at (0,7.75)   {whois, dig, theHarvester\\recon-ng, Maltego};
+  \node[tool,anchor=south] at (4.6,7.75) {nmap, masscan\\enum4linux, gobuster};
+  \node[tool,anchor=south] at (9.2,7.75) {nikto, nuclei\\OpenVAS, wpscan};
+  \node[tool,anchor=north] at (9.2,3.95) {metasploit, sqlmap\\hydra, searchsploit};
+  \node[tool,anchor=north] at (4.6,3.95) {linpeas, mimikatz\\BloodHound};
+  \node[tool,anchor=north] at (0,3.95)   {faraday, dradis\\CherryTree};
+
+  \node[nt,text width=12.8cm,anchor=north] at (4.6,3.0) {O ciclo é iterativo, não linear: a seta de volta representa o que sempre acontece --- a pós-exploração revela hosts e serviços internos que não eram visíveis de fora, e cada descoberta reinicia o ciclo a partir da varredura, agora de um ponto de vista interno. A fase 6 é a de menos ferramenta e mais valor: o cliente paga pelo \textbf{relatório}, não pelo acesso. Um acesso obtido e não documentado de forma reproduzível não vale nada, e as três primeiras fases consomem a maior parte do tempo real de um teste sério.};
+\end{tikzpicture}
+```
+As fases de um teste de intrusão em ciclo, e as ferramentas do Kali que povoam cada uma.
+:::
+
+### 1. Reconhecimento — mapear sem tocar
+
+A fase de coletar informação **sem interagir diretamente** com os sistemas do alvo, usando fontes públicas (*OSINT*). Registros de domínio, DNS, certificados, vazamentos, redes sociais, metadados de documentos publicados. É a fase mais legal de todas porque, feita só com fontes públicas, quase não toca no alvo — e a mais subestimada, porque define tudo que vem depois.
+
+```bash
+whois exemplo.com                       # registro do dominio (@sec-cap080)
+dig +short exemplo.com ANY              # registros DNS
+theHarvester -d exemplo.com -b all      # e-mails e subdominios de fontes publicas
+```
+
+### 2. Varredura e enumeração — o que existe e responde
+
+Aqui começa a interação com o alvo, e portanto aqui começa a necessidade de autorização. Varredura descobre hosts vivos e portas abertas; enumeração aprofunda em cada serviço encontrado — versões, usuários, compartilhamentos, diretórios. É o `ss` e o `nmap` do @sec-cap080 aplicados de fora para dentro, e é onde se passa a maior parte do tempo.
+
+```bash
+nmap -sV -sC -p- alvo-autorizado        # portas, versoes e scripts padrao
+nmap --script vuln alvo-autorizado      # scripts de deteccao de vulnerabilidade
+gobuster dir -u http://alvo -w /usr/share/wordlists/dirb/common.txt
+```
+
+### 3. Análise de vulnerabilidade — o que é explorável
+
+Cruzar o que foi enumerado — versões de serviço, respostas, configurações — com bases de vulnerabilidades conhecidas. Distingue "esta porta está aberta" de "este serviço nesta versão tem uma falha conhecida".
+
+```bash
+searchsploit apache 2.4                 # busca exploits publicos locais
+nikto -h http://alvo-autorizado         # ma-configuracao de servidor web
+nuclei -u http://alvo-autorizado        # modelos comunitarios de deteccao
+```
+
+### 4. Exploração — a prova de conceito
+
+A fase que a cultura popular associa ao "hacking", e que na prática ocupa a menor fração do tempo. Confirmar que a vulnerabilidade é real transformando-a em acesso — de forma controlada, para provar o risco, nunca para causar dano. O `metasploit` é o arcabouço central.
+
+```bash
+msfconsole                              # o arcabouco de exploracao
+# search, use, set RHOSTS, set PAYLOAD, exploit — sempre contra alvo de treino
+sqlmap -u "http://alvo/pag?id=1" --batch # injecao de SQL automatizada
+hydra -l admin -P lista.txt alvo ssh     # forca bruta autenticacao (@sec-cap081)
+```
+
+### 5. Pós-exploração — a profundidade do problema
+
+Uma vez dentro, medir o impacto real: até onde esse acesso leva? É onde entram a escalada de privilégio (@sec-cap087), o movimento lateral e a coleta que demonstra o valor do que foi alcançado. E é a fase que reinicia o ciclo — a rede interna revela alvos que não se viam de fora.
+
+```bash
+# rodados NO alvo comprometido, em laboratorio:
+./linpeas.sh                            # enumera caminhos de escalada local
+# a saida e o inventario de SUID e capabilities dos caps 085 e 087, do outro lado
+```
+
+### 6. Relatório — o único entregável que importa
+
+O produto de um teste não é o acesso: é o documento que descreve o que foi encontrado, com qual severidade, como reproduzir e como corrigir. Um acesso brilhante que ninguém consegue reproduzir a partir do relatório não tem valor para o cliente. As ferramentas desta fase organizam evidência e achados.
+
+## Como o Kali organiza tudo isso: metapacotes
+
+Você não instala centenas de ferramentas uma a uma. O Kali agrupa-as em **metapacotes** — pacotes que não contêm nada além de dependências, puxando conjuntos coerentes de uma vez (@sec-cap036). É como uma instalação do Kali se molda ao seu uso real.
+
+```bash
+apt search kali-tools- | head -30       # os grupos por categoria
+sudo apt install kali-tools-web         # so o ferramental de aplicacao web
+sudo apt install kali-tools-wireless    # so o de redes sem fio
+kali-tweaks                             # menu que instala metapacotes por area
+```
+
+| Metapacote | O que traz | Tamanho relativo |
+|---|---|---|
+| `kali-linux-headless` | o núcleo sem interface gráfica | base |
+| `kali-linux-default` | o conjunto padrão da imagem | médio |
+| `kali-linux-large` | quase tudo | grande |
+| `kali-linux-everything` | literalmente tudo | enorme |
+| `kali-tools-information-gathering` | reconhecimento e enumeração | pequeno |
+| `kali-tools-web` | ferramental de aplicação web | médio |
+| `kali-tools-passwords` | quebra de senha e força bruta | médio |
+| `kali-tools-wireless` | ataque e auditoria de Wi-Fi | pequeno |
+| `kali-tools-forensics` | análise forense e resposta | médio |
+
+: Alguns metapacotes do Kali e o que instalam {#tbl-metapacotes}
+
+A recomendação prática contraria a tentação: **instale menos, não mais**. Uma máquina com `kali-linux-everything` tem uma superfície de ataque imensa (@sec-cap085), atualizações lentas e centenas de ferramentas que você nunca abrirá. Comece pelo `kali-linux-default` e adicione o metapacote da área em que vai trabalhar. Uma instalação enxuta é mais rápida, mais segura e mais fácil de entender.
+
+## O ambiente de treino: onde a prática é legal
+
+O Kali só é útil com um alvo, e o alvo tem de ser legítimo. Montar o próprio laboratório é parte da competência.
+
+```bash
+# alvo classico e deliberadamente vulneravel, numa VM ISOLADA:
+# - Metasploitable 2/3 — Linux cheio de vulnerabilidades propositais
+# - DVWA (Damn Vulnerable Web Application) — para a categoria web
+# - OWASP Juice Shop — aplicacao web moderna vulneravel
+# - VulnHub — imagens de VM prontas para treino
+# - HackTheBox / TryHackMe — laboratorios online, autorizacao explicita
+```
+
+A regra de ouro do laboratório é o **isolamento de rede**. Uma VM deliberadamente vulnerável é, por definição, uma máquina que qualquer um na rede compromete em minutos. Ela vai numa rede **host-only** ou **interna** do hipervisor, jamais em ponte com a rede real. O `nmap` do @sec-cap080 e o firewall do @sec-cap083 são o que garantem que o Metasploitable fala só com o seu Kali, e com mais ninguém.
+
+## 🐉 No Kali
+
+- **`kali-tweaks` é o painel de controle da distribuição, e a primeira coisa a abrir numa instalação nova.** Ele gerencia metapacotes, a configuração de rede, o comportamento do shell, a persistência da imagem live e o hardening que o @sec-cap085 discutiu — tudo num menu de texto navegável. Muita gente instala ferramenta na mão por não saber que o `kali-tweaks` faz isso de forma organizada e reversível.
+- **O modo *undercover* existe por um motivo prático e legítimo.** `kali-undercover` transforma a área de trabalho num clone visual do Windows 10. Não é brincadeira: em um teste físico autorizado, ou trabalhando num café, a tela inconfundível do Kali chama atenção que o profissional não quer. É disfarce da interface, não das ferramentas nem da responsabilidade legal.
+- **`msfconsole` na primeira execução quer o banco de dados, e vale configurar.** `sudo msfdb init` cria a base PostgreSQL que o Metasploit usa para guardar hosts, serviços e achados de um teste — sem ela, você perde o rastreamento entre sessões, que é justamente o que alimenta a fase de relatório da @fig-fluxo-pentest. É também um serviço a mais escutando na sua máquina (@sec-cap085): ative quando for usar, não permanentemente.
+- **As *wordlists* do Kali vivem em `/usr/share/wordlists`, e a `rockyou.txt` vem compactada.** `sudo gunzip /usr/share/wordlists/rockyou.txt.gz` na primeira vez. Essas listas alimentam o `hydra` e o `gobuster` das fases 2 e 4 — e são o argumento vivo a favor de senha longa e aleatória e de chave em vez de senha (@sec-cap086): tudo que está nessas listas é quebrável em segundos.
+- **A ferramenta do Kali é dupla por natureza, e essa é a lição que fecha o volume.** Cada programa deste capítulo tem uma leitura defensiva imediata: o `nmap` que enumera o alvo é o mesmo que audita a própria superfície (@sec-cap085); o `linpeas` que mapeia escalada na pós-exploração é o mesmo inventário de SUID e capabilities do @sec-cap087, lido do outro lado; o `nikto` que encontra má-configuração no alvo encontra a mesma coisa no seu servidor. Aprender o Kali é aprender a olhar o próprio sistema com os olhos de quem vai atacá-lo — e é para isso, legalmente, que ele serve na esmagadora maioria das mãos.
+
+> **Nota sobre outras distribuições ofensivas.** O Kali não é único. **Parrot OS Security** oferece um conjunto parecido com foco maior em privacidade e em recursos mais leves. **BlackArch** empacota milhares de ferramentas sobre Arch Linux, para quem prefere aquela base. **Commando VM** é o análogo para Windows. Todas partilham a mesma natureza dual e a mesma exigência de autorização — a distribuição muda a embalagem e a base, não a lei nem a ética. Do lado defensivo, distribuições como **Security Onion** montam o outro polo: monitoramento, detecção e análise (@sec-cap089) em vez de ataque.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. **Todos os alvos são a própria máquina ou uma VM de treino em rede isolada** — nunca um sistema de terceiro. O objetivo é percorrer o fluxo da @fig-fluxo-pentest de ponta a ponta, entendendo cada fase, não dominar cada ferramenta.
+
+1. **Mapeie o ferramental instalado por categoria.**
+
+   ```bash
+   apt list --installed 2>/dev/null | grep -c kali-tools
+   apt search '^kali-tools-' 2>/dev/null | grep '^kali-tools' | head -20
+   dpkg -l | grep -E 'nmap|metasploit|hydra|sqlmap|nikto' | awk '{print $2}'
+   ```
+
+   Esperado: a lista de metapacotes disponíveis e a confirmação das ferramentas centrais de cada fase. Se faltar algo, `sudo apt install kali-linux-default`.
+
+2. **Reconhecimento contra um domínio público (fase 1, sem tocar em alvo privado).**
+
+   ```bash
+   whois kali.org | grep -iE 'registr|creat|expir' | head
+   dig +short kali.org
+   dig +short -x $(dig +short kali.org | head -1)
+   ```
+
+   Esperado: dados de registro e DNS obtidos **sem interagir com nenhum sistema privado** — tudo veio de bases públicas. É a natureza da fase 1: informação sem intrusão.
+
+3. **Suba um alvo de treino local e isolado.**
+
+   ```bash
+   mkdir -p ~/lab-alvo && cd ~/lab-alvo
+   cat > servico-vuln.py <<'EOF'
+   from http.server import HTTPServer, BaseHTTPRequestHandler
+   class H(BaseHTTPRequestHandler):
+       server_version = "Apache/2.2.8 (Ubuntu) DAV/2"   # versao antiga de proposito
+       def do_GET(self):
+           self.send_response(200)
+           self.send_header("Content-Type","text/html")
+           self.end_headers()
+           self.wfile.write(b"<h1>Servidor de treino</h1><a href=/admin>admin</a>")
+       def log_message(self,*a): pass
+   HTTPServer(("127.0.0.1",8080), H).serve_forever()
+   EOF
+   python3 servico-vuln.py &
+   sleep 1 && echo "alvo de treino no ar em 127.0.0.1:8080"
+   ```
+
+   Esperado: um servidor que se anuncia com uma versão antiga — o alvo controlado das próximas fases, preso ao loopback.
+
+4. **Varredura e enumeração (fase 2).**
+
+   ```bash
+   nmap -sV -p 8080 127.0.0.1
+   nmap --script http-headers -p 8080 127.0.0.1 | grep -i server
+   ```
+
+   Esperado: o `nmap` reporta a porta 8080 aberta e a versão `Apache/2.2.8` que o serviço anuncia. É a informação que a fase 3 vai cruzar com bases de vulnerabilidade.
+
+5. **Enumeração de diretórios web (fase 2, aprofundada).**
+
+   ```bash
+   printf 'admin\nlogin\nconfig\nbackup\n' > lista.txt
+   gobuster dir -u http://127.0.0.1:8080 -w lista.txt -q 2>/dev/null
+   ```
+
+   Esperado: `/admin` aparece com status 200, os outros com 404. A enumeração encontrou um recurso que a página inicial só insinuava.
+
+6. **Análise de vulnerabilidade (fase 3).**
+
+   ```bash
+   searchsploit apache 2.2.8 | head -10
+   nikto -h http://127.0.0.1:8080 -maxtime 30s 2>/dev/null | head -20
+   ```
+
+   Esperado: o `searchsploit` cruza a versão com sua base local de exploits públicos; o `nikto` aponta cabeçalhos ausentes e a versão desatualizada. Aqui "porta aberta" vira "serviço potencialmente explorável" — a distinção que define a fase.
+
+7. **Conheça o arcabouço de exploração sem disparar nada (fase 4).**
+
+   ```bash
+   sudo msfdb init 2>/dev/null || true
+   msfconsole -q -x "search type:exploit platform:linux apache; exit" 2>/dev/null | head -20
+   ```
+
+   Esperado: uma lista de módulos correspondentes. Explorar de fato exige um alvo real e vulnerável (Metasploitable), não este servidor de brinquedo — mas você viu como a ferramenta cataloga e seleciona exploits por plataforma e serviço.
+
+8. **Veja a pós-exploração do lado defensivo (fase 5).**
+
+   ```bash
+   # o mesmo inventario que um linpeas faria, aqui na SUA maquina:
+   echo "=== SUID ==="; find / -perm -4000 -type f 2>/dev/null | head -10
+   echo "=== capabilities ==="; getcap -r / 2>/dev/null | head
+   echo "=== sudo sem senha ==="; sudo grep -r NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null
+   echo "=== rede interna ==="; ip -brief addr
+   ```
+
+   Esperado: o inventário de escalada dos caps 085 e 087, exatamente como uma ferramenta de pós-exploração o produziria. Rodá-lo na própria máquina é auditoria; a técnica é a mesma dos dois lados.
+
+9. **Organize os achados como um relatório (fase 6).**
+
+   ```bash
+   cat > relatorio-lab.md <<'EOF'
+   # Teste de laboratorio — 127.0.0.1:8080
+   ## Escopo: alvo de treino local, autorizacao: propria maquina
+   ## Achados
+   - [MEDIO] Servidor anuncia versao antiga (Apache/2.2.8) — banner exposto
+   - [BAIXO] Diretorio /admin acessivel sem autenticacao
+   - [INFO] Cabecalhos de seguranca ausentes (X-Frame-Options, CSP)
+   ## Reproducao
+   1. nmap -sV -p 8080 127.0.0.1
+   2. gobuster dir -u http://127.0.0.1:8080 -w lista.txt
+   ## Correcao
+   - Ocultar/atualizar o banner de versao
+   - Exigir autenticacao em /admin
+   - Adicionar cabecalhos de seguranca
+   EOF
+   cat relatorio-lab.md
+   ```
+
+   Esperado: um relatório mínimo mas completo — achado, severidade, reprodução, correção. **Este é o entregável.** As oito fases anteriores existem para produzir este documento; sem ele, nada do que foi feito tem valor para quem contratou.
+
+10. **Explore o `kali-tweaks` e o modo undercover.**
+
+    ```bash
+    which kali-tweaks kali-undercover
+    # kali-tweaks   -> abra e navegue o menu (Metapackages, Hardening, Shell)
+    # kali-undercover -> alterna o tema visual; rode de novo para voltar
+    ```
+
+    Esperado: os dois utilitários existem. O `kali-tweaks` é o painel central da distribuição; o `undercover` é disfarce visual, não de responsabilidade.
+
+11. **Limpe.**
+
+    ```bash
+    kill %1 2>/dev/null
+    rm -rf ~/lab-alvo
+    echo "alvo de treino encerrado"
+    ```
+
+    Esperado: o servidor de treino sai do ar. Um alvo vulnerável nunca fica esquecido no ar — é o serviço em `0.0.0.0` do caso da abertura do @sec-cap085, do lado de quem o deixou.
+
+## Resumo
+
+- **A ferramenta é idêntica nas mãos do profissional e do criminoso; o que muda é a autorização.** No Brasil, a Lei 12.737/2012 tipifica o acesso não autorizado, e um teste legítimo exige autorização escrita, específica e prévia — alvos, técnicas, janela e quem assina.
+- **O assunto não são as ferramentas, é o fluxo.** As categorias do Kali seguem o ciclo de um teste: reconhecimento, varredura e enumeração, análise de vulnerabilidade, exploração, pós-exploração, relatório.
+- **O ciclo é iterativo:** a pós-exploração revela alvos internos e reinicia a varredura de um ponto de vista interno.
+- **A exploração ocupa a menor fração do tempo; o relatório é o único entregável que importa.** Acesso que não se documenta de forma reproduzível não tem valor.
+- **Metapacotes organizam as centenas de ferramentas por área**, e a recomendação é instalar menos, não mais — `kali-linux-everything` é superfície de ataque e lentidão sem retorno.
+- **A prática só é legal contra a própria máquina ou alvos de treino** (Metasploitable, DVWA, HTB, THM), sempre em rede isolada — uma VM deliberadamente vulnerável nunca vai em ponte com a rede real.
+- **Toda ferramenta do Kali é dual:** o `nmap`, o `nikto` e o `linpeas` que enumeram o alvo são os mesmos que auditam o seu próprio sistema. Aprender o Kali é aprender a olhar a própria máquina com os olhos de quem vai atacá-la.

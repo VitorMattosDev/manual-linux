@@ -1,3 +1,435 @@
 # Auditoria, integridade de arquivos e detecção de alterações {#sec-cap089}
 
-*(em elaboracao)*
+A pergunta que o cliente fez ao final da reunião era simples e a equipe não soube responder: **"esse servidor ainda é o que vocês instalaram?"**
+
+Ninguém sabia. O sistema estava no ar havia quatro anos. Passaram por ele oito administradores, três migrações, dezenas de correções de emergência aplicadas na madrugada e um número desconhecido de scripts baixados da internet e executados como `root`. `/usr/bin` tinha 2.400 arquivos. Alguém saberia dizer se um deles tinha sido substituído em algum momento? Não. Não havia como saber, porque nunca houve um ponto de comparação.
+
+Detecção não é uma ferramenta que se instala depois do incidente. É uma **linha de base** registrada quando o sistema estava íntegro, mais um mecanismo de comparação contínua. Sem o primeiro, o segundo não existe. E é por isso que este capítulo vem logo depois dos de hardening: **você endurece o sistema e, no mesmo movimento, registra o que ele é**, para que qualquer desvio futuro seja detectável.
+
+## O modelo: linha de base, coleta, comparação, alerta
+
+Todo sistema de detecção de alterações — de um `sha256sum` num arquivo texto ao produto comercial mais caro — tem a mesma estrutura de quatro etapas.
+
+::: {#fig-pipeline-deteccao}
+```{.tikz}
+%%| filename: pipeline-deteccao
+%%| alt: Pipeline de deteccao de alteracoes com linha de base, coleta, comparacao e alerta, e a custodia externa da base
+\begin{tikzpicture}[
+    et/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.0cm,minimum height=1.4cm},
+    fl/.style={-{Latex[length=1.8mm]},thick,manualgray},
+    fr/.style={-{Latex[length=1.8mm]},thick,manualred,dashed},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[et,draw=manualblue,fill=manualblue!12]     (base) at (0,5.4)  {\textbf{1. Linha de base}\\\tiny hash de cada arquivo\\\tiny \emph{no momento em que}\\\tiny \emph{o sistema estava íntegro}};
+  \node[et,draw=manualgray,fill=manualgray!12]     (col)  at (4.0,5.4) {\textbf{2. Coleta}\\\tiny estado atual:\\\tiny hash, dono, permissão,\\\tiny \texttt{mtime}, tamanho};
+  \node[et,draw=manualyellow,fill=manualyellow!20] (cmp)  at (8.0,5.4) {\textbf{3. Comparação}\\\tiny o que mudou,\\\tiny o que sumiu,\\\tiny o que apareceu};
+  \node[et,draw=manualgreen,fill=manualgreen!14]   (ale)  at (12.0,5.4) {\textbf{4. Triagem}\\\tiny mudança esperada\\\tiny ou \textbf{alerta}?};
+
+  \node[et,draw=manualred,fill=manualred!14,minimum height=1.1cm] (cust) at (0,2.9) {\textbf{custódia externa}\\\tiny mídia removível ou\\\tiny host separado};
+
+  \draw[fl] (base) -- (col);
+  \draw[fl] (col) -- (cmp);
+  \draw[fl] (cmp) -- (ale);
+  \draw[fl] (base.south) -- (cust.north);
+  \draw[fl] (cust.east) .. controls (4.0,2.9) and (7.0,3.2) .. (cmp.south);
+
+  \node[nt,text width=13.2cm,anchor=north] at (6.0,2.0) {A etapa 1 é a única que não se pode fazer depois, e a seta vermelha é o detalhe que separa o método do teatro: \textbf{a base guardada na própria máquina é editável por quem comprometeu a máquina}. Um invasor com \texttt{root} substitui o binário e regrava o hash correspondente na base local --- a comparação seguinte dá tudo em ordem. A base tem de viver fora do alcance do sistema monitorado: mídia somente-leitura, host de gestão separado, ou repositório com histórico assinado. A etapa 4 é a que decide se o esforço sobrevive: um relatório com 4.000 linhas por causa de um \texttt{apt upgrade} treina o operador a ignorá-lo.};
+\end{tikzpicture}
+```
+O pipeline de detecção de alterações — e a custódia externa que o torna confiável.
+:::
+
+O que se monitora, na prática, é um conjunto pequeno de coisas de alto valor: os binários do sistema (`/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`), a configuração (`/etc`), os módulos de kernel (`/lib/modules`), os pontos de arranque automático (unidades do systemd, `cron`, `~/.bashrc`) e as credenciais (`/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `~/.ssh/authorized_keys`). Diretórios voláteis por natureza — `/var/log`, `/var/cache`, `/tmp`, `/proc` — ficam de fora, senão o ruído afoga o sinal.
+
+## `auditd`: o registro de quem fez o quê
+
+O subsistema de auditoria do kernel Linux é anterior e independente do `journald` (@sec-cap042), e responde a uma pergunta diferente. O `journald` registra o que os programas **decidiram** contar. O `auditd` registra o que o kernel **observou**: chamadas de sistema, acessos a arquivos, execuções, alterações de identidade — mesmo quando o programa não quer contar nada.
+
+```bash
+sudo apt install auditd audispd-plugins
+sudo systemctl enable --now auditd
+sudo auditctl -s                        # estado: habilitado, backlog, perdas
+```
+
+### Regras
+
+Há três tipos, e a diferença importa:
+
+```bash
+# 1. WATCH: vigia um caminho
+sudo auditctl -w /etc/passwd -p wa -k identidade
+sudo auditctl -w /etc/shadow -p wa -k identidade
+sudo auditctl -w /etc/sudoers -p wa -k escalada
+sudo auditctl -w /etc/sudoers.d/ -p wa -k escalada
+sudo auditctl -w /root/.ssh/ -p rwa -k chaves-root
+
+# 2. SYSCALL: vigia uma chamada de sistema, com filtros
+sudo auditctl -a always,exit -F arch=b64 -S execve -F euid=0 -k exec-root
+sudo auditctl -a always,exit -F arch=b64 -S chmod -S fchmod -F auid>=1000 -k permissoes
+
+# 3. Regras de controle: configuram o proprio subsistema
+sudo auditctl -b 8192                   # tamanho do buffer
+sudo auditctl -e 1                      # 1 = habilitado; 2 = IMUTAVEL ate o boot
+```
+
+O `-p wa` significa vigiar **escrita** e mudança de **atributo**; `-k` define uma chave que serve para consultar depois. Regras via `auditctl` vivem só na memória; para persistirem, vão em `/etc/audit/rules.d/`:
+
+```bash
+# /etc/audit/rules.d/hardening.rules
+-D                                                  # limpa regras anteriores
+-b 8192
+
+-w /etc/passwd -p wa -k identidade
+-w /etc/shadow -p wa -k identidade
+-w /etc/group -p wa -k identidade
+-w /etc/sudoers -p wa -k escalada
+-w /etc/sudoers.d/ -p wa -k escalada
+-w /etc/ssh/sshd_config -p wa -k ssh-config
+-w /var/log/audit/ -p wa -k audit-mexido
+-w /sbin/insmod -p x -k modulos
+-w /sbin/modprobe -p x -k modulos
+
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k root-exec
+-a always,exit -F arch=b64 -S mount -k montagem
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -F dir=/etc -k etc-apagado
+
+-e 2                                                # IMUTAVEL: so muda no reboot
+```
+
+```bash
+sudo augenrules --load                  # compila rules.d/ e carrega
+sudo auditctl -l                        # confere o que esta em vigor
+```
+
+A última linha, `-e 2`, é a que transforma o `auditd` em evidência: com o conjunto imutável, **nem `root` desliga ou altera as regras sem reiniciar a máquina** — e o reboot em si é um evento visível. Ponha `-e 2` depois de o conjunto estar estável, porque a partir daí qualquer ajuste exige reinício.
+
+### Consultar
+
+```bash
+sudo ausearch -k identidade -ts today          # eventos da chave, hoje
+sudo ausearch -k escalada -i                   # -i traduz UIDs e syscalls
+sudo ausearch -ua vitor -ts recent -i          # por usuario de auditoria
+sudo ausearch -m USER_LOGIN -sv no             # logins que FALHARAM
+sudo aureport --summary                        # panorama geral
+sudo aureport -f -i --summary                  # ranking de arquivos acessados
+sudo aureport -au -i --summary                 # ranking de autenticacoes
+```
+
+O campo mais valioso de um evento é o **`auid`** (*audit user ID*), fixado no login e **imutável dali em diante**. Ele responde à pergunta que o UID efetivo não responde: um evento com `uid=0 auid=1001` diz que foi o usuário 1001 quem, via `sudo`, fez aquilo como `root`. Numa máquina com cinco administradores compartilhando `sudo`, é a diferença entre "alguém apagou" e "fulano apagou".
+
+## Integridade de arquivos
+
+### `debsums`: a base que já existe
+
+Antes de instalar qualquer coisa, note que o sistema de pacotes **já mantém** os hashes de tudo que ele instalou:
+
+```bash
+sudo apt install debsums
+sudo debsums -c                     # lista APENAS os arquivos que nao batem
+sudo debsums -ca                    # inclui arquivos de configuracao
+sudo debsums -s                     # so erros, silencioso: ideal para script
+```
+
+É a verificação de integridade de maior custo-benefício que existe: nenhuma configuração, nenhuma linha de base a criar, e cobre todo binário vindo de pacote. Limitações honestas: não cobre o que foi instalado fora do `apt` (@sec-cap037), a base de hashes vive em `/var/lib/dpkg/info/` — dentro da máquina, portanto adulterável —, e um invasor que substitui o binário **e** o `.md5sums` correspondente passa despercebido. Serve como primeira triagem, não como prova.
+
+O equivalente no RPM é `rpm -Va`.
+
+### AIDE: a linha de base explícita
+
+O AIDE (*Advanced Intrusion Detection Environment*) constrói um banco de dados com hash, permissões, dono, tamanho, `inode` e `mtime` de cada arquivo dos caminhos que você declarar.
+
+```bash
+sudo apt install aide aide-common
+sudoedit /etc/aide/aide.conf
+```
+
+A configuração é uma lista de caminhos e do que verificar em cada um:
+
+```
+# grupos de verificacao pre-definidos:
+#   p=permissoes  i=inode  n=numero de links  u=dono  g=grupo
+#   s=tamanho  m=mtime  c=ctime  sha256=hash
+Binarios   = p+i+n+u+g+s+m+c+sha256
+ConfigFile = p+u+g+sha256
+Registro   = p+u+g+n+S           # S = tamanho pode CRESCER (arquivo de log)
+
+/usr/bin      Binarios
+/usr/sbin     Binarios
+/bin          Binarios
+/sbin         Binarios
+/lib/modules  Binarios
+/etc          ConfigFile
+/root/.ssh    ConfigFile
+
+!/var/log/.*                     # ! exclui do monitoramento
+!/etc/mtab
+!/etc/adjtime
+```
+
+```bash
+sudo aideinit                                       # cria a base inicial (demora)
+sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+sudo aide --check                                   # compara o agora com a base
+sudo aide --update                                  # gera base nova apos mudanca legitima
+```
+
+::: {.callout-warning}
+**A base do AIDE guardada em `/var/lib/aide/` é adulterável por quem tem `root` na máquina** — que é exatamente o adversário contra o qual ela existe. O invasor troca o binário, roda `aide --update`, e a verificação seguinte diz que está tudo bem. Para que o mecanismo signifique alguma coisa, a base tem de sair da máquina: copiada para mídia somente-leitura, enviada para um host de gestão logo após ser criada, ou versionada num repositório com histórico assinado (@sec-cap086). E a verificação ideal roda a partir de um sistema externo — um live USB, ou o disco montado em outra máquina —, porque um `rootkit` em nível de kernel pode mentir para qualquer programa que rode no sistema comprometido, inclusive para o AIDE.
+:::
+
+### Atributos imutáveis e log só de acréscimo
+
+O sistema de arquivos oferece dois atributos que ajudam (@sec-cap024):
+
+```bash
+sudo chattr +i /etc/passwd            # imutavel: ninguem altera, nem root
+sudo chattr +a /var/log/importante    # so acrescimo: nao da para reescrever nem truncar
+lsattr /etc/passwd /var/log/importante
+sudo chattr -i /etc/passwd            # remover exige root e e um evento auditavel
+```
+
+`+i` impede alteração, renomeação e remoção; `+a` permite apenas acrescentar ao fim, o que é o comportamento correto de um arquivo de log e impede a limpeza seletiva de rastros. Nenhum dos dois é intransponível — `root` remove o atributo —, mas **remover o atributo é um passo a mais, e um passo auditável** se houver regra do `auditd` para `setxattr`. Defesa em profundidade de novo: não impedir, mas obrigar o adversário a fazer barulho.
+
+### Enviar o log para fora, imediatamente
+
+A primeira coisa que se faz numa máquina comprometida é limpar o rastro. A defesa é o log não estar mais só ali:
+
+```bash
+# journald para um host remoto
+sudo apt install systemd-journal-remote
+# /etc/systemd/journal-upload.conf
+#   URL=https://coletor.exemplo.com:19532
+
+# auditd via audispd para syslog remoto
+# /etc/audit/plugins.d/au-remote.conf  ->  active = yes
+# /etc/audisp/audisp-remote.conf       ->  remote_server = coletor.exemplo.com
+```
+
+Um log que vive só na máquina que ele monitora é uma prova sob custódia do suspeito.
+
+## `rkhunter`, `chkrootkit` e o limite da detecção por assinatura
+
+```bash
+sudo apt install rkhunter chkrootkit
+sudo rkhunter --update && sudo rkhunter --propupd    # base de propriedades dos binarios
+sudo rkhunter --check --skip-keypress
+sudo chkrootkit -q
+```
+
+Essas ferramentas procuram artefatos conhecidos: nomes de arquivo, strings, portas, processos ocultos, discrepâncias entre o que o `ps` mostra e o que `/proc` contém. São úteis e baratas de rodar, e têm dois limites que precisam ser ditos com clareza:
+
+1. **Detectam o conhecido.** Um artefato novo, ou levemente modificado, não está na base.
+2. **Rodam sobre o sistema que investigam.** Um `rootkit` que interceptou as chamadas do kernel responde o que quiser a quem perguntar — e o `rkhunter` pergunta.
+
+O falso positivo também é comum a ponto de ser um problema operacional próprio: qualquer sistema real gera avisos que exigem interpretação. Trate a saída como pauta de investigação, nunca como veredito. **Diante de suspeita séria de comprometimento em nível de kernel, a análise correta é feita com o disco montado em outra máquina, ou por um live USB** — e o Kali tem exatamente essa capacidade.
+
+## Da detecção à resposta
+
+Detectar sem plano é acumular ansiedade. O roteiro mínimo, quando o alerta é real:
+
+1. **Não desligue** — a memória volátil e as conexões ativas morrem com o desligamento e são frequentemente a melhor evidência.
+2. **Isole a máquina da rede**, sem apagar nada.
+3. **Colete antes de mexer**: `ss -tunap`, `ps auxf`, `lsof -n`, `/proc/*/exe`, `last`, `who`, os logs, o horário de tudo.
+4. **Preserve** copiando para fora, com hash de cada artefato coletado.
+5. **Não conserte por cima.** Um sistema comprometido em nível de `root` não volta a ser confiável por remoção do que foi encontrado; a reconstrução a partir de mídia limpa é a única garantia. Restaurar de backup exige saber **quando** o comprometimento começou — que é justamente o que a linha de base e o `auditd` respondem.
+
+## 🐉 No Kali
+
+- **O Kali rolling é hostil a uma linha de base ingênua, e essa é a lição mais prática do capítulo aqui.** Num Debian estável, `/usr/bin` fica parado por meses e uma mudança é notável. No Kali, um `apt full-upgrade` semanal reescreve centenas de binários, e um `aide --check` depois disso devolve milhares de linhas — o operador aprende a ignorar o relatório em duas semanas. O método que funciona: **`aide --update` imediatamente após cada atualização planejada, com a base nova copiada para fora**, tratando a atualização como o evento que ela é. Assim o próximo `--check` volta a ter significado, e qualquer mudança fora da janela de atualização é anômala por definição.
+- **O modo forense do menu de boot da imagem live do Kali existe exatamente para o problema da @fig-pipeline-deteccao.** Ele não monta nada automaticamente, não toca na área de troca do disco e não ativa RAID — o disco suspeito é examinado sem que uma única escrita altere `mtime` ou destrua evidência. É a forma correta de verificar a integridade de um sistema comprometido: **de fora dele**, com ferramentas em que você confia, sem depender do kernel que pode estar mentindo.
+- **A máquina Kali é a mais interessante de auditar da sua rede, e não é a mais monitorada.** Ela concentra credenciais de laboratório, capturas de tráfego, resultados de testes autorizados e ferramentas que fazem exatamente o que um invasor faria — o que também significa que um `auditd` mal configurado nela gera ruído gigantesco. Comece pelas regras de identidade e escalada (`/etc/passwd`, `/etc/sudoers`, `authorized_keys`) e deixe o `execve` genérico de fora até ter noção do volume.
+- **`debsums -c` é o teste de trinta segundos que todo mundo pode rodar hoje.** Não pede configuração, não pede linha de base, e responde à pergunta da abertura para tudo que veio de pacote. A resposta esperada é uma lista vazia ou quase; qualquer binário de `/usr/bin` na saída merece explicação imediata.
+- **Perfil de MAC bem construído é sensor de detecção.** Como o @sec-cap088 mostrou, um perfil que gera zero negações em operação normal transforma **qualquer** linha `apparmor="DENIED"` num evento de segurança. Combinado com o `auditd`, você tem duas fontes independentes: uma diz que uma política foi violada, a outra diz quem e com qual chamada de sistema. Essa correlação é o que separa um alerta de uma investigação.
+
+> **Nota sobre a família RHEL.** O `auditd` é nativo e mais central: ele já vem instalado e habilitado, a instalação padrão traz regras prontas, e o pacote inclui conjuntos de regras alinhados a normas em `/usr/share/audit/sample-rules/` — copiar `30-stig.rules` ou `30-pci-dss-v31.rules` para `/etc/audit/rules.d/` dá um ponto de partida auditado, que no Debian você escreveria à mão. O `sealert` do SELinux (@sec-cap088) integra-se ao mesmo `audit.log`, de modo que negações de política e eventos de auditoria compartilham uma linha do tempo. A verificação de integridade por pacote é `rpm -Va`, cuja saída usa colunas (`S` tamanho, `5` hash MD5, `M` modo, `U` dono) em vez da lista simples do `debsums`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com snapshot. Os passos criam regras de auditoria e uma base de integridade, e o último passo desfaz tudo.
+
+1. **Instale e confirme que o `auditd` está coletando.**
+
+   ```bash
+   sudo apt install -y auditd
+   sudo systemctl enable --now auditd
+   sudo auditctl -s
+   sudo auditctl -l
+   ```
+
+   Esperado: `enabled 1` e, provavelmente, `No rules` — o kernel está coletando, mas ninguém pediu nada ainda.
+
+2. **Vigie os arquivos de identidade.**
+
+   ```bash
+   sudo auditctl -w /etc/passwd -p wa -k identidade
+   sudo auditctl -w /etc/shadow -p wa -k identidade
+   sudo auditctl -w /etc/sudoers.d/ -p wa -k escalada
+   sudo auditctl -l
+   ```
+
+   Esperado: as três regras listadas.
+
+3. **Gere um evento e leia quem o produziu.**
+
+   ```bash
+   sudo useradd -M -s /usr/sbin/nologin lab-intruso
+   sudo ausearch -k identidade -ts recent -i | head -30
+   ```
+
+   Esperado: eventos `SYSCALL` e `PATH` apontando para `/etc/passwd`. Localize os campos que importam:
+
+   ```bash
+   sudo ausearch -k identidade -ts recent | grep -oE 'auid=[0-9]+|uid=[0-9]+|comm="[^"]*"' | sort -u
+   ```
+
+   Esperado: `uid=0` (rodou como `root`) e `auid=1000` (mas quem fez login foi o usuário 1000). Essa distinção é o valor central do `auditd` numa máquina com vários administradores.
+
+4. **Compare com o que o `journald` viu.**
+
+   ```bash
+   sudo journalctl -S "5 minutes ago" | grep -i useradd | head -3
+   ```
+
+   Esperado: o `journald` tem uma linha porque o `useradd` **decidiu** registrar. O `auditd` teria a evidência mesmo se o programa não registrasse nada — é a diferença entre os dois subsistemas.
+
+5. **Vigie execuções privilegiadas e veja o volume.**
+
+   ```bash
+   sudo auditctl -a always,exit -F arch=b64 -S execve -F euid=0 -F auid'>='1000 -k root-exec
+   sudo ls /root > /dev/null; sudo id > /dev/null; sudo cat /etc/hostname > /dev/null
+   sudo ausearch -k root-exec -ts recent -i | grep -oE 'exe="[^"]*"' | sort | uniq -c | sort -rn | head
+   ```
+
+   Esperado: cada comando rodado com `sudo` aparece. Note quanto volume três comandos geraram — é por isso que a regra genérica de `execve` só entra depois de você medir o custo.
+
+6. **Torne o conjunto de regras imutável e comprove.**
+
+   ```bash
+   sudo auditctl -e 2
+   sudo auditctl -w /tmp -p wa -k teste-imutavel 2>&1 | tail -2
+   sudo auditctl -s | grep enabled
+   ```
+
+   Esperado: a tentativa de acrescentar regra falha com `Operation not permitted`, **mesmo como `root`**. A partir daqui, só o reboot altera a auditoria — e o reboot é ele próprio um evento visível.
+
+7. **Rode a verificação de integridade que já existe.**
+
+   ```bash
+   sudo apt install -y debsums
+   time sudo debsums -c 2>/dev/null
+   ```
+
+   Esperado: saída vazia ou pouquíssimas linhas, em poucos minutos. Cada linha é um arquivo de pacote que **não bate** com o hash registrado na instalação.
+
+8. **Adultere um binário e veja a detecção funcionar.**
+
+   ```bash
+   sudo cp /usr/bin/whoami /root/whoami.original
+   echo "# comentario acrescentado por terceiro" | sudo tee -a /usr/bin/whoami > /dev/null
+   sudo debsums -c 2>/dev/null | grep whoami
+   ```
+
+   Esperado: `/usr/bin/whoami` aparece na lista. Um único byte acrescentado é suficiente — é o que "integridade" significa.
+
+   ```bash
+   sudo cp /root/whoami.original /usr/bin/whoami
+   sudo debsums -c 2>/dev/null | grep whoami || echo "restaurado, integro de novo"
+   ```
+
+9. **Construa uma linha de base explícita com o AIDE.**
+
+   ```bash
+   sudo apt install -y aide aide-common
+   sudo tee /etc/aide/aide.conf.d/99_lab > /dev/null <<'EOF'
+   /usr/local/bin  Binlib
+   /etc/lab-config Binlib
+   EOF
+   sudo mkdir -p /etc/lab-config
+   echo "configuracao original" | sudo tee /etc/lab-config/app.conf > /dev/null
+   echo -e '#!/bin/sh\necho versao legitima' | sudo tee /usr/local/bin/lab-app > /dev/null
+   sudo chmod +x /usr/local/bin/lab-app
+   sudo aide --init --config /etc/aide/aide.conf 2>/dev/null || sudo aideinit -y -f
+   sudo cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null
+   ls -l /var/lib/aide/
+   ```
+
+   Esperado: a base existe. Este é o momento que não se pode fazer depois — o sistema está no estado que você declara íntegro.
+
+10. **Guarde a base fora da máquina (simulado) e altere os arquivos.**
+
+    ```bash
+    sudo sha256sum /var/lib/aide/aide.db | sudo tee /root/aide-db.sha256
+    echo -e '#!/bin/sh\necho versao ADULTERADA' | sudo tee /usr/local/bin/lab-app > /dev/null
+    echo "linha inserida por terceiro" | sudo tee -a /etc/lab-config/app.conf > /dev/null
+    sudo aide --check 2>/dev/null | grep -A20 'Summary\|changed' | head -25
+    ```
+
+    Esperado: o relatório aponta os dois arquivos como alterados, com hash antigo e novo lado a lado. O `sha256sum` da própria base é a versão simplificada da custódia externa da @fig-pipeline-deteccao — se ele mudar sem que você tenha rodado `--update`, alguém mexeu na base.
+
+11. **Reproduza o problema do Kali rolling.**
+
+    ```bash
+    sudo aide --update 2>/dev/null | tail -3
+    sudo cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null
+    sudo sha256sum /var/lib/aide/aide.db | sudo tee /root/aide-db.sha256
+    sudo aide --check 2>/dev/null | grep -c 'changed' || echo "nenhuma mudanca: base em dia"
+    ```
+
+    Esperado: depois do `--update`, a verificação volta a ser silenciosa. É exatamente o que você faz após cada `full-upgrade` no Kali — e note que a base nova precisa ser recustodiada, senão o `--update` vira a porta que o invasor usa.
+
+12. **Torne um arquivo imutável e um log só de acréscimo.**
+
+    ```bash
+    sudo chattr +i /etc/lab-config/app.conf
+    lsattr /etc/lab-config/app.conf
+    echo "tentativa de alteracao" | sudo tee -a /etc/lab-config/app.conf 2>&1 | tail -1
+    sudo rm -f /etc/lab-config/app.conf 2>&1 | tail -1
+    ```
+
+    Esperado: `Operation not permitted` nos dois casos, **mesmo como `root`**. Agora o modo de acréscimo:
+
+    ```bash
+    sudo touch /var/log/lab-append.log && sudo chattr +a /var/log/lab-append.log
+    echo "evento 1" | sudo tee -a /var/log/lab-append.log > /dev/null
+    echo "tentando apagar o rastro" | sudo tee /var/log/lab-append.log 2>&1 | tail -1
+    sudo cat /var/log/lab-append.log
+    ```
+
+    Esperado: o acréscimo funciona; a sobrescrita (`tee` sem `-a`) falha. O rastro não pode ser limpo sem antes remover o atributo — que é um passo a mais e auditável.
+
+13. **Rode os detectores por assinatura e interprete a saída.**
+
+    ```bash
+    sudo apt install -y rkhunter
+    sudo rkhunter --propupd --quiet
+    sudo rkhunter --check --skip-keypress --report-warnings-only 2>/dev/null | head -20
+    ```
+
+    Esperado: alguns avisos. Leia cada um: numa VM de Kali é normal aparecer aviso sobre `ssh` com `PermitRootLogin`, sobre binários "ocultos" ou sobre versões. Nenhum é veredito — todos são pauta.
+
+14. **Limpe tudo.**
+
+    ```bash
+    sudo chattr -i /etc/lab-config/app.conf 2>/dev/null
+    sudo chattr -a /var/log/lab-append.log 2>/dev/null
+    sudo rm -rf /etc/lab-config /var/log/lab-append.log /usr/local/bin/lab-app
+    sudo rm -f /etc/aide/aide.conf.d/99_lab /root/aide-db.sha256 /root/whoami.original
+    sudo userdel lab-intruso 2>/dev/null
+    sudo rm -f /etc/audit/rules.d/lab*.rules
+    echo "as regras do auditd estao IMUTAVEIS (-e 2): reinicie a VM para zera-las"
+    sudo auditctl -l | head -5
+    ```
+
+    Esperado: os artefatos sumiram, e as regras de auditoria continuam lá — porque você mesmo as tornou imutáveis no passo 6. Um reboot devolve o sistema ao estado inicial, e essa inconveniência é a prova de que a proteção funciona.
+
+## Resumo
+
+- **Detecção exige uma linha de base registrada quando o sistema estava íntegro.** Depois do incidente não há ponto de comparação a criar — é a única etapa do pipeline que não se pode fazer em retrospecto.
+- **Base guardada na máquina monitorada é adulterável por quem comprometeu a máquina.** Custódia externa — mídia somente-leitura, host separado, repositório assinado — é o que separa o método do teatro.
+- **`auditd` registra o que o kernel observou; `journald`, o que os programas decidiram contar.** O campo `auid` é fixado no login e imutável, e responde "quem fez", não apenas "com qual UID".
+- **`-e 2` torna as regras imutáveis até o reboot**, e nem `root` as altera. É o que transforma o registro de auditoria em evidência.
+- **`debsums -c` é a verificação de trinta segundos** que cobre todo binário vindo de pacote, sem configuração nenhuma. O AIDE cobre o resto, ao custo de manter a base.
+- **`chattr +i` e `+a` não impedem `root`, mas obrigam um passo a mais e auditável** — e log só de acréscimo impede a limpeza seletiva de rastros.
+- **`rkhunter` e `chkrootkit` detectam o conhecido e rodam sobre o sistema que investigam.** Suspeita séria de comprometimento se investiga de fora: live USB em modo forense, ou o disco montado em outra máquina.
+- **No Kali rolling, `aide --update` faz parte do procedimento de atualização.** Sem isso, o relatório vira ruído em duas semanas e o operador aprende a ignorá-lo — que é o modo mais comum de um sistema de detecção falhar.

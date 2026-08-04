@@ -142,13 +142,13 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ### Volume 14 — Segurança e o Ambiente Kali
 
-- [ ] **cap 085** - Hardening do Linux: superfície de ataque e princípios - `vol14/cap085-hardening-do-linux-superficie-de-ataque-e.qmd`
-- [ ] **cap 086** - Gerenciamento de segredos: chaves SSH e GPG - `vol14/cap086-gerenciamento-de-segredos-chaves-ssh-e-gpg.qmd`
-- [ ] **cap 087** - Capabilities, isolamento e menor privilégio - `vol14/cap087-capabilities-isolamento-e-menor-privilegio.qmd`
-- [ ] **cap 088** - Confinamento: AppArmor, SELinux e sandboxing - `vol14/cap088-confinamento-apparmor-selinux-e-sandboxing.qmd`
-- [ ] **cap 089** - Auditoria, integridade de arquivos e detecção de alterações - `vol14/cap089-auditoria-integridade-de-arquivos-e-deteccao.qmd`
-- [ ] **cap 090** - O ecossistema de ferramentas do Kali: categorias e fluxos - `vol14/cap090-o-ecossistema-de-ferramentas-do-kali.qmd`
-- [ ] **cap 091** - Anonimato e privacidade: proxychains, Tor e VPN - `vol14/cap091-anonimato-e-privacidade-proxychains-tor-e-vpn.qmd`
+- [x] **cap 085** - Hardening do Linux: superfície de ataque e princípios - `vol14/cap085-hardening-do-linux-superficie-de-ataque-e.qmd`
+- [x] **cap 086** - Gerenciamento de segredos: chaves SSH e GPG - `vol14/cap086-gerenciamento-de-segredos-chaves-ssh-e-gpg.qmd`
+- [x] **cap 087** - Capabilities, isolamento e menor privilégio - `vol14/cap087-capabilities-isolamento-e-menor-privilegio.qmd`
+- [x] **cap 088** - Confinamento: AppArmor, SELinux e sandboxing - `vol14/cap088-confinamento-apparmor-selinux-e-sandboxing.qmd`
+- [x] **cap 089** - Auditoria, integridade de arquivos e detecção de alterações - `vol14/cap089-auditoria-integridade-de-arquivos-e-deteccao.qmd`
+- [x] **cap 090** - O ecossistema de ferramentas do Kali: categorias e fluxos - `vol14/cap090-o-ecossistema-de-ferramentas-do-kali.qmd`
+- [x] **cap 091** - Anonimato e privacidade: proxychains, Tor e VPN - `vol14/cap091-anonimato-e-privacidade-proxychains-tor-e-vpn.qmd`
 
 ### Volume 15 — Automação e Produtividade
 
@@ -173,5 +173,5 @@ Commit por capitulo: `cap NNN: <titulo>` com o status atualizado no mesmo commit
 
 ---
 
-**Total:** 103 capitulos em 16 volumes (84 concluidos).
+**Total:** 103 capitulos em 16 volumes (91 concluidos).
 

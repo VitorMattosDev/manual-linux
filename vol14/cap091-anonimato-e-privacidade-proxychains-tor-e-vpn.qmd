@@ -1,3 +1,323 @@
 # Anonimato e privacidade: proxychains, Tor e VPN {#sec-cap091}
 
-*(em elaboracao)*
+O jornalista achou que estava protegido. Rodava tudo por uma VPN, navegava numa aba anônima, tinha até fita sobre a webcam. E ainda assim a fonte foi identificada — porque, no meio de uma sessão cuidadosa, o cliente de e-mail dele fez uma consulta DNS por fora do túnel, e essa única consulta, registrada pelo provedor, ligou o horário ao alvo. Todo o resto da cadeia era sólido. Bastou um elo vazar.
+
+Anonimato e privacidade não são um interruptor que se liga. São uma propriedade da **cadeia inteira** de comunicação, e a cadeia tem a força do elo mais fraco. É por isso que este capítulo, o último do volume de segurança, é tão sobre entender **modelos de ameaça** e **vazamentos** quanto sobre configurar ferramentas — porque a ferramenta bem configurada com um vazamento ao lado dá uma falsa sensação de segurança que é pior do que não ter ferramenta nenhuma.
+
+## Três palavras que não são sinônimas
+
+O vocabulário confunde de propósito, porque quem vende "privacidade" às vezes entrega outra coisa. Três conceitos distintos:
+
+- **Privacidade** — o *conteúdo* da comunicação é secreto. Um observador vê que você falou com o servidor, mas não o que foi dito. É o que a criptografia de transporte (HTTPS, o @sec-cap081) entrega.
+- **Anonimato** — a *identidade* é secreta. Um observador vê que houve tráfego e até o conteúdo, mas não consegue ligá-lo a você. É o que o Tor busca.
+- **Não-rastreabilidade** — as suas várias ações não podem ser *ligadas entre si*. Mesmo anônimo, se todas as suas ações compartilham um identificador, elas formam um perfil.
+
+Uma VPN dá privacidade perante o seu provedor de internet local e move o ponto de confiança — não dá anonimato, porque o provedor da VPN sabe exatamente quem você é (pagou, tem seu IP) e para onde você foi. Confundir os dois é o erro conceitual mais caro da área, e a razão de "use uma VPN e fique anônimo" ser publicidade, não engenharia.
+
+## O modelo de ameaça decide tudo
+
+Não existe "seguro" em abstrato. Existe seguro **contra um adversário específico, com capacidades específicas**. A pergunta que precede qualquer escolha de ferramenta é: **de quem você está se protegendo, e o que essa pessoa consegue observar?**
+
+::: {#fig-modelo-ameaca}
+```{.tikz}
+%%| filename: modelo-ameaca
+%%| alt: Onde cada adversario observa a cadeia de comunicacao e qual ferramenta cobre cada trecho
+\begin{tikzpicture}[
+    no/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=3pt,minimum width=2.2cm,minimum height=0.95cm},
+    fl/.style={-{Latex[length=1.6mm]},very thick,manualgray},
+    adv/.style={font=\tiny,manualred,align=center},
+    cob/.style={font=\tiny,manualgreen,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[no,draw=manualblue,fill=manualblue!12]   (voce) at (0,6.4)    {\textbf{você}};
+  \node[no,draw=manualgray,fill=manualgray!12]   (rede) at (3.3,6.4)  {rede local\\\tiny Wi-Fi, roteador};
+  \node[no,draw=manualgray,fill=manualgray!12]   (isp)  at (6.6,6.4)  {provedor\\\tiny (ISP)};
+  \node[no,draw=manualgray,fill=manualgray!12]   (net)  at (9.9,6.4)  {internet\\\tiny trânsito};
+  \node[no,draw=manualgreen,fill=manualgreen!14] (dest) at (13.0,6.4) {destino\\\tiny servidor};
+
+  \draw[fl] (voce) -- (rede);
+  \draw[fl] (rede) -- (isp);
+  \draw[fl] (isp) -- (net);
+  \draw[fl] (net) -- (dest);
+
+  \node[adv,anchor=north] at (3.3,5.75) {vizinho de Wi-Fi\\dono do roteador};
+  \node[adv,anchor=north] at (6.6,5.75) {ISP, governo\\local};
+  \node[adv,anchor=north] at (9.9,5.75) {trânsito global,\\estado-nação};
+  \node[adv,anchor=north] at (13.0,5.75) {dono do site,\\quem o intima};
+
+  \node[cob,anchor=south,text width=6.0cm] at (5.0,7.0)
+    {\textbf{VPN} cobre daqui até o servidor da VPN --- tira o ISP e a rede local da jogada, entrega tudo ao provedor de VPN};
+  \node[cob,anchor=south,text width=6.0cm] at (11.5,7.4)
+    {\textbf{Tor} separa quem-você-é de para-onde-vai por três saltos independentes};
+
+  \node[nt,text width=13.2cm,anchor=north] at (5.5,4.9) {Cada adversário observa um trecho diferente, e nenhuma ferramenta cobre todos. A \textbf{VPN} desloca a confiança da rede local e do ISP para o provedor da VPN --- útil contra o dono do Wi-Fi e o provedor, inútil se o adversário é o próprio provedor de VPN ou quem pode intimá-lo. O \textbf{Tor} quebra a ligação entre origem e destino, mas não esconde \emph{que você usa Tor} do seu ISP, e o nó de saída vê o tráfego não cifrado. O destino e quem pode intimá-lo (o servidor de e-mail do jornalista, o registro de DNS) estão fora do alcance de ambos --- e foi exatamente aí que o vazamento aconteceu.};
+\end{tikzpicture}
+```
+Onde cada adversário observa a cadeia, e qual ferramenta cobre qual trecho.
+:::
+
+O erro do jornalista fica claro na figura: ele protegeu o trecho da rede local e do ISP com a VPN, mas o vazamento de DNS e o servidor de e-mail — o destino — estavam fora do que a VPN cobre. A ferramenta funcionou perfeitamente para o que faz. O modelo de ameaça é que estava incompleto.
+
+## Como o Tor realmente funciona
+
+O Tor (*The Onion Router*) resolve um problema específico: **separar quem você é de para onde você vai**, de modo que nenhum ponto único da rede saiba as duas coisas. Ele faz isso com três saltos e cifragem em camadas — a "cebola".
+
+Seu cliente monta um circuito por três relés voluntários:
+
+- **Nó de entrada (*guard*)** — sabe quem você é (seu IP), mas não sabe o destino, porque o que ele recebe está cifrado em três camadas.
+- **Nó do meio** — não sabe nem quem você é nem para onde vai; só repassa de um relé para outro.
+- **Nó de saída (*exit*)** — sabe o destino e vê o tráfego como ele sai para a internet, mas não sabe quem você é, porque recebe do nó do meio.
+
+Nenhum nó sozinho tem as duas pontas. É essa separação, não a cifragem em si, que dá o anonimato. Duas consequências que se ignora por conta própria:
+
+::: {.callout-warning}
+**O nó de saída vê o seu tráfego exatamente como ele entra na internet.** Se você mandar uma senha por HTTP simples através do Tor, o operador do nó de saída — que pode ser qualquer um, inclusive alguém que subiu um nó de saída só para isso — a lê em texto claro. O Tor anonimiza a *origem*; ele não cifra o trecho final. **HTTPS de ponta a ponta continua obrigatório dentro do Tor**, e é por isso que o Tor Browser força HTTPS. Anonimato sem privacidade de conteúdo no último salto é uma armadilha conhecida.
+:::
+
+::: {.callout-warning}
+**Seu ISP não vê para onde você vai, mas vê que você usa Tor.** A lista de nós de entrada é pública. Em alguns contextos, *usar Tor* já é o sinal que atrai atenção, independentemente do conteúdo. Para esse caso existem as *bridges* (nós de entrada não listados) e os *pluggable transports* (`obfs4`), que disfarçam o tráfego Tor como tráfego comum. É uma camada a mais, para um modelo de ameaça específico.
+:::
+
+### Usar o Tor na linha de comando
+
+```bash
+sudo apt install tor
+sudo systemctl start tor              # sobe um proxy SOCKS5 em 127.0.0.1:9050
+ss -tlnp | grep 9050                  # confirma que esta escutando
+```
+
+O serviço `tor` abre um proxy SOCKS na porta 9050. Qualquer programa que fale SOCKS pode usá-lo:
+
+```bash
+# comparar o IP visto de fora, sem e com Tor:
+curl -s https://check.torproject.org/api/ip
+curl -s --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+```
+
+O `--socks5-hostname` (e não apenas `--socks5`) é importante: ele manda **também a resolução de DNS** pelo proxy. Sem o `hostname`, o `curl` resolve o nome localmente antes de conectar — e essa consulta DNS vaza por fora do Tor, exatamente o erro do caso da abertura.
+
+## `proxychains`: forçar qualquer programa pelo proxy
+
+Nem todo programa fala SOCKS. O `proxychains` intercepta as chamadas de rede de **qualquer** programa dinamicamente ligado e as redireciona por uma cadeia de proxies, sem o programa saber.
+
+```bash
+sudo apt install proxychains4
+sudoedit /etc/proxychains4.conf
+```
+
+O trecho que importa da configuração:
+
+```
+# /etc/proxychains4.conf
+dynamic_chain          # usa os proxies disponiveis, pulando os que estao fora
+# strict_chain         # exige todos, na ordem — falha se um cair
+# random_chain         # ordem aleatoria a cada conexao
+
+proxy_dns              # CRUCIAL: resolve DNS pela cadeia, nao localmente
+
+[ProxyList]
+socks5  127.0.0.1 9050        # o Tor local
+# socks5  10.0.0.1 1080       # encadear mais proxies, se quiser
+```
+
+```bash
+proxychains4 curl -s https://check.torproject.org/api/ip
+proxychains4 firefox                  # o navegador inteiro pela cadeia
+proxychains4 nmap -sT -Pn alvo-autorizado    # so -sT: SYN cru nao passa por SOCKS
+```
+
+::: {.callout-note}
+**`proxychains` tem limites técnicos que geram uma falsa sensação de cobertura.** Ele só intercepta o que passa pela `libc` dinâmica: binário estático não é interceptado, e — o mais perigoso — **tráfego que não usa a pilha TCP normal escapa**. `ping` (ICMP) e o `nmap -sS` (SYN cru, @sec-cap087) montam pacotes por baixo do SOCKS e **vazam a origem real**. Por isso `proxychains nmap` só faz sentido com `-sT` (conexão TCP completa via `connect()`). A regra: `proxychains` cobre conexões TCP via `connect()`, e nada mais. Supor cobertura total é o tipo de erro que expõe quem se acha protegido.
+:::
+
+## VPN: o que ela é e o que ela não é
+
+Uma VPN cria um túnel cifrado entre a sua máquina e um servidor, e todo o tráfego sai de lá. O que isso muda, com precisão:
+
+- **A sua rede local e o seu ISP** deixam de ver o conteúdo e o destino — veem só tráfego cifrado indo para o servidor da VPN.
+- **O provedor da VPN** passa a ver tudo o que o ISP via. Você não removeu o observador; você o **trocou** por um que escolheu confiar.
+- **O destino** vê o IP do servidor da VPN, não o seu.
+
+O ponto central, que a publicidade omite: **VPN é deslocamento de confiança, não anonimato**. Faz todo sentido contra o dono do Wi-Fi do aeroporto, contra um ISP que registra e vende histórico, ou para acessar um recurso restrito a uma geografia. Não faz sentido nenhum se o seu adversário é uma entidade capaz de intimar o provedor da VPN, ou se o próprio provedor é o adversário — e "não guardamos registros" é uma promessa que você não tem como verificar.
+
+O WireGuard (@sec-cap079 tocou nas interfaces) é a implementação moderna: pequena, rápida, auditável.
+
+```bash
+sudo apt install wireguard
+wg genkey | tee privada.key | wg pubkey > publica.key    # par de chaves
+# /etc/wireguard/wg0.conf com [Interface] e [Peer] (chaves, endpoint, AllowedIPs)
+sudo wg-quick up wg0                  # sobe o tunel
+sudo wg show                          # estado, ultimo handshake, transferencia
+sudo wg-quick down wg0
+```
+
+## Vazamentos: onde o anonimato realmente falha
+
+Configurar a ferramenta é a parte fácil. Garantir que **nada escapa por fora dela** é o trabalho de verdade, e é quase sempre onde o anonimato falha na prática. Os vetores clássicos:
+
+| Vazamento | O que revela | Como evitar |
+|---|---|---|
+| **DNS** | os domínios que você visita, ao seu ISP | `proxy_dns`, `--socks5-hostname`, DNS pelo túnel |
+| **WebRTC** | seu IP real, mesmo com VPN/proxy no navegador | desabilitar WebRTC no navegador |
+| **IPv6** | tráfego IPv6 escapa de VPN só-IPv4 | desabilitar IPv6 ou cobri-lo no túnel |
+| **ICMP / SYN cru** | origem real, fora do `proxychains` | não usar `ping`/`-sS` esperando cobertura |
+| **Metadados** | autor, GPS, software em fotos e documentos | `mat2` para limpar antes de publicar |
+| **Fingerprint do navegador** | identifica sem cookie, por características | Tor Browser, que uniformiza todos |
+| **Correlação de tempo** | liga entrada e saída por horário/volume | difícil; limite de todos os sistemas |
+| **Login** | destrói tudo: você se identificou | não misturar identidade real e anônima |
+
+: Os vazamentos que anulam o anonimato, e como fechá-los {#tbl-vazamentos}
+
+Dois merecem ênfase. O **login** é o mais óbvio e o mais comum: toda a cadeia Tor do mundo não serve de nada se você acessa a sua conta pessoal por ela — você acabou de dizer ao destino exatamente quem é. E a **correlação de tempo** é o limite teórico de que nenhum sistema de baixa latência escapa: um adversário que observa as duas pontas da rede ao mesmo tempo pode ligar entrada e saída pelos padrões de temporização, e contra esse adversário global o Tor não promete proteção — a documentação do projeto diz isso abertamente.
+
+O `mat2` cuida do vazamento mais esquecido, o dos metadados de arquivo:
+
+```bash
+sudo apt install mat2
+mat2 --show foto.jpg                   # o que o arquivo revela (GPS, camera, software)
+mat2 foto.jpg                          # gera foto.cleaned.jpg, sem metadados
+```
+
+## 🐉 No Kali
+
+- **O Kali traz o ferramental, mas para anonimato de verdade a ferramenta é o Tails, não o Kali.** O Tails é um sistema live que roda da RAM, força **todo** o tráfego pelo Tor, não deixa rastro no disco e esquece tudo ao desligar. Ele foi projetado para o modelo de ameaça do jornalista da abertura; o Kali foi projetado para testar segurança. Usar o Kali para anonimato pessoal sério é usar a ferramenta errada — a distribuição não força o tráfego pelo Tor e guarda estado no disco, exatamente o oposto do que anonimato exige.
+- **`proxychains` na frente de uma ferramenta ofensiva é rotina em teste autorizado, e tem uma pegadinha.** Rotear um scan por um proxy tem uso legítimo — testar como o alvo vê tráfego vindo de outra origem, respeitar uma regra de engajamento que exige origem específica. Mas o `nmap -sS` mais comum **não passa** pelo `proxychains` e vaza sua origem real, como o quadro de aviso explicou. Em teste autorizado isso é um erro técnico que falseia o resultado; fora dele, é a diferença entre achar que se está anônimo e não estar. Sempre `-sT` com `proxychains`, e sempre confira o IP de saída antes de confiar na cadeia.
+- **Anonimato não é escudo legal, e essa é a parte que fecha o volume.** Nada neste capítulo transforma uma ação não autorizada em ação legal. Rotear um ataque por Tor contra um alvo sem autorização é o mesmo crime da Lei 12.737/2012 do @sec-cap090, agora com a agravante de tentativa de ocultação. As ferramentas de anonimato existem para proteger comunicação legítima — a fonte, o jornalista, o dissidente, o pentester que respeita seu escopo —, não para dar cobertura a quem age fora da lei. O uso defensável é proteger quem tem o direito de se comunicar sem vigilância, não esconder quem não tem o direito de agir.
+- **Testar o próprio vazamento é o exercício que importa mais do que configurar a ferramenta.** `check.torproject.org`, um teste de vazamento de DNS e um de WebRTC dizem se a sua configuração realmente funciona — e a resposta surpreende quem confiava nela. A ferramenta que parece configurada e vaza DNS é pior do que nenhuma, porque induz o comportamento arriscado que a pessoa não teria sem a falsa confiança.
+- **`kali-tweaks` e o modo undercover (@sec-cap090) são privacidade de outra natureza:** privacidade *visual*, contra o observador humano ao seu lado, não contra o observador de rede. São camadas ortogonais — disfarçar a tela não protege o tráfego, e proteger o tráfego não disfarça a tela. Modelos de ameaça diferentes, ferramentas diferentes, e é útil não confundi-los.
+
+> **Nota sobre a família RHEL e o ecossistema.** Tor, WireGuard e `proxychains` funcionam igualmente em qualquer distribuição — são software de rede, não específicos do Debian. As diferenças são de embalagem: no RHEL o Tor vem do repositório EPKI/EPEL, o WireGuard é nativo no kernel moderno, e o NetworkManager (@sec-cap079) integra tanto WireGuard quanto conexões VPN pela interface gráfica em ambas as famílias. O conceito de vazamento e o raciocínio de modelo de ameaça independem completamente da distribuição — são propriedades da rede e da criptografia, não do sistema operacional.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali com acesso à internet. O foco é **medir vazamentos**, porque configurar a ferramenta é a parte fácil e enganosa. Nada aqui deve tocar em alvo de terceiro.
+
+1. **Estabeleça a linha de base: seu IP real.**
+
+   ```bash
+   curl -s https://check.torproject.org/api/ip
+   curl -s https://ifconfig.co/json | grep -E 'ip|country|asn' | head
+   ```
+
+   Esperado: seu endereço público real e o provedor. É contra este vazamento que tudo a seguir trabalha.
+
+2. **Suba o Tor e confirme o proxy.**
+
+   ```bash
+   sudo apt install -y tor curl
+   sudo systemctl start tor
+   sleep 5
+   ss -tlnp 2>/dev/null | grep 9050
+   ```
+
+   Esperado: um socket escutando em `127.0.0.1:9050`. O Tor está pronto para receber conexões SOCKS.
+
+3. **Compare o IP sem e com Tor.**
+
+   ```bash
+   echo "SEM Tor:"; curl -s https://check.torproject.org/api/ip
+   echo "COM Tor:"; curl -s --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+   ```
+
+   Esperado: sem Tor, `"IsTor":false` e seu IP real; com Tor, `"IsTor":true` e o IP de um nó de saída, em outro país. A cadeia de três saltos está funcionando.
+
+4. **Demonstre o vazamento de DNS na prática.**
+
+   ```bash
+   # ERRADO: resolve o nome localmente ANTES de conectar pelo proxy
+   sudo tcpdump -i any -n port 53 -c 5 &
+   curl -s --socks5 127.0.0.1:9050 https://check.torproject.org/api/ip > /dev/null
+   sleep 2; sudo pkill tcpdump 2>/dev/null
+   ```
+
+   Esperado: o `tcpdump` **captura** a consulta DNS saindo em claro — `--socks5` (sem `hostname`) resolveu o nome fora do Tor. Agora o jeito certo:
+
+   ```bash
+   sudo tcpdump -i any -n port 53 -c 5 &
+   curl -s --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip > /dev/null
+   sleep 2; sudo pkill tcpdump 2>/dev/null
+   ```
+
+   Esperado: nenhuma consulta DNS local — o `--socks5-hostname` mandou a resolução pelo Tor. Esta é a diferença de uma palavra que identificou a fonte do jornalista.
+
+5. **Force um programa qualquer pela cadeia com `proxychains`.**
+
+   ```bash
+   sudo apt install -y proxychains4
+   grep -E '^dynamic_chain|^proxy_dns|^socks' /etc/proxychains4.conf | head
+   proxychains4 -q curl -s https://check.torproject.org/api/ip
+   ```
+
+   Esperado: o `curl`, que nem sabe que existe proxy, sai por um nó de saída Tor. Confirme que `proxy_dns` está ativo na configuração — sem ele, o DNS vazaria mesmo com `proxychains`.
+
+6. **Comprove o limite do `proxychains`: ICMP escapa.**
+
+   ```bash
+   sudo tcpdump -i any -n icmp -c 3 &
+   proxychains4 -q ping -c 3 1.1.1.1 2>&1 | tail -3
+   sleep 1; sudo pkill tcpdump 2>/dev/null
+   ```
+
+   Esperado: o `tcpdump` mostra o ICMP saindo **da sua origem real** — o `ping` não usa `connect()` TCP, então o `proxychains` não o intercepta. É a demonstração viva do quadro de aviso: `proxychains` cobre TCP via `connect()`, e nada mais. Quem roda `proxychains nmap -sS` acreditando estar coberto está vazando.
+
+7. **Peça um circuito novo e veja o IP de saída mudar.**
+
+   ```bash
+   curl -s --socks5-hostname 127.0.0.1:9050 https://ifconfig.co
+   sudo systemctl reload tor            # ou: enviar NEWNYM pela porta de controle
+   sleep 3
+   curl -s --socks5-hostname 127.0.0.1:9050 https://ifconfig.co
+   ```
+
+   Esperado: os dois IPs de saída tendem a ser diferentes — o Tor construiu um circuito novo. É o que separa uma ação da seguinte, atrapalhando a correlação por IP.
+
+8. **Limpe metadados de um arquivo.**
+
+   ```bash
+   sudo apt install -y mat2 libimage-exiftool-perl
+   cd /tmp
+   exiftool -Comment="autor: fulano; local: escritorio" -o teste-meta.jpg \
+       /usr/share/icons/hicolor/48x48/*/*.png 2>/dev/null || \
+       convert -size 100x100 xc:blue teste-meta.jpg 2>/dev/null
+   mat2 --show teste-meta.jpg 2>/dev/null | head
+   mat2 teste-meta.jpg 2>/dev/null
+   mat2 --show teste-meta.cleaned.jpg 2>/dev/null | head -3
+   ```
+
+   Esperado: o arquivo original expõe metadados; o `.cleaned` sai limpo. É o vazamento que sobrevive a toda a cadeia de rede, porque viaja dentro do próprio arquivo publicado.
+
+9. **Desenhe seu modelo de ameaça, o passo que precede a ferramenta.**
+
+   ```bash
+   cat > ~/modelo-ameaca.md <<'EOF'
+   # Modelo de ameaca (exemplo de laboratorio)
+   ## De quem me protejo?           -> dono do Wi-Fi publico do cafe
+   ## O que ele observa?            -> todo o trafego da rede local
+   ## Ferramenta que cobre isso?    -> VPN (tira a rede local da jogada)
+   ## O que ela NAO cobre?          -> o provedor de VPN ve tudo; o destino me conhece se eu logar
+   ## Vazamentos a fechar?          -> DNS pelo tunel, IPv6 desligado, sem login pessoal
+   EOF
+   cat ~/modelo-ameaca.md
+   ```
+
+   Esperado: um modelo explícito. **Esta é a etapa que decide tudo** — a ferramenta só faz sentido depois de nomear o adversário e o que ele observa. Pular este passo é o erro do caso da abertura.
+
+10. **Limpe.**
+
+    ```bash
+    sudo systemctl stop tor
+    rm -f /tmp/teste-meta*.jpg ~/modelo-ameaca.md
+    curl -s https://check.torproject.org/api/ip    # confirma que voltou ao IP real
+    ```
+
+    Esperado: o Tor parou e o IP visível voltou a ser o real. Saber quando você **não** está protegido é tão importante quanto saber quando está.
+
+## Resumo
+
+- **Anonimato é propriedade da cadeia inteira, e a cadeia tem a força do elo mais fraco.** Uma única consulta DNS por fora do túnel identificou a fonte do jornalista com todo o resto configurado corretamente.
+- **Privacidade, anonimato e não-rastreabilidade são coisas distintas.** VPN dá privacidade perante o ISP e desloca a confiança para o provedor da VPN; não dá anonimato, porque esse provedor sabe exatamente quem você é.
+- **O modelo de ameaça precede a ferramenta.** Não existe "seguro" em abstrato — só seguro contra um adversário específico com capacidades específicas. Nomear o adversário e o que ele observa é o passo que decide a escolha.
+- **O Tor separa quem-você-é de para-onde-vai por três saltos**, e é essa separação que dá o anonimato. Mas o nó de saída vê o tráfego não cifrado (HTTPS continua obrigatório) e o ISP vê que você usa Tor.
+- **`proxychains` cobre TCP via `connect()`, e nada mais.** ICMP e SYN cru vazam a origem real — `proxychains nmap` exige `-sT`, e supor cobertura total é o erro que expõe quem se acha protegido.
+- **Os vazamentos anulam a ferramenta:** DNS, WebRTC, IPv6, metadados de arquivo, fingerprint e, acima de tudo, **login** — acessar a conta pessoal destrói qualquer anonimato. Testar o próprio vazamento importa mais do que configurar a ferramenta.
+- **Anonimato não é escudo legal.** Rotear por Tor uma ação não autorizada é o mesmo crime do @sec-cap090 com a agravante de ocultação. Estas ferramentas protegem comunicação legítima; não dão cobertura a quem age fora da lei — e para anonimato pessoal sério, a ferramenta é o Tails, não o Kali.

@@ -1,3 +1,444 @@
 # Gerenciamento de segredos: chaves SSH e GPG {#sec-cap086}
 
-*(em elaboracao)*
+O time descobriu do pior jeito possível. Um robô que varre repositórios públicos do GitHub encontrou, dentro de um commit de dois anos antes, um arquivo `deploy_key` com uma chave privada de SSH sem senha. O commit tinha sido revertido no dia seguinte — mas reverter um commit não apaga o objeto do histórico do Git, e a chave continuava lá, recuperável por qualquer um, durante 730 dias. Ninguém tinha rotacionado nada porque ninguém sabia que havia algo a rotacionar.
+
+Segredo é uma categoria de dado com regras próprias. Ele não pode ser versionado, não pode ser copiado sem controle, não deve existir em texto claro em disco, tem de poder ser **revogado** sem quebrar tudo e, principalmente, tem de ser **rastreável**: você precisa saber quantas cópias existem, onde estão e quem as usa. Este capítulo trata dos dois formatos de segredo que todo administrador Linux manipula todo dia — chaves SSH e chaves GPG — e do maquinário ao redor delas.
+
+## Por que criptografia assimétrica resolve o problema
+
+Segredo compartilhado — a senha — tem um defeito estrutural: para provar que você a conhece, você tem de **entregá-la** a quem verifica. Isso significa que o verificador conhece o seu segredo, que ele trafega, que ele pode ser interceptado, adivinhado e reutilizado em outro serviço.
+
+Criptografia assimétrica quebra essa amarra. Você gera um **par**: uma chave privada, que nunca sai da sua máquina, e uma chave pública, matematicamente derivada dela, que pode ser distribuída livremente. O que uma faz a outra desfaz, e é impraticável derivar a privada a partir da pública. Disso saem duas operações:
+
+- **Assinatura** — a chave privada produz uma prova sobre um dado; qualquer um com a pública verifica que ela foi feita por quem tem a privada, e que o dado não mudou. É a base do login por chave SSH e da verificação de pacotes.
+- **Cifragem** — a chave pública embaralha um dado que só a privada correspondente desembaralha. É como você recebe algo secreto de alguém sem nunca ter combinado uma senha com essa pessoa.
+
+::: {#fig-autenticacao-chave}
+```{.tikz}
+%%| filename: autenticacao-chave
+%%| alt: Fluxo do login por chave SSH, mostrando que a chave privada nunca sai do cliente
+\begin{tikzpicture}[
+    bx/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=3.6cm,minimum height=1.0cm},
+    stg/.style={draw,thick,align=center,font=\tiny,inner sep=3pt,minimum width=4.6cm,minimum height=0.8cm,rounded corners=2pt},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!12] (cli) at (0,6.6) {\textbf{Cliente}\\\tiny \texttt{\textasciitilde/.ssh/id\_ed25519}\\\tiny (privada, com senha)};
+  \node[bx,draw=manualgreen,fill=manualgreen!14] (srv) at (9.0,6.6) {\textbf{Servidor}\\\tiny \texttt{\textasciitilde/.ssh/authorized\_keys}\\\tiny (só a pública)};
+
+  \node[stg,draw=manualgray,fill=manualgray!10] (p1) at (4.5,5.4) {1. cliente anuncia qual chave pública quer usar};
+  \node[stg,draw=manualyellow,fill=manualyellow!20] (p2) at (4.5,4.4) {2. servidor confere se ela está em \texttt{authorized\_keys}};
+  \node[stg,draw=manualgray,fill=manualgray!10] (p3) at (4.5,3.4) {3. servidor manda um desafio aleatório};
+  \node[stg,draw=manualred,fill=manualred!12] (p4) at (4.5,2.4) {4. cliente \textbf{assina} o desafio com a privada};
+  \node[stg,draw=manualgreen,fill=manualgreen!14] (p5) at (4.5,1.4) {5. servidor verifica a assinatura com a pública};
+
+  \draw[fl] (cli.south) -- (0,5.4) -- (p1.west);
+  \draw[fl] (p1.east) -- (9.0,5.4) -- (srv.south);
+  \draw[fl] (9.0,4.4) -- (p2.east);
+  \draw[fl] (p2.west) -- (0,4.4) -- (0,3.4) -- (p3.west);
+  \draw[fl] (p3.east) -- (9.0,3.4) -- (9.0,2.4) -- (p4.east);
+  \draw[fl] (p4.west) -- (0,2.4) -- (0,1.4) -- (p5.west);
+
+  \node[nt,text width=12.6cm,anchor=north] at (4.5,0.7) {O ponto que muda tudo está no passo 4: a chave privada \textbf{assina} um desafio, e é a assinatura --- não a chave --- que trafega. O servidor nunca vê o segredo, e um desafio interceptado não serve para a próxima conexão, porque cada uma usa um valor aleatório novo. Comprometer o servidor não entrega sua chave; comprometer mil servidores em que você usa a mesma chave também não. É a diferença estrutural para a senha, que precisa ser entregue para ser verificada.};
+\end{tikzpicture}
+```
+O login por chave SSH: a chave privada assina um desafio e nunca sai da máquina do cliente.
+:::
+
+## Chaves SSH na prática
+
+### Gerar o par certo
+
+```bash
+ssh-keygen -t ed25519 -C "vitor@estacao-2026" -f ~/.ssh/id_ed25519
+```
+
+Três decisões nessa linha:
+
+**`-t ed25519`.** É o algoritmo padrão hoje: chaves curtas (68 caracteres na forma pública), rápidas, com margem de segurança confortável e sem os parâmetros ajustáveis que se erra em RSA. Use RSA de 4096 bits (`-t rsa -b 4096`) apenas quando o servidor for velho demais para aceitar Ed25519. **Nunca** DSA — está desativado por padrão há anos, com razão.
+
+**`-C`.** O comentário. Ele vai junto da chave pública e aparece no `authorized_keys` do servidor. Escreva um identificador que responda "de qual máquina e de qual pessoa é esta chave?", porque um dia você vai olhar um `authorized_keys` com nove linhas e precisar decidir quais apagar.
+
+**A senha (*passphrase*).** O `ssh-keygen` pergunta. Uma chave privada sem senha é um arquivo que dá acesso imediato a quem o copiar — foi exatamente o caso da abertura. Com senha, o arquivo é inútil sem ela, e o `ssh-agent` faz você digitá-la uma vez por sessão. **Chave sem senha só se justifica em automação onde nenhum humano pode digitar nada, e mesmo aí ela deve ser restrita** (mais adiante).
+
+O par resultante:
+
+```bash
+ls -l ~/.ssh/id_ed25519*
+# -rw-------  id_ed25519      <- PRIVADA: 0600, nunca sai daqui
+# -rw-r--r--  id_ed25519.pub  <- publica: pode ir a qualquer lugar
+```
+
+### Instalar a pública no servidor
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub vitor@servidor
+```
+
+O `ssh-copy-id` anexa a chave a `~/.ssh/authorized_keys` no destino e ajusta as permissões — que o SSH exige com rigor: `~/.ssh` em `700` e `authorized_keys` em `600`, ou o servidor **ignora o arquivo em silêncio**. É a causa número um de "instalei a chave e ele continua pedindo senha", e o diagnóstico é sempre o mesmo:
+
+```bash
+ssh -v vitor@servidor 2>&1 | grep -i 'offering\|accepted\|authentications'
+sudo journalctl -u ssh -n 20            # no servidor: mostra a recusa e o motivo
+```
+
+### O `ssh-agent`: digitar a senha uma vez
+
+O agente guarda a chave **descriptografada em memória** e a oferece às conexões, para que a senha seja digitada uma vez por sessão:
+
+```bash
+eval "$(ssh-agent -s)"                    # inicia o agente na sessao atual
+ssh-add ~/.ssh/id_ed25519                 # pede a senha, guarda a chave
+ssh-add -l                                # lista o que esta carregado
+ssh-add -t 3600 ~/.ssh/id_ed25519         # esquece a chave depois de 1 hora
+ssh-add -D                                # descarrega tudo agora
+```
+
+O `-t` é subestimado: uma chave que fica carregada indefinidamente numa estação que você deixa desbloqueada é equivalente a uma chave sem senha durante todo esse tempo.
+
+::: {.callout-warning}
+**`ForwardAgent yes` transforma o servidor remoto num ponto de comprometimento das suas chaves.** Com encaminhamento de agente, qualquer `root` da máquina intermediária pode usar o socket do seu agente enquanto a sessão está aberta e autenticar-se, como você, em todo servidor que aceita sua chave. Se você precisa saltar por um *bastion*, use `ProxyJump` em vez disso — a conexão é feita de ponta a ponta a partir da sua máquina, e nenhum agente é exposto no meio:
+
+```bash
+ssh -J bastion.exemplo.com vitor@interno
+```
+:::
+
+### `~/.ssh/config`: o arquivo que resolve metade dos problemas
+
+```bash
+# ~/.ssh/config
+Host bastion
+    HostName bastion.exemplo.com
+    User vitor
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes            # nao oferece TODAS as chaves ao servidor
+
+Host interno
+    HostName 10.0.5.20
+    User admin
+    ProxyJump bastion             # salto sem expor agente
+    IdentityFile ~/.ssh/id_deploy
+
+Host *
+    HashKnownHosts yes
+    ServerAliveInterval 60
+```
+
+O `IdentitiesOnly yes` merece atenção: sem ele, o cliente oferece **todas** as chaves carregadas no agente, uma a uma, até uma ser aceita. Isso vaza para o servidor a lista de identidades que você possui e pode estourar o `MaxAuthTries` antes de chegar na chave certa — outra causa frequente de "too many authentication failures" (@sec-cap081).
+
+### Restringir o que uma chave pode fazer
+
+Uma chave de automação não precisa de shell interativo. O `authorized_keys` aceita opções por linha:
+
+```
+restrict,command="/usr/local/bin/backup-receber",from="10.0.5.0/24" ssh-ed25519 AAAAC3Nza... deploy@ci
+```
+
+`restrict` desliga tudo (encaminhamento de porta, agente, X11, pty) e as opções seguintes reativam só o necessário; `command=` força um comando fixo independentemente do que o cliente pedir; `from=` limita a origem. Uma chave assim, mesmo vazada, executa um único programa a partir de uma faixa de rede. É menor privilégio (@sec-cap087) aplicado a credencial.
+
+## GPG: assinar, cifrar e verificar procedência
+
+O GnuPG resolve um problema diferente do SSH: **procedência e confidencialidade de dados**, não autenticação de sessão. É com ele que você verifica que a ISO que baixou é a que o projeto publicou, que um pacote não foi adulterado no caminho e que um arquivo só será lido por quem deve.
+
+### Gerar e entender a estrutura
+
+```bash
+gpg --full-generate-key           # escolha ECC (Curve 25519) ou RSA 4096
+gpg --list-secret-keys --keyid-format LONG
+gpg --list-keys --keyid-format LONG
+```
+
+A saída mostra uma estrutura em dois níveis que confunde no início:
+
+- **Chave primária** (`sec`/`pub`) — a sua identidade. Usada para **certificar** (assinar outras chaves) e como raiz de confiança. Idealmente fica offline, num pendrive guardado.
+- **Subchaves** (`ssb`/`sub`) — chaves de trabalho para assinar, cifrar e autenticar, derivadas da primária e revogáveis individualmente.
+
+Essa separação existe justamente para o dia ruim: uma subchave comprometida é revogada e substituída sem que você perca a identidade, as assinaturas que recebeu e a rede de confiança que construiu.
+
+**O primeiro comando depois de gerar a chave, sem exceção:**
+
+```bash
+gpg --output ~/revogacao-MINHA-CHAVE.asc --gen-revoke SEU_ID
+```
+
+O certificado de revogação é a única forma de anunciar ao mundo que a chave não vale mais **se você perder o acesso a ela**. Gerado depois que a chave sumiu, não existe. Guarde-o separado da chave, em outro meio — impresso, se for o caso.
+
+### As operações do dia a dia
+
+```bash
+# assinar de forma destacada: gera arquivo.tar.gz.asc ao lado do original
+gpg --armor --detach-sign arquivo.tar.gz
+
+# verificar: assinatura + arquivo
+gpg --verify arquivo.tar.gz.asc arquivo.tar.gz
+
+# cifrar para outra pessoa (so a privada dela abre)
+gpg --encrypt --recipient maria@exemplo.com relatorio.pdf
+
+# cifrar so com senha, sem chave nenhuma (simetrico)
+gpg --symmetric --cipher-algo AES256 backup.tar
+
+# decifrar
+gpg --decrypt relatorio.pdf.gpg > relatorio.pdf
+
+# exportar e importar chaves publicas
+gpg --armor --export vitor@exemplo.com > minha-chave.asc
+gpg --import chave-de-terceiro.asc
+```
+
+### O que "verificado" realmente significa
+
+Aqui mora o mal-entendido mais caro do GPG. Rodar `gpg --verify` e ver `Good signature` prova **uma** coisa: o arquivo foi assinado pela chave privada correspondente àquela chave pública, e não mudou desde então. Não prova que a chave pública pertence a quem você pensa.
+
+```
+gpg: Good signature from "Kali Linux Repository <devel@kali.org>"
+gpg: WARNING: This key is not certified with a trusted signature!
+gpg:          There is no indication that the signature belongs to the owner.
+```
+
+Esse aviso não é ruído: ele diz exatamente que o passo que falta é **confirmar a impressão digital da chave por um canal independente** — o site oficial via HTTPS, um documento assinado por uma chave que você já confia, um encontro presencial. Baixar a chave e a assinatura do mesmo servidor que forneceu o arquivo verifica integridade contra corrupção, não contra um adversário que controla o servidor.
+
+```bash
+gpg --fingerprint devel@kali.org       # compare com a fonte oficial, fora do canal
+gpg --lsign-key ID                     # assina localmente: "eu confiro que e ela"
+```
+
+## Onde os segredos ficam guardados
+
+Chave é só um tipo de segredo. Senhas de banco, tokens de API e credenciais de serviço têm o mesmo problema e opções distintas:
+
+| Onde | Como usar | Quando faz sentido |
+|---|---|---|
+| Variável de ambiente | `export API_TOKEN=...` | processo isolado e efêmero; **vaza** em `/proc/PID/environ` e em `ps e` |
+| Arquivo `0600` no disco | `source ~/.config/app/env` | simples e auditável; em texto claro se o disco não for cifrado (@sec-cap050) |
+| `pass` (GPG + Git) | `pass show infra/prod/db` | segredos de pessoa; versionável porque o conteúdo é cifrado |
+| `secret-tool` / chaveiro | `secret-tool lookup app db` | integrado ao desktop; destranca com o login |
+| Cofre de rede (Vault etc.) | token de curta duração | equipe, rotação automática, auditoria centralizada |
+| **Dentro do repositório Git** | — | **nunca**, em hipótese alguma |
+
+: Onde guardar um segredo, e o que cada opção custa {#tbl-onde-segredos}
+
+O `pass` merece um parágrafo porque resolve o caso do administrador solitário com elegância: ele é uma árvore de arquivos cifrados com a sua chave GPG, versionada em Git. O repositório inteiro pode ser público sem risco, porque cada arquivo é um blob cifrado.
+
+```bash
+sudo apt install pass
+pass init SEU_ID_GPG                    # amarra o cofre a uma chave GPG
+pass insert infra/prod/postgres         # pede o segredo e cifra
+pass show infra/prod/postgres           # decifra na hora, pedindo a senha da chave
+pass -c infra/prod/postgres             # copia para a area de transferencia por 45s
+pass git init && pass git push          # versionamento do cofre cifrado
+```
+
+### Segredo em repositório Git: por que não basta apagar
+
+Reverter o commit, apagar o arquivo e empurrar de novo **não resolve**: o objeto continua no histórico, alcançável por hash, e em qualquer clone que já exista. A ordem correta quando um segredo vaza é sempre a mesma, e a primeira etapa é a que importa:
+
+1. **Rotacione o segredo imediatamente.** Revogue a chave, invalide o token, troque a senha. Trate-o como público a partir do segundo em que foi commitado, porque é isso que ele é.
+2. **Só depois** limpe o histórico (`git filter-repo`, ou o suporte do provedor), sabendo que isso reescreve hashes e afeta todo mundo que clonou.
+3. **Previna a repetição:** `.gitignore` para os caminhos de segredo, e um gancho de pré-commit com `gitleaks` ou `git-secrets` que recusa o commit antes de ele existir.
+
+```bash
+# gancho local: bloqueia o commit que contem chave privada
+sudo apt install gitleaks
+gitleaks detect --source . --verbose        # varre o historico inteiro
+```
+
+## 🐉 No Kali
+
+- **Verificar a ISO do Kali é o exercício de GPG mais útil que existe**, porque é real e você vai fazê-lo de verdade. Baixar a imagem de um espelho e confiar cegamente é ignorar que espelhos são operados por terceiros. A cadeia completa: baixar `SHA256SUMS` e `SHA256SUMS.gpg`, importar a chave de assinatura do projeto, **conferir a impressão digital contra o site oficial por HTTPS**, verificar a assinatura do arquivo de somas e só então conferir a soma da ISO. Cada elo omitido é uma suposição de confiança que você assumiu sem perceber. O laboratório executa a cadeia inteira.
+- **A chave do repositório é o que mantém o `apt` honesto.** Todo `apt update` verifica a assinatura do `Release` contra `/usr/share/keyrings/kali-archive-keyring.gpg` (@sec-cap033). Quando essa chave expira ou o pacote fica velho demais, o `apt` falha com `NO_PUBKEY` ou `EXPKEYSIG` — e a tentação universal é usar `--allow-unauthenticated` ou `[trusted=yes]` no `sources.list`. **Isso desativa a única proteção contra um espelho hostil.** O conserto certo é `sudo apt install kali-archive-keyring` ou reinstalar o pacote de chaveiro a partir da fonte oficial.
+- **`/usr/share/wordlists` não substitui uma senha forte de chave.** Um `id_ed25519` protegido por senha de dicionário é quebrável offline por quem tiver o arquivo: o formato antigo do OpenSSH derivava a chave da senha com pouquíssimas iterações. O formato atual (`-o -a 100`, padrão desde o OpenSSH 7.8) usa bcrypt com fator de trabalho configurável e torna esse ataque caro. `ssh-keygen -p -o -a 100 -f ~/.ssh/id_rsa` reencripta uma chave antiga sem trocar o par — vale rodar em toda chave gerada antes de 2018.
+- **A máquina Kali acumula credenciais de terceiros por natureza do trabalho**: capturas, *hashes* coletados, chaves de laboratório, credenciais de teste autorizado. Isso a torna um alvo de valor desproporcional e faz da criptografia de disco (@sec-cap050) e da chave GPG com senha requisitos práticos, não zelo excessivo. Material de um teste autorizado tem cláusula contratual de custódia e destruição — perdê-lo é incidente contratual, não descuido.
+- **Chave de laboratório não entra em produção, e o contrário também não.** Manter pares separados por contexto (`~/.ssh/id_lab`, `~/.ssh/id_infra`) com `IdentitiesOnly yes` no `~/.ssh/config` evita a categoria inteira de erro em que uma chave de VM descartável, copiada por toda parte, acaba num `authorized_keys` que importa.
+
+> **Nota sobre a família RHEL.** Os comandos de `ssh-keygen` e `gpg` são idênticos, mas o SELinux (@sec-cap088) acrescenta uma armadilha específica: `~/.ssh` precisa do contexto `ssh_home_t`, e um `authorized_keys` criado por cópia de outro lugar herda o rótulo errado e é ignorado — com permissões corretas e nenhuma mensagem clara. O sintoma é idêntico ao de permissão errada, mas `ls -l` mostra tudo em ordem. `restorecon -Rv ~/.ssh` conserta, e `ls -Z ~/.ssh` mostra o problema. Na distribuição de pacotes, o equivalente do chaveiro do `apt` é o RPM-GPG-KEY importado com `rpm --import`, verificável por `rpm -qa gpg-pubkey*`.
+
+## 🧪 Laboratório
+
+Roteiro reproduzível numa VM do Kali. Ele cria chaves de teste em diretórios separados, para não tocar nas suas chaves reais.
+
+1. **Gere um par SSH e observe a diferença entre com e sem senha.**
+
+   ```bash
+   mkdir -p ~/lab-segredos && cd ~/lab-segredos
+   ssh-keygen -t ed25519 -C "lab-sem-senha" -f ./k-sem -N ''
+   ssh-keygen -t ed25519 -C "lab-com-senha" -f ./k-com -N 'senha-de-teste-123'
+   head -c 60 k-sem; echo; head -c 60 k-com; echo
+   ```
+
+   Esperado: a chave sem senha começa com `b3BlbnNzaC1rZXkt...` legível como base64 direto; a com senha também é base64, mas o conteúdo interno está cifrado. Confirme:
+
+   ```bash
+   ssh-keygen -y -f ./k-sem                 # extrai a publica sem perguntar nada
+   ssh-keygen -y -f ./k-com                 # pede a senha
+   ```
+
+   Esperado: a primeira entrega a chave pública na hora — é isso que quem copiar o arquivo ganha. A segunda exige o segredo.
+
+2. **Veja a estrutura da chave pública.**
+
+   ```bash
+   cat k-com.pub
+   ssh-keygen -lf k-com.pub                 # impressao digital SHA256
+   ssh-keygen -lf k-com.pub -v              # arte ASCII, para conferencia visual
+   ```
+
+   Esperado: três campos — algoritmo, chave em base64 e comentário. A impressão digital é o que você compara ao verificar uma chave de host (@sec-cap081).
+
+3. **Monte um login por chave contra a própria máquina.**
+
+   ```bash
+   sudo systemctl start ssh
+   mkdir -p ~/.ssh && chmod 700 ~/.ssh
+   cat k-com.pub >> ~/.ssh/authorized_keys
+   chmod 600 ~/.ssh/authorized_keys
+   ssh -i ./k-com -o IdentitiesOnly=yes "$USER@localhost" 'echo LOGIN OK; id -un'
+   ```
+
+   Esperado: pede a senha **da chave** (não a do usuário) e imprime `LOGIN OK`.
+
+4. **Reproduza a falha mais comum: permissão errada.**
+
+   ```bash
+   chmod 666 ~/.ssh/authorized_keys
+   ssh -i ./k-com -o IdentitiesOnly=yes -o BatchMode=yes "$USER@localhost" 'echo NAO DEVERIA' 2>&1 | tail -2
+   sudo journalctl -u ssh -n 5 --no-pager | tail -3
+   chmod 600 ~/.ssh/authorized_keys
+   ```
+
+   Esperado: a autenticação falha, e o log do servidor diz `Authentication refused: bad ownership or modes`. Este passo economiza uma hora de depuração no futuro.
+
+5. **Use o agente e veja o efeito do prazo.**
+
+   ```bash
+   eval "$(ssh-agent -s)"
+   ssh-add -t 60 ./k-com               # digita a senha uma vez, vale 60 s
+   ssh-add -l
+   ssh -o IdentitiesOnly=no "$USER@localhost" 'echo SEM DIGITAR SENHA'
+   sleep 65
+   ssh-add -l                          # a chave expirou sozinha
+   ```
+
+   Esperado: a segunda conexão não pede nada; depois de 65 segundos, `The agent has no identities`.
+
+6. **Restrinja uma chave a um único comando.**
+
+   ```bash
+   cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak
+   PUB=$(cat k-sem.pub)
+   echo "restrict,command=\"date\" $PUB" >> ~/.ssh/authorized_keys
+   ssh -i ./k-sem -o IdentitiesOnly=yes "$USER@localhost" 'rm -rf /tmp/qualquer-coisa'
+   ```
+
+   Esperado: o servidor executa `date` e **ignora completamente** o comando pedido pelo cliente. É a demonstração prática de menor privilégio aplicado a credencial: mesmo com a chave em mãos, o portador só consegue uma coisa.
+
+   ```bash
+   mv ~/.ssh/authorized_keys.bak ~/.ssh/authorized_keys
+   ```
+
+7. **Gere uma chave GPG de teste e o certificado de revogação.**
+
+   ```bash
+   export GNUPGHOME=~/lab-segredos/gpg && mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+   gpg --batch --passphrase 'lab123' --quick-generate-key 'Lab Teste <lab@exemplo.invalid>' \
+       default default 1y
+   gpg --list-secret-keys --keyid-format LONG
+   KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+   gpg --batch --yes --passphrase 'lab123' --pinentry-mode loopback \
+       --output revogacao.asc --gen-revoke "$KEYID" 2>/dev/null <<< $'y\n0\n\ny\n'
+   ls -l revogacao.asc
+   ```
+
+   Esperado: a chave aparece com `sec` (primária) e `ssb` (subchave), e o certificado de revogação existe. Note o `GNUPGHOME` separado — todo o exercício acontece fora do seu chaveiro real.
+
+8. **Assine, verifique e adultere.**
+
+   ```bash
+   echo "conteudo original do relatorio" > relatorio.txt
+   gpg --batch --passphrase 'lab123' --pinentry-mode loopback \
+       --armor --detach-sign relatorio.txt
+   gpg --verify relatorio.txt.asc relatorio.txt
+   echo "linha inserida por terceiro" >> relatorio.txt
+   gpg --verify relatorio.txt.asc relatorio.txt
+   ```
+
+   Esperado: a primeira verificação diz `Good signature`; depois da alteração, `BAD signature`. Um byte mudado é detectado.
+
+9. **Cifre e decifre.**
+
+   ```bash
+   gpg --batch --yes --encrypt --recipient 'lab@exemplo.invalid' \
+       --trust-model always --output segredo.gpg relatorio.txt
+   file segredo.gpg
+   gpg --batch --passphrase 'lab123' --pinentry-mode loopback \
+       --decrypt segredo.gpg | head -1
+   ```
+
+   Esperado: o arquivo cifrado é binário ilegível, e a decifragem recupera o conteúdo.
+
+10. **Execute a cadeia real de verificação da ISO do Kali.**
+
+    ```bash
+    cd ~/lab-segredos
+    wget -q https://cdimage.kali.org/current/SHA256SUMS
+    wget -q https://cdimage.kali.org/current/SHA256SUMS.gpg
+    unset GNUPGHOME                        # usa o chaveiro real desta etapa
+    gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 44C6513A8E4FB3D30875F758ED444FF07D8D0BF6
+    gpg --fingerprint 44C6513A8E4FB3D30875F758ED444FF07D8D0BF6
+    gpg --verify SHA256SUMS.gpg SHA256SUMS
+    ```
+
+    Esperado: `Good signature from "Kali Linux Repository <devel@kali.org>"`, acompanhado do aviso de que a chave não é certificada. **Esse aviso é o passo que falta**: compare a impressão digital impressa acima com a publicada em `kali.org/docs/introduction/download-official-kali-linux-images/` por HTTPS. Só depois disso a soma do `SHA256SUMS` significa alguma coisa — verificar a ISO contra ele é o passo trivial no fim de uma cadeia cujo valor está em cada elo anterior.
+
+11. **Monte um cofre com `pass`.**
+
+    ```bash
+    export GNUPGHOME=~/lab-segredos/gpg
+    sudo apt install -y pass
+    KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+    PASSWORD_STORE_DIR=~/lab-segredos/cofre pass init "$KEYID"
+    echo "senha-do-banco-123" | PASSWORD_STORE_DIR=~/lab-segredos/cofre \
+        pass insert -e infra/prod/postgres
+    find ~/lab-segredos/cofre -name '*.gpg'
+    cat ~/lab-segredos/cofre/infra/prod/postgres.gpg | head -c 40 | xxd | head -2
+    ```
+
+    Esperado: o segredo vive num `.gpg` binário. É por isso que o diretório inteiro pode ser versionado em Git e até publicado sem risco.
+
+12. **Varra o repositório atrás de segredos vazados.**
+
+    ```bash
+    cd ~/lab-segredos && git init -q . && cp k-sem repo-chave-vazada && git add -A && \
+        git -c user.email=l@l -c user.name=lab commit -qm "commit com chave" && \
+        git rm -q --cached repo-chave-vazada && rm repo-chave-vazada && \
+        git -c user.email=l@l -c user.name=lab commit -qm "removida"
+    git log --oneline
+    git cat-file -p "$(git rev-list --all --objects | grep repo-chave-vazada | head -1 | cut -d' ' -f1)" | head -2
+    ```
+
+    Esperado: o arquivo foi removido no commit seguinte, **e a chave continua recuperável pelo hash do objeto**. É exatamente o caso da abertura, reproduzido em trinta segundos — e a razão de a primeira providência ser rotacionar, não apagar.
+
+13. **Limpe tudo.**
+
+    ```bash
+    unset GNUPGHOME PASSWORD_STORE_DIR
+    ssh-add -D 2>/dev/null; ssh-agent -k > /dev/null 2>&1
+    grep -v 'lab-com-senha\|lab-sem-senha' ~/.ssh/authorized_keys > /tmp/ak && \
+        mv /tmp/ak ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+    sudo systemctl stop ssh
+    rm -rf ~/lab-segredos
+    ```
+
+    Esperado: nenhuma chave de laboratório sobra em `authorized_keys` nem no agente. Chave de teste esquecida num arquivo de autorização é exatamente o tipo de acúmulo que o @sec-cap085 mandou enumerar.
+
+## Resumo
+
+- **Criptografia assimétrica remove a necessidade de entregar o segredo para provar que você o conhece.** No login por chave SSH, a privada assina um desafio aleatório e nunca sai da sua máquina — comprometer o servidor não entrega sua credencial.
+- **`ssh-keygen -t ed25519` com senha e um comentário identificável** é o padrão. Chave sem senha é um arquivo que dá acesso imediato a quem o copiar, e só se justifica em automação onde ela venha restrita por `restrict`, `command=` e `from=`.
+- **Permissão errada em `~/.ssh` faz o servidor ignorar o `authorized_keys` em silêncio** — `700` no diretório, `600` no arquivo. É a causa número um de "instalei a chave e ele continua pedindo senha".
+- **`ForwardAgent` expõe suas chaves ao `root` da máquina intermediária.** Use `ProxyJump`, que conecta de ponta a ponta sem deixar agente no caminho.
+- **`Good signature` prova que o dado não mudou desde a assinatura, não que a chave é de quem você pensa.** O elo que falta é conferir a impressão digital por um canal independente — sem ele, a verificação protege contra corrupção, não contra adversário.
+- **Gere o certificado de revogação no minuto seguinte ao de gerar a chave GPG.** Depois que a chave se perde, ele não pode mais ser criado.
+- **Segredo commitado é segredo público, e reverter o commit não apaga o objeto.** A primeira providência é rotacionar; limpar o histórico vem depois, e prevenir com `gitleaks` vem antes da próxima vez.

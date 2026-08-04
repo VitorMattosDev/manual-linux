@@ -1,3 +1,444 @@
 # Confinamento: AppArmor, SELinux e sandboxing {#sec-cap088}
 
-*(em elaboracao)*
+O servidor foi comprometido às 3h47. O invasor conseguiu execução de código dentro do processo do servidor web — uma falha real, numa biblioteca de processamento de imagem. A partir dali, o roteiro é conhecido: ler `/etc/passwd` para enumerar contas, procurar chaves privadas em `/home`, abrir uma conexão de saída para receber comandos.
+
+Nada disso funcionou. O processo estava rodando como `www-data`, então as permissões clássicas já barravam `/etc/shadow` — mas `/etc/passwd` é legível por todos, `/home/deploy/.ssh` tinha um `id_rsa` legível pelo dono, e o processo era o dono. As permissões Unix teriam deixado passar. O que barrou foi um perfil de AppArmor que listava, arquivo por arquivo, o que aquele processo podia tocar. `/home` não estava na lista. `/etc/passwd` não estava na lista. Abrir socket para a internet não estava na lista.
+
+Essa é a diferença entre **controle de acesso discricionário** e **obrigatório**, e ela é o assunto deste capítulo.
+
+## DAC e MAC: dois portões em série
+
+O modelo de permissões que você conhece desde o @sec-cap020 é **DAC** — *Discretionary Access Control*. Discricionário porque o **dono do recurso decide**: você pode dar `chmod 777` no seu arquivo, e o sistema obedece. A consequência inevitável é que um processo comprometido herda toda a discricionariedade do usuário que o executa. Ele *é* aquele usuário, para todos os efeitos.
+
+**MAC** — *Mandatory Access Control* — inverte isso. Uma política definida pelo administrador diz o que cada programa pode fazer, e **nem o dono do arquivo nem o `root` do processo podem afrouxá-la em tempo de execução**. A política não pergunta "quem é você?", e sim "**o que você é, e o que um programa desse tipo tem o direito de fazer?**".
+
+::: {#fig-dac-mac}
+```{.tikz}
+%%| filename: dac-mac
+%%| alt: Uma chamada de sistema atravessando o portao DAC e depois o portao MAC antes de chegar ao recurso
+\begin{tikzpicture}[
+    bx/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=2.9cm,minimum height=1.2cm},
+    prt/.style={draw,thick,align=center,font=\tiny,inner sep=4pt,minimum width=3.2cm,minimum height=1.5cm,rounded corners=3pt},
+    fl/.style={-{Latex[length=1.8mm]},thick,manualgray},
+    neg/.style={-{Latex[length=1.8mm]},thick,manualred,dashed},
+    lb/.style={font=\tiny,manualgray,align=center},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[bx,draw=manualblue,fill=manualblue!12] (proc) at (0,4.6) {\textbf{processo}\\\tiny \texttt{open("/home/x/.ssh/id\_rsa")}};
+  \node[prt,draw=manualyellow,fill=manualyellow!20] (dac) at (4.3,4.6) {\textbf{portão DAC}\\dono, grupo, outros\\ACL, SUID\\\tiny \emph{quem} é você?};
+  \node[prt,draw=manualgreen,fill=manualgreen!14] (mac) at (8.6,4.6) {\textbf{portão MAC}\\perfil AppArmor\\ou tipo SELinux\\\tiny \emph{o que} você é?};
+  \node[bx,draw=manualgray,fill=manualgray!12] (rec) at (12.6,4.6) {\textbf{recurso}\\\tiny arquivo, socket,\\\tiny capability};
+
+  \draw[fl] (proc) -- (dac);
+  \draw[fl] (dac) -- node[lb,above]{passou} (mac);
+  \draw[fl] (mac) -- node[lb,above]{passou} (rec);
+
+  \draw[neg] (dac.south) -- ++(0,-0.8) node[lb,below,manualred]{\texttt{EACCES}};
+  \draw[neg] (mac.south) -- ++(0,-0.8) node[lb,below,manualred]{\texttt{EACCES} + registro};
+
+  \node[nt,text width=13.0cm,anchor=north] at (6.2,2.3) {Os dois portões são verificados \textbf{em série e de forma independente}: a chamada só chega ao recurso se \emph{ambos} permitirem. Afrouxar o DAC com \texttt{chmod 777} não abre o portão MAC, e ser \texttt{root} não abre nenhum dos dois quando há política. É defesa em profundidade literal --- o invasor que ganhou execução dentro do processo herda a identidade dele (e portanto o DAC), mas não escapa do perfil, porque o perfil descreve o \emph{programa}, não o usuário. A negação do MAC, além disso, \textbf{deixa registro}, e esse registro é o sinal de que algo tentou o que não devia.};
+\end{tikzpicture}
+```
+Uma chamada de sistema atravessa o portão DAC e depois o portão MAC; basta um negar.
+:::
+
+Existem duas implementações dominantes no Linux, ambas construídas sobre a mesma interface de kernel (LSM, *Linux Security Modules*), e que fazem escolhas opostas de projeto.
+
+| | **AppArmor** | **SELinux** |
+|---|---|---|
+| Identifica o objeto por | **caminho** do arquivo | **rótulo** gravado no atributo estendido |
+| Padrão em | Debian, Ubuntu, **Kali**, SUSE | RHEL, Fedora, CentOS, Android |
+| Política escrita em | texto legível, parecido com shell | linguagem própria, compilada |
+| Curva de aprendizado | horas | semanas |
+| Ponto forte | confinar um programa específico, rápido | política abrangente do sistema inteiro |
+| Ponto fraco | link e caminho alternativo contornam regra | complexidade; diagnóstico difícil no início |
+
+: AppArmor e SELinux: a mesma ideia, escolhas opostas {#tbl-mac-comparacao}
+
+A escolha entre eles é, na prática, a escolha da distribuição. Você usa AppArmor no Kali e encontra SELinux no RHEL — e precisa saber ler os dois.
+
+## AppArmor: confinamento por caminho
+
+### Ver o estado atual
+
+```bash
+sudo aa-status                         # resumo: quantos perfis, em que modo
+sudo aa-status --json | head -c 300
+sudo apparmor_status | grep -A5 'enforce mode'
+ls /etc/apparmor.d/                    # os perfis instalados
+```
+
+Cada perfil está num de dois modos:
+
+- **`enforce`** — a política é aplicada. O que não está permitido é negado e registrado.
+- **`complain`** (modo de aprendizado) — nada é negado, mas **tudo que violaria a política é registrado**. É o modo em que se constrói um perfil novo.
+
+```bash
+sudo aa-enforce /etc/apparmor.d/usr.bin.programa
+sudo aa-complain /etc/apparmor.d/usr.bin.programa
+sudo aa-disable /etc/apparmor.d/usr.bin.programa
+```
+
+### Ler um perfil
+
+A sintaxe é deliberadamente simples:
+
+```
+#include <tunables/global>
+
+/usr/local/bin/meuservico {
+  #include <abstractions/base>          # o basico: libc, locale, /dev/null
+  #include <abstractions/nameservice>   # resolucao de nomes
+
+  capability net_bind_service,          # so esta capability, nenhuma outra
+
+  /usr/local/bin/meuservico       mr,   # (m)apear em memoria e (r)ler o proprio binario
+  /etc/meuservico/**              r,    # configuracao: so leitura
+  /var/lib/meuservico/**          rw,   # estado: leitura e escrita
+  /var/log/meuservico/*.log       w,    # log: so escrita
+  owner /tmp/meuservico-*         rw,   # so arquivos que ele proprio criou
+
+  network inet stream,                  # TCP sobre IPv4
+  deny network inet6,                   # IPv6 explicitamente negado
+  deny /home/** rwx,                    # nada de /home, jamais
+  deny /etc/shadow r,
+
+  /bin/sh                         ix,   # pode executar sh, herdando este perfil
+  /usr/bin/convert                Px,   # troca para o perfil proprio do convert
+}
+```
+
+As letras à direita são as permissões, e as três que mais importam ficam no fim:
+
+- **`r`, `w`, `a`** — leitura, escrita, acréscimo apenas.
+- **`m`** — mapear em memória; necessário para bibliotecas e para o próprio executável.
+- **`ix`** — executa **herdando o perfil atual**: o programa filho fica igualmente confinado.
+- **`Px`** — executa **trocando** para o perfil próprio daquele programa.
+- **`Ux`** — executa **sem confinamento**. É o buraco no perfil, e usar `Ux` costuma anular o esforço inteiro.
+
+O `deny` explícito importa porque perfis usam `#include` de abstrações, e uma abstração pode conceder algo que você não quer. Uma regra `deny` vence qualquer permissão concedida em outro lugar.
+
+### Construir um perfil do zero
+
+O fluxo de aprendizado é o que torna o AppArmor prático:
+
+```bash
+sudo apt install apparmor-utils
+sudo aa-genprof /usr/local/bin/meuservico   # cria o esqueleto e entra em modo interativo
+# --- em outro terminal: exercite o programa em TODOS os caminhos de uso ---
+# volte ao aa-genprof e responda (A)llow / (D)eny para cada evento observado
+sudo aa-logprof                             # refina o perfil com o que apareceu depois
+sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.meuservico   # recarrega
+```
+
+::: {.callout-warning}
+**A qualidade do perfil é exatamente a qualidade do seu exercício em modo `complain`.** Se você não acionou o caminho de código que faz rotação de log, esse acesso não aparece no aprendizado, o perfil sai sem ele, e o serviço quebra na primeira rotação — às 3h da manhã, com um erro que não menciona AppArmor em lugar nenhum. Método: deixe em `complain` por dias em ambiente real, rode `aa-logprof` periodicamente, e só passe para `enforce` quando um período representativo (incluindo tarefas semanais e mensais) não gerar mais eventos novos.
+:::
+
+### Diagnosticar uma negação
+
+Este é o conhecimento que economiza horas. Quando algo quebra sob AppArmor, a mensagem que o programa exibe é um `Permission denied` genérico, e a permissão do arquivo está correta. A resposta está no log:
+
+```bash
+sudo journalctl -k | grep -i apparmor | tail -20
+sudo dmesg | grep -i 'apparmor.*DENIED'
+sudo aa-notify -s 1 -v            # resumo legivel das negacoes recentes
+```
+
+Uma linha de negação tem tudo que você precisa:
+
+```
+apparmor="DENIED" operation="open" profile="/usr/sbin/nginx"
+name="/home/deploy/.ssh/id_rsa" pid=4711 comm="nginx"
+requested_mask="r" denied_mask="r" fsuid=33
+```
+
+`profile` diz quem foi barrado, `name` diz o que ele tentou tocar e `requested_mask` diz com qual permissão. É a linha que, no caso da abertura, apareceu no log às 3h47 e denunciou o comprometimento — porque **`nginx` não tem motivo nenhum para procurar uma chave privada em `/home`**. Uma negação de MAC não é só um bloqueio: é um sinal de detecção (@sec-cap089).
+
+## SELinux: confinamento por rótulo
+
+No RHEL e derivados, o mecanismo é outro. Todo objeto do sistema — arquivo, processo, porta, socket — carrega um **contexto de segurança** gravado no atributo estendido `security.selinux` (@sec-cap024):
+
+```
+system_u:object_r:httpd_sys_content_t:s0
+ usuario :  papel  :      tipo        : nivel
+```
+
+O campo que decide quase tudo é o **tipo**. A política diz quais tipos de processo podem acessar quais tipos de arquivo, e o resto segue disso. Vantagem sobre o modelo por caminho: o rótulo viaja com o arquivo. Renomear, mover ou criar um link não muda o que aquele objeto é, e portanto não contorna a política — o ponto fraco do AppArmor.
+
+```bash
+getenforce                              # Enforcing, Permissive ou Disabled
+sestatus                                # detalhado
+ls -Z /var/www/html/                    # contexto dos arquivos
+ps -eZ | grep httpd                     # contexto dos processos
+id -Z                                   # o seu proprio contexto
+```
+
+```bash
+sudo setenforce 0                       # Permissive TEMPORARIO (registra, nao bloqueia)
+sudo setenforce 1                       # de volta a Enforcing
+```
+
+O erro clássico do administrador que vem do Debian: copiar um arquivo para `/var/www/html` e receber 403 do servidor, com permissão `644` e dono correto. O arquivo veio de `/home` e trouxe o rótulo `user_home_t`, que o `httpd_t` não tem direito de ler.
+
+```bash
+sudo restorecon -Rv /var/www/html                          # aplica o rotulo padrao do caminho
+sudo semanage fcontext -a -t httpd_sys_content_t "/dados(/.*)?"   # define o padrao
+sudo restorecon -Rv /dados
+```
+
+E os **booleanos**, que são interruptores da política para casos comuns, evitando escrever política nova:
+
+```bash
+getsebool -a | grep httpd | head
+sudo setsebool -P httpd_can_network_connect on     # -P persiste no boot
+```
+
+Diagnóstico, quando algo falha sem motivo aparente:
+
+```bash
+sudo ausearch -m AVC -ts recent                    # negacoes recentes
+sudo sealert -a /var/log/audit/audit.log           # traduz para linguagem humana
+sudo ausearch -m AVC -ts recent | audit2allow -M meumodulo   # gera modulo de politica
+sudo semodule -i meumodulo.pp
+```
+
+::: {.callout-warning}
+**`audit2allow` é uma ferramenta de diagnóstico, não uma solução automática.** Ele transforma toda negação registrada em permissão — inclusive as negações que representam justamente o ataque que a política estava barrando. **Leia a regra que ele gera antes de instalar**, e pergunte se aquele acesso faz sentido para aquele serviço. E `setenforce 0` permanente ou `SELINUX=disabled` no `/etc/selinux/config` não é solução de problema: é desligar uma camada inteira de defesa porque um rótulo está errado. O conserto quase sempre é `restorecon` ou um booleano.
+:::
+
+## Sandboxing: confinar o que você não escreveu
+
+MAC é política do administrador sobre serviços do sistema. Sandbox é confinar, na hora, um programa arbitrário — um binário baixado, um navegador, uma amostra suspeita.
+
+### `bubblewrap`: o mais simples e o mais usado
+
+```bash
+sudo apt install bubblewrap
+bwrap --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+      --symlink usr/bin /bin --symlink usr/sbin /sbin \
+      --proc /proc --dev /dev --tmpfs /tmp \
+      --unshare-all --die-with-parent \
+      /bin/bash
+```
+
+Você constrói um sistema de arquivos mínimo montando explicitamente o que o programa precisa, e `--unshare-all` corta rede, PIDs, IPC e usuários. É o motor por baixo do Flatpak, e não precisa de privilégio para funcionar (usa namespaces de usuário).
+
+### `firejail`: perfis prontos
+
+```bash
+sudo apt install firejail
+firejail firefox                        # usa o perfil pronto de /etc/firejail/
+firejail --net=none --private ./binario-desconhecido
+firejail --list                         # sandboxes em execucao
+firejail --profile=/etc/firejail/firefox.profile --private=/tmp/perfil-limpo firefox
+```
+
+`--private` dá ao programa um `/home` vazio e descartável; `--net=none` remove a rede por completo. Para inspecionar um binário desconhecido, os dois juntos já mudam o jogo.
+
+### `seccomp`: filtrar chamadas de sistema
+
+O nível mais fino: uma lista do que o processo pode pedir ao kernel. É o que o `SystemCallFilter=` do systemd (@sec-cap087) configura, e o que contêineres usam por padrão. `systemd-run` permite aplicar tudo isso a um comando avulso, sem escrever unidade:
+
+```bash
+systemd-run --user --pty --property=PrivateTmp=yes \
+    --property=ProtectHome=yes --property=SystemCallFilter=@system-service bash
+```
+
+### Onde o sandbox não basta
+
+::: {.callout-important}
+**Sandbox não é ambiente de análise de malware.** `firejail`, `bubblewrap` e contêineres compartilham o kernel com o sistema hospedeiro, e uma falha de kernel escapa de todos eles. Para executar código deliberadamente hostil, o isolamento correto é uma **máquina virtual descartável, em rede isolada, com snapshot** — o assunto do Volume 16. Sandbox é para reduzir o dano de um programa que você espera ser bem-intencionado mas pode ter falhas; VM é para código que você sabe ser hostil. Confundir os dois é o erro que transforma uma análise de amostra em um incidente na sua estação.
+:::
+
+## 🐉 No Kali
+
+- **O AppArmor vem instalado no Kali, mas nem sempre ativo — confira antes de supor.** `sudo aa-status` pode responder `apparmor module is not loaded`. Ativar exige o parâmetro de kernel na linha do GRUB (@sec-cap039): acrescente `apparmor=1 security=apparmor` em `GRUB_CMDLINE_LINUX_DEFAULT` no `/etc/default/grub`, rode `sudo update-grub` e reinicie. Sem isso, os perfis em `/etc/apparmor.d/` estão em disco e não valem nada — a situação mais enganosa possível, porque a configuração parece feita.
+- **Confinar a ferramenta ofensiva é tão legítimo quanto confinar o serviço.** Boa parte do que roda num Kali processa entrada não confiável vinda da rede: `tcpdump` decodifica pacotes de terceiros, o Wireshark tem uma superfície enorme de decodificadores, `sqlmap` e `nikto` consomem respostas de servidores que você não controla. Essas são, historicamente, fontes generosas de CVEs. O perfil `usr.sbin.tcpdump` já vem pronto no Debian e no Kali, e é o exemplo canônico de por que o combinado com capabilities do @sec-cap087 é a defesa completa: capability entrega só o privilégio necessário, perfil limita o que o processo alcança se for explorado.
+- **`firejail --net=none --private` é o mínimo para inspecionar um binário desconhecido — e o mínimo não é suficiente.** Para o primeiro contato com um artefato (rodar `strings`, `file`, `readelf`) o sandbox serve. Para **executar** o artefato, VM descartável em rede isolada, sem pasta compartilhada e com snapshot anterior. A regra prática: sandbox para o que você espera ser inofensivo, VM para o que você sabe que não é.
+- **Negação de AppArmor no log é sinal de detecção, não só de configuração errada.** No caso da abertura, foi uma linha `DENIED` de um `nginx` procurando `id_rsa` em `/home` que denunciou o comprometimento — porque não existe motivo legítimo para esse acesso. Um perfil bem construído gera zero negações em operação normal, o que torna **qualquer** negação um evento digno de alerta (@sec-cap089). Perfil que gera ruído constante treina o operador a ignorar o log, e aí a linha que importa passa despercebida.
+- **`aa-complain` é a resposta certa para "o AppArmor está quebrando meu serviço".** Ele mantém o registro e para de bloquear, permitindo diagnosticar sem desligar a proteção do resto do sistema. `aa-disable` ou desativar o módulo inteiro por causa de um perfil problemático é jogar fora a camada por um caso pontual.
+
+> **Nota sobre a família RHEL.** Aqui a diferença é a maior de todo o manual, porque o padrão é invertido: o RHEL vem com SELinux em `Enforcing` desde a instalação, e o administrador que vem do Debian encontra o mesmo problema uma dezena de vezes antes de aprender a reconhecê-lo — serviço com permissão perfeita e comportamento inexplicável. O reflexo a construir: **antes de investigar qualquer permissão, rode `sudo ausearch -m AVC -ts recent`**. Se houver um AVC, o problema é rótulo, e `restorecon -Rv` ou um booleano resolve em uma linha. A tentação de rodar `setenforce 0` "só para testar" é enorme e o teste é legítimo — desde que seja seguido de `setenforce 1` e do conserto de verdade, nunca de uma edição em `/etc/selinux/config`.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali. Se o `aa-status` do passo 1 disser que o módulo não está carregado, faça o passo 2 e reinicie antes de continuar.
+
+1. **Confira o estado do AppArmor.**
+
+   ```bash
+   sudo aa-status 2>&1 | head -12
+   cat /sys/module/apparmor/parameters/enabled 2>/dev/null
+   ls /etc/apparmor.d/ | head
+   ```
+
+   Esperado: ou um resumo com N perfis carregados, ou `apparmor module is not loaded`. Note que perfis em `/etc/apparmor.d/` existem nos dois casos — arquivo em disco não é política em vigor.
+
+2. **Ative, se necessário.**
+
+   ```bash
+   sudo apt install -y apparmor apparmor-utils apparmor-profiles
+   grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub
+   sudo sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="quiet"/GRUB_CMDLINE_LINUX_DEFAULT="quiet apparmor=1 security=apparmor"/' /etc/default/grub
+   sudo update-grub && echo "reinicie a VM e volte ao passo 1"
+   ```
+
+   Esperado: após o reboot, `aa-status` lista perfis carregados.
+
+3. **Escreva um programa que faz coisas demais.**
+
+   ```bash
+   mkdir -p ~/lab-mac && cd ~/lab-mac
+   sudo tee /usr/local/bin/lab-curioso > /dev/null <<'EOF'
+   #!/usr/bin/env bash
+   echo "--- meu proprio arquivo ---"
+   cat /var/lib/lab-curioso/dados.txt 2>&1 | head -1
+   echo "--- /etc/passwd (legivel por todos no DAC) ---"
+   head -1 /etc/passwd 2>&1
+   echo "--- diretorio pessoal ---"
+   ls ~/ 2>&1 | head -2
+   echo "--- rede ---"
+   timeout 3 bash -c 'echo > /dev/tcp/1.1.1.1/53' 2>&1 && echo "conectou" || echo "sem rede"
+   EOF
+   sudo chmod +x /usr/local/bin/lab-curioso
+   sudo mkdir -p /var/lib/lab-curioso
+   echo "dado legitimo do servico" | sudo tee /var/lib/lab-curioso/dados.txt > /dev/null
+   /usr/local/bin/lab-curioso
+   ```
+
+   Esperado: **tudo funciona**. Ele lê o próprio dado, lê `/etc/passwd`, lista seu `/home` e conecta na internet. É o que o DAC sozinho permite — e é exatamente o repertório do invasor do caso da abertura.
+
+4. **Escreva um perfil e carregue-o em modo `complain`.**
+
+   ```bash
+   sudo tee /etc/apparmor.d/usr.local.bin.lab-curioso > /dev/null <<'EOF'
+   #include <tunables/global>
+
+   /usr/local/bin/lab-curioso {
+     #include <abstractions/base>
+     #include <abstractions/bash>
+
+     /usr/local/bin/lab-curioso    r,
+     /usr/bin/bash                 ix,
+     /usr/bin/cat                  ix,
+     /usr/bin/head                 ix,
+     /usr/bin/ls                   ix,
+     /usr/bin/timeout              ix,
+     /var/lib/lab-curioso/**       r,
+
+     deny /home/** rwx,
+     deny /root/** rwx,
+     deny /etc/passwd r,
+     deny network,
+   }
+   EOF
+   sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.lab-curioso
+   sudo aa-complain /usr/local/bin/lab-curioso
+   sudo aa-status | grep -A3 'complain mode' | head -5
+   ```
+
+   Esperado: o perfil aparece em modo `complain`.
+
+5. **Rode em `complain` e leia o aprendizado.**
+
+   ```bash
+   sudo dmesg -C 2>/dev/null || sudo dmesg --clear
+   /usr/local/bin/lab-curioso
+   sudo dmesg | grep -i apparmor | tail -8
+   ```
+
+   Esperado: **o programa continua funcionando exatamente igual** — nada foi bloqueado — mas o log tem linhas `apparmor="ALLOWED"` descrevendo cada violação. É assim que se constrói um perfil sem quebrar o serviço.
+
+6. **Passe para `enforce` e veja o portão fechar.**
+
+   ```bash
+   sudo aa-enforce /usr/local/bin/lab-curioso
+   /usr/local/bin/lab-curioso
+   ```
+
+   Esperado: o programa lê o próprio dado normalmente, mas **falha** em `/etc/passwd`, em `~/` e na rede. As permissões do sistema não mudaram nada; `/etc/passwd` continua `644`. O segundo portão da @fig-dac-mac está fechado.
+
+7. **Leia a negação como um analista leria.**
+
+   ```bash
+   sudo dmesg | grep 'apparmor="DENIED"' | tail -5
+   sudo dmesg | grep 'apparmor="DENIED"' | tail -1 | tr ' ' '\n' | grep -E 'profile|name|requested_mask'
+   ```
+
+   Esperado: `profile`, `name` e `requested_mask` identificam quem tentou o quê. Um `nginx` produzindo uma linha dessas apontando para `/home/deploy/.ssh/id_rsa` é um incidente, não um erro de configuração.
+
+8. **Confirme que `root` não contorna o MAC.**
+
+   ```bash
+   sudo /usr/local/bin/lab-curioso 2>&1 | tail -6
+   ```
+
+   Esperado: mesmo como `root`, o acesso a `/etc/passwd` e à rede continua bloqueado. Este passo é o coração do capítulo — a política é **obrigatória**, e nem o usuário mais poderoso do sistema a afrouxa em tempo de execução.
+
+9. **Compare com o ponto fraco do modelo por caminho.**
+
+   ```bash
+   sudo cp /usr/local/bin/lab-curioso /usr/local/bin/lab-copia
+   /usr/local/bin/lab-copia 2>&1 | tail -6
+   ```
+
+   Esperado: a cópia **não** é confinada — o perfil está amarrado ao caminho `/usr/local/bin/lab-curioso`, e a cópia tem outro caminho. É precisamente a limitação que o modelo por rótulo do SELinux não tem, e a razão da linha correspondente da @tbl-mac-comparacao.
+
+10. **Isole um programa com `bubblewrap`.**
+
+    ```bash
+    sudo apt install -y bubblewrap
+    bwrap --ro-bind /usr /usr --ro-bind /etc /etc \
+          --symlink usr/bin /bin --symlink usr/lib /lib \
+          --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home \
+          --unshare-all --die-with-parent \
+          /bin/bash -c 'echo "--- /home no sandbox ---"; ls -a /home; \
+                        echo "--- rede ---"; ip a 2>/dev/null | head -3; \
+                        echo "--- PIDs visiveis ---"; ps aux 2>/dev/null | wc -l'
+    ```
+
+    Esperado: `/home` vazio, nenhuma interface de rede além de `lo` (ou nenhuma), e pouquíssimos processos visíveis. O programa acredita estar sozinho num sistema mínimo — e isso sem nenhum privilégio de `root`.
+
+11. **Confine um programa com `firejail`.**
+
+    ```bash
+    sudo apt install -y firejail
+    firejail --quiet --net=none --private bash -c 'ls -a ~; ping -c1 -W2 1.1.1.1 2>&1 | tail -1'
+    ```
+
+    Esperado: o `/home` visto pelo programa é um diretório novo e vazio, e não há rede. É o modo de abrir algo baixado sem lhe dar acesso aos seus arquivos.
+
+12. **Aplique sandbox do systemd a um comando avulso.**
+
+    ```bash
+    systemd-run --user --pty --quiet \
+        --property=ProtectHome=yes --property=PrivateTmp=yes \
+        bash -c 'ls ~ 2>&1 | head -2; touch /tmp/marcador-sandbox && ls /tmp/marcador*'
+    ls /tmp/marcador-sandbox 2>&1
+    ```
+
+    Esperado: dentro do `systemd-run`, o `/home` está protegido e o `/tmp` é privado — o `marcador-sandbox` criado lá dentro **não existe** no `/tmp` real depois que o comando termina.
+
+13. **Limpe tudo.**
+
+    ```bash
+    sudo aa-disable /usr/local/bin/lab-curioso 2>/dev/null
+    sudo rm -f /etc/apparmor.d/usr.local.bin.lab-curioso
+    sudo rm -f /usr/local/bin/lab-curioso /usr/local/bin/lab-copia
+    sudo rm -rf /var/lib/lab-curioso ~/lab-mac
+    sudo systemctl reload apparmor 2>/dev/null || true
+    sudo aa-status | head -3
+    ```
+
+    Esperado: o perfil de laboratório desapareceu da lista e os arquivos foram removidos.
+
+## Resumo
+
+- **DAC é discricionário: o dono decide, e um processo comprometido herda toda a autoridade do usuário.** MAC é obrigatório: a política do administrador diz o que cada *programa* pode fazer, e nem `root` a afrouxa em tempo de execução.
+- **Os dois portões são verificados em série e de forma independente.** `chmod 777` não abre o portão MAC. É defesa em profundidade literal — o invasor precisa vencer ambos.
+- **AppArmor identifica por caminho; SELinux, por rótulo gravado no arquivo.** O caminho é simples de escrever e contornável por cópia ou link; o rótulo viaja com o arquivo e não é contornável assim, ao custo de uma curva de aprendizado bem maior.
+- **Modo `complain` é como se constrói perfil sem quebrar serviço** — registra tudo, não bloqueia nada. A qualidade do perfil é exatamente a qualidade do exercício feito nesse modo, e o caminho de código que você não acionou vai quebrar depois.
+- **Toda negação está no log, e é lá que se diagnostica**: `dmesg | grep DENIED` no AppArmor, `ausearch -m AVC` no SELinux. `Permission denied` com permissões corretas é o sintoma clássico.
+- **Uma negação de MAC também é sinal de detecção.** Perfil bem construído gera zero negações em operação normal, o que torna qualquer negação um evento a investigar.
+- **Sandbox não é ambiente de análise de malware.** `firejail` e `bubblewrap` compartilham o kernel com o hospedeiro. Para código sabidamente hostil, VM descartável em rede isolada, com snapshot.

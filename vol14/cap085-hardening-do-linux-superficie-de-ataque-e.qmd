@@ -1,3 +1,404 @@
 # Hardening do Linux: superfície de ataque e princípios {#sec-cap085}
 
-*(em elaboracao)*
+A máquina invadida rodava um kernel atualizado no dia anterior. Nenhuma vulnerabilidade conhecida, nenhum exploit exótico, nenhum dia zero. O que havia era um serviço de banco de dados que alguém subiu para um teste em janeiro, esqueceu ligado, e que escutava em `0.0.0.0` com a senha padrão da documentação. O invasor não quebrou nada: ele **entrou pela porta que ninguém lembrava de ter deixado aberta**.
+
+Esse é o padrão. A esmagadora maioria dos comprometimentos não explora uma falha de software: explora uma **decisão de configuração** — um serviço que não precisava estar no ar, uma conta que não precisava existir, um binário SUID que ninguém audita, uma regra de `sudo` escrita larga demais para resolver um problema pontual há dois anos. *Hardening* é o trabalho sistemático de reduzir esse acúmulo, e ele começa por uma pergunta que quase nunca é feita de forma honesta: **por onde exatamente se entra nesta máquina?**
+
+## Superfície de ataque: o que é, de fato
+
+**Superfície de ataque** é o conjunto de todos os pontos por onde uma entidade não confiável pode injetar dados ou influenciar o comportamento do sistema. Não é uma metáfora vaga — é uma lista finita, enumerável, que você consegue escrever num arquivo e conferir linha por linha.
+
+Ela tem camadas, e cada camada tem sua própria lógica de redução.
+
+::: {#fig-superficie-ataque}
+```{.tikz}
+%%| filename: superficie-ataque
+%%| alt: Camadas da superficie de ataque de um sistema Linux, da rede ao kernel, com o comando que enumera cada uma
+\begin{tikzpicture}[
+    camada/.style={rounded corners=4pt,draw,thick,align=center,font=\scriptsize,inner sep=4pt,minimum width=7.6cm,minimum height=1.0cm},
+    cmd/.style={font=\ttfamily\tiny,anchor=west,align=left,manualgray},
+    fl/.style={-{Latex[length=1.6mm]},thick,manualgray},
+    nt/.style={font=\scriptsize,manualgray,align=left}
+  ]
+  \node[camada,draw=manualred,fill=manualred!14]      (rede) at (0,6.2) {\textbf{Rede} --- portas em escuta\\\tiny quem alcança a máquina sem credencial nenhuma};
+  \node[camada,draw=manualyellow,fill=manualyellow!20] (serv) at (0,4.9) {\textbf{Serviços} --- daemons ativos\\\tiny cada um é código rodando e uma configuração a errar};
+  \node[camada,draw=manualblue,fill=manualblue!12]    (cont) at (0,3.6) {\textbf{Contas} --- usuários com shell, chaves, \texttt{sudo}\\\tiny quem já está dentro, e até onde vai};
+  \node[camada,draw=manualgreen,fill=manualgreen!14]  (bin)  at (0,2.3) {\textbf{Binários privilegiados} --- SUID, SGID, capabilities\\\tiny o caminho de usuário local até \texttt{root}};
+  \node[camada,draw=manualgray,fill=manualgray!14]    (ker)  at (0,1.0) {\textbf{Kernel} --- módulos, \texttt{/proc}, \texttt{/sys}, syscalls\\\tiny a última fronteira; falha aqui derruba tudo acima};
+
+  \node[cmd] at (4.2,6.2) {ss -tulpn};
+  \node[cmd] at (4.2,4.9) {systemctl list-units\\ \ \ --state=running};
+  \node[cmd] at (4.2,3.6) {getent passwd\\cat /etc/sudoers.d/*};
+  \node[cmd] at (4.2,2.3) {find / -perm -4000\\getcap -r /};
+  \node[cmd] at (4.2,1.0) {lsmod\\sysctl -a};
+
+  \draw[fl] (-4.4,6.7) -- (-4.4,0.5);
+  \node[nt,font=\tiny,rotate=90,anchor=south] at (-4.7,3.6) {exige acesso cada vez mais profundo};
+
+  \node[nt,text width=13.4cm,anchor=north] at (0.4,0.2) {Cada camada só é alcançável depois da anterior, e é por isso que reduzir a de cima vale mais: uma porta fechada torna irrelevante toda a fragilidade que exista abaixo dela. A ordem de trabalho segue a figura de cima para baixo --- primeiro o que é alcançável da rede sem credencial nenhuma, por último o que só interessa a quem já está dentro.};
+\end{tikzpicture}
+```
+As camadas da superfície de ataque de um sistema Linux e o comando que enumera cada uma.
+:::
+
+A consequência prática dessa hierarquia é a regra que orienta todo o resto: **fechar uma porta vale mais do que corrigir dez vulnerabilidades atrás dela**. Um serviço que não está rodando não tem CVE que importe, não precisa de patch, não precisa de configuração revisada e não aparece em varredura nenhuma.
+
+## Os princípios que sustentam as decisões
+
+Hardening feito por lista de receitas envelhece mal: a receita é de 2018, o sistema é de hoje, e metade dos itens não se aplica. O que envelhece bem são os princípios, porque eles permitem decidir sobre um caso que a lista não previu.
+
+**Menor privilégio.** Todo processo, usuário e serviço recebe exatamente o que precisa para funcionar, e nada mais. Não é sobre desconfiar das pessoas — é sobre limitar o estrago quando algo é comprometido. Um `nginx` rodando como `www-data` e um `nginx` rodando como `root` servem a mesma página; a diferença aparece só no dia em que ele é explorado. É o princípio central do @sec-cap087.
+
+**Defesa em profundidade.** Nenhum controle é confiável sozinho. Firewall, autenticação, permissões, confinamento obrigatório e monitoramento não são alternativas entre si: são camadas independentes, e a hipótese de trabalho é que cada uma vai falhar em algum momento. A pergunta útil não é "esta medida impede o ataque?", e sim "**quando esta medida falhar, o que ainda está de pé?**".
+
+**Falhar fechado.** Diante de erro ou ambiguidade, o padrão é negar. É a política `drop` do @sec-cap083, é a regra de `sudo` que lista o que pode em vez de listar o que não pode, é o serviço que se recusa a subir com configuração inválida em vez de subir com valores permissivos.
+
+**Reduzir antes de proteger.** Software não instalado não precisa ser configurado, atualizado, monitorado nem confinado. Antes de escrever um perfil de confinamento para um serviço, pergunte se o serviço precisa existir. A resposta é "não" com uma frequência surpreendente.
+
+**Auditabilidade.** Um controle que não deixa registro é um controle que você não sabe se está funcionando — e cuja falha você só descobre quando alguém avisa de fora. É o tema do @sec-cap089.
+
+**O padrão de fábrica não é o padrão seguro.** Distribuições otimizam para "funciona na primeira tentativa", não para "resiste a um adversário". Isso é uma escolha legítima delas e um problema seu.
+
+## Medindo a superfície antes de mexer nela
+
+Hardening sem medição inicial é fé. A sequência abaixo produz um retrato do sistema que serve como linha de base — guarde a saída, porque ela é o "antes" contra o qual você vai comparar o "depois", e é também o insumo do monitoramento de integridade do @sec-cap089.
+
+**O que está escutando na rede.** A pergunta mais importante, e a única cuja resposta um atacante externo também consegue obter:
+
+```bash
+sudo ss -tulpn                                    # sockets em escuta, com processo
+sudo ss -tulpn | grep -v '127.0.0.1\|::1'         # o que e alcancavel de fora
+```
+
+A distinção entre `127.0.0.1:5432` e `0.0.0.0:5432` é a diferença entre um banco de dados acessível só pela própria máquina e um banco exposto à rede inteira — foi exatamente ela que decidiu o caso da abertura. Todo serviço que só serve à máquina local deve escutar em `127.0.0.1`, e essa é uma opção de configuração **do serviço**, não do firewall. Firewall é a segunda camada, não a primeira.
+
+**O que está rodando.** Cada unidade ativa é código executando com algum privilégio:
+
+```bash
+systemctl list-units --type=service --state=running
+systemctl list-unit-files --state=enabled         # o que sobe no proximo boot
+```
+
+**Quem pode entrar.** Contas com shell de verdade e contas com senha definida são vetores distintos:
+
+```bash
+awk -F: '$7 !~ /nologin|false/ {print $1, $7}' /etc/passwd   # shell utilizavel
+sudo awk -F: '$2 !~ /^[!*]/ {print $1}' /etc/shadow          # senha definida
+sudo grep -rvE '^\s*(#|$)' /etc/sudoers /etc/sudoers.d/      # regras de sudo em vigor
+```
+
+**Os caminhos de escalada local.** Binários SUID e arquivos com capabilities são o inventário de como um usuário comum vira `root` (@sec-cap023):
+
+```bash
+sudo find / -xdev -perm -4000 -type f -printf '%M %u %p\n' 2>/dev/null | sort
+sudo getcap -r / 2>/dev/null
+```
+
+**O que está instalado.** Software é superfície mesmo parado, porque um dia alguém executa:
+
+```bash
+dpkg -l | grep -c '^ii'            # total de pacotes instalados
+sudo apt autoremove --purge        # remove dependencias orfas
+```
+
+Reunidos, esses cinco blocos cabem num script de inventário de quinze linhas — exatamente o tipo de coisa que os volumes de scripting prepararam você para escrever. O laboratório no fim do capítulo monta um.
+
+## O conjunto mínimo de medidas que muda o resultado
+
+Há centenas de itens em qualquer guia de hardening. Um punhado deles responde pela maior parte do risco real.
+
+### Atualização é a medida de maior retorno
+
+Nenhuma configuração compensa um sistema desatualizado. Em Debian e Kali (@sec-cap034):
+
+```bash
+sudo apt update && sudo apt full-upgrade      # no Kali rolling, full-upgrade, nao upgrade
+sudo apt install unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades
+```
+
+Em servidor Debian estável, `unattended-upgrades` restrito ao repositório de segurança é quase sempre a decisão certa. Em Kali rolling a conta é outra: o repositório é uma fila contínua de mudanças, não um conjunto congelado com correções pontuais, e atualização automática desacompanhada troca um risco de segurança por um risco de disponibilidade.
+
+### SSH: a porta que realmente está aberta
+
+O SSH costuma ser o único serviço legitimamente exposto, o que o torna o alvo permanente do @sec-cap081. As opções em `/etc/ssh/sshd_config` que fazem diferença mensurável:
+
+```bash
+# /etc/ssh/sshd_config — os trechos que importam
+PermitRootLogin no                # ninguem entra direto como root
+PasswordAuthentication no         # so chave; elimina forca bruta de senha
+KbdInteractiveAuthentication no   # fecha o caminho alternativo de senha
+PubkeyAuthentication yes
+AllowUsers vitor                  # lista branca explicita de quem pode entrar
+MaxAuthTries 3
+LoginGraceTime 30
+X11Forwarding no
+AllowAgentForwarding no
+```
+
+```bash
+sudo sshd -t                      # VALIDA a configuracao antes de recarregar
+sudo systemctl reload ssh
+```
+
+::: {.callout-warning}
+**`sudo sshd -t` antes de qualquer `reload`, sem exceção.** Um erro de sintaxe em `sshd_config` faz o serviço se recusar a subir, e numa máquina remota isso significa perder o acesso de forma definitiva. Regra de ouro do trabalho remoto: **mantenha a sessão atual aberta**, abra uma **segunda** conexão para testar a configuração nova, e só feche a primeira depois que a segunda funcionar. E `PasswordAuthentication no` sem uma chave pública já instalada e **testada** em `~/.ssh/authorized_keys` tranca você para fora na hora — o assunto do @sec-cap086.
+:::
+
+### Parâmetros de kernel que valem a linha
+
+O `sysctl` expõe chaves do kernel que fecham classes inteiras de problema (o mecanismo por baixo, `/proc/sys`, é tema do Volume 16). Um arquivo em `/etc/sysctl.d/` persiste no boot:
+
+```bash
+# /etc/sysctl.d/99-hardening.conf
+kernel.kptr_restrict = 2              # esconde enderecos de kernel de nao-root
+kernel.dmesg_restrict = 1             # dmesg so para root: vaza layout de memoria
+kernel.yama.ptrace_scope = 1          # processo nao inspeciona outro arbitrariamente
+fs.protected_symlinks = 1             # bloqueia a classe classica de ataque por link
+fs.protected_hardlinks = 1
+fs.suid_dumpable = 0                  # sem core dump de binario SUID
+net.ipv4.conf.all.rp_filter = 1       # descarta pacote com origem impossivel
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.tcp_syncookies = 1
+```
+
+```bash
+sudo sysctl --system                  # aplica tudo de /etc/sysctl.d/
+sysctl kernel.yama.ptrace_scope       # confere um valor especifico
+```
+
+O `ptrace_scope = 1` merece destaque: ele impede que um processo seu inspecione a memória de outro processo seu que não seja seu filho direto. É o que separa "um processo comprometido" de "um processo comprometido que leu as chaves em memória de todos os outros". Custo: ferramentas de depuração passam a exigir `sudo`, o que é aceitável fora de uma estação de desenvolvimento.
+
+### Serviços: desligar é melhor do que configurar
+
+```bash
+systemctl list-unit-files --state=enabled          # o que sobe sozinho
+sudo systemctl disable --now cups avahi-daemon     # exemplo: impressao e descoberta
+sudo systemctl mask bluetooth                      # mask impede ate ativacao por dependencia
+```
+
+A diferença entre `disable` e `mask` importa: `disable` tira do boot, mas outro serviço ainda pode ativá-lo por dependência ou por socket; `mask` aponta a unidade para `/dev/null` e torna a ativação impossível (@sec-cap041).
+
+### Montagem: opções que custam nada
+
+Diretórios graváveis por qualquer um não precisam permitir execução nem SUID. No `/etc/fstab` (@sec-cap019):
+
+```
+/dev/mapper/vg-tmp  /tmp      ext4   defaults,nosuid,nodev,noexec  0 2
+tmpfs               /dev/shm  tmpfs  defaults,nosuid,nodev,noexec  0 0
+```
+
+`noexec` em `/tmp` não é barreira intransponível — há várias formas de contorná-la, a começar por invocar o interpretador diretamente (`bash /tmp/x.sh` ignora o bit de execução). Mas ela quebra o script automatizado que baixa e executa em `/tmp`, e esse é o comportamento da maioria esmagadora do que roda solto por aí. Defesa em profundidade é feita de barreiras assim: nenhuma decisiva, todas somando.
+
+### Auditoria automatizada
+
+Vale rodar uma ferramenta que conhece a lista completa e devolve um placar:
+
+```bash
+sudo apt install lynis
+sudo lynis audit system                          # centenas de checagens, com sugestoes
+sudo lynis audit system --quick | grep -E 'Warning|Suggestion'
+```
+
+O `lynis` não conserta nada — ele enumera e pontua. Trate as sugestões como pauta, não como ordem: várias não se aplicam ao seu caso, e aplicar tudo cegamente quebra sistema em produção. O `debsecan` complementa listando as vulnerabilidades conhecidas dos pacotes instalados:
+
+```bash
+sudo apt install debsecan
+debsecan --format detail
+```
+
+## O custo de cada medida, explicitado
+
+Toda medida de hardening cobra alguma coisa. Ignorar esse custo é como se chega ao servidor "seguro" que ninguém consegue administrar e que, por isso, acumula gambiarras que anulam o hardening inteiro.
+
+| Medida | O que protege | O que custa |
+|---|---|---|
+| `PasswordAuthentication no` | elimina força bruta de senha | perder a chave privada é perder o acesso |
+| Política `drop` no firewall | fecha tudo que não foi liberado | cada serviço novo exige uma regra explícita |
+| `noexec` em `/tmp` | quebra scripts automatizados de estágio | instaladores que usam `/tmp` param de funcionar |
+| `ptrace_scope = 1` | impede leitura de memória entre processos | `gdb` e `strace` passam a exigir `sudo` |
+| Confinamento em modo estrito | contém o processo comprometido | perfil mal ajustado quebra o serviço de forma opaca |
+| `unattended-upgrades` | fecha a janela entre patch e aplicação | atualização pode quebrar o serviço às 3h da manhã |
+| Remover compiladores | dificulta compilar exploit no alvo | inviabiliza compilar qualquer coisa (@sec-cap037) |
+
+: Medidas de hardening e o que cada uma cobra {#tbl-custo-hardening}
+
+A decisão correta depende do papel da máquina. Um servidor de produção que serve uma única aplicação justifica quase tudo da coluna da esquerda; uma estação onde você compila, depura e testa não justifica quase nada. **Hardening genérico não existe** — existe hardening para um sistema com um propósito declarado.
+
+## 🐉 No Kali
+
+- **O Kali é deliberadamente o oposto de um sistema endurecido, e por um bom motivo.** Ele é uma plataforma de ferramentas ofensivas cujo trabalho é gerar tráfego incomum, abrir sockets crus, injetar pacotes e carregar módulos. Firewall restritivo, confinamento obrigatório em modo estrito e `ptrace_scope` alto atrapalhariam exatamente o que a distribuição existe para fazer. A consequência é que **endurecer é uma decisão sua, consciente e reversível** — e que a máquina Kali conectada a uma rede desconhecida sem regra de firewall nenhuma (@sec-cap083) é a menos protegida da sala.
+- **Mas o Kali não é o descuidado que a fama sugere.** Desde 2020 a instalação padrão usa **usuário não privilegiado** (`kali`, no grupo `sudo`) em vez de `root` direto, e **nenhum serviço de rede sobe habilitado**: `ssh`, `postgresql` e `apache2` vêm instalados e desativados. `sudo ss -tulpn` numa instalação nova é praticamente vazio. O risco real não é o padrão de fábrica — é o `systemctl enable ssh` que você deu num laboratório há três meses e nunca desfez.
+- **`kali-tweaks` centraliza as decisões que importam.** A seção *Hardening* do menu configura justamente as opções de SSH deste capítulo, incluindo a de **aceitar algoritmos legados** — necessária para conectar em alvos antigos de laboratório e que é o exato oposto de hardening. É a expressão prática de que o Kali é ferramenta, não fortaleza: as duas direções estão a um menu de distância.
+- **VM clonada herda a chave de host do SSH, e isso mina a proteção contra interceptação.** Várias máquinas se apresentando com a mesma identidade tornam inútil a verificação de *fingerprint* do @sec-cap081. Depois de clonar: `sudo rm /etc/ssh/ssh_host_* && sudo dpkg-reconfigure openssh-server`.
+- **Rodar as ferramentas ofensivas contra a própria máquina é hardening legítimo, e é o teste que fecha o ciclo.** Você já tem `nmap`, `nikto` e `lynis` instalados, e a máquina que acabou de endurecer é um alvo cuja autorização é indiscutível. `sudo nmap -sV -p- 127.0.0.1` e uma varredura a partir de outra VM da mesma rede mostram a superfície **como um atacante a vê**, que raramente é como o administrador imagina. Contra qualquer outro alvo, sem autorização escrita, isso é crime pela Lei 12.737/2012 — o mesmo limite do @sec-cap090.
+
+> **Nota sobre a família RHEL.** O ponto de partida é bem diferente: o RHEL vem com **`firewalld` ativo e restritivo** e **SELinux em `enforcing`** de fábrica (@sec-cap088), o que já cobre duas camadas inteiras da @fig-superficie-ataque antes de qualquer configuração sua. O equivalente do `lynis` no ecossistema é o **OpenSCAP** (`oscap`), que valida o sistema contra perfis normativos publicados — CIS, PCI-DSS, STIG — e gera relatório de conformidade com correção automatizável (`oscap xccdf eval --remediate`). É a diferença cultural entre as duas famílias: o Debian entrega um sistema funcional e deixa o endurecimento com você; o RHEL entrega um sistema endurecido e cobra que você abra o que precisa.
+
+## 🧪 Laboratório
+
+Roteiro para uma VM do Kali descartável. Ele mede a superfície, aplica um conjunto conservador de medidas e mede de novo. Nada aqui derruba a máquina, mas **faça em VM com snapshot** — endurecimento é justamente o tipo de mudança cujo efeito colateral aparece depois.
+
+1. **Tire o retrato inicial da superfície.**
+
+   ```bash
+   mkdir -p ~/hardening && cd ~/hardening
+   sudo ss -tulpn > antes-portas.txt
+   systemctl list-units --type=service --state=running > antes-servicos.txt
+   sudo find / -xdev -perm -4000 -type f 2>/dev/null | sort > antes-suid.txt
+   wc -l antes-*.txt
+   ```
+
+   Esperado: três arquivos com contagens. Guarde-os — são a linha de base contra a qual tudo será comparado.
+
+2. **Escreva o script de inventário que reúne as cinco camadas.**
+
+   ```bash
+   cat > superficie.sh <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   echo "=== 1. PORTAS EM ESCUTA (alcancaveis de fora) ==="
+   sudo ss -tulpnH | grep -vE '127\.0\.0\.1|\[::1\]' || echo "  (nenhuma)"
+   echo "=== 2. SERVICOS ATIVOS ==="
+   systemctl list-units --type=service --state=running --no-legend | awk '{print "  "$1}'
+   echo "=== 3. CONTAS COM SHELL UTILIZAVEL ==="
+   awk -F: '$7 !~ /nologin|false/ {print "  "$1" -> "$7}' /etc/passwd
+   echo "=== 4. BINARIOS SUID ==="
+   sudo find / -xdev -perm -4000 -type f 2>/dev/null | sed 's/^/  /'
+   echo "=== 5. ARQUIVOS COM CAPABILITIES ==="
+   sudo getcap -r / 2>/dev/null | sed 's/^/  /' || echo "  (nenhum)"
+   EOF
+   chmod +x superficie.sh
+   ./superficie.sh | tee superficie-antes.txt
+   ```
+
+   Esperado: um relatório das cinco camadas da @fig-superficie-ataque numa tela só. Este é o artefato de verdade do capítulo — e o `set -euo pipefail` vem do @sec-cap071.
+
+3. **Crie uma exposição de propósito e veja-a aparecer.**
+
+   ```bash
+   python3 -m http.server 8080 --bind 0.0.0.0 &
+   sleep 1
+   sudo ss -tulpn | grep 8080
+   ```
+
+   Esperado: a linha mostra `0.0.0.0:8080` — alcançável de qualquer host da rede. Agora compare com o mesmo serviço amarrado ao loopback:
+
+   ```bash
+   kill %1
+   python3 -m http.server 8081 --bind 127.0.0.1 &
+   sleep 1
+   sudo ss -tulpn | grep 808
+   ```
+
+   Esperado: `127.0.0.1:8081`. Mesmo programa, mesmo firewall, superfície de ataque completamente diferente. É a distinção que decidiu o caso da abertura.
+
+4. **Enumere e entenda os binários SUID.**
+
+   ```bash
+   sudo find / -xdev -perm -4000 -type f -printf '%u %p\n' 2>/dev/null | sort | head -20
+   ls -l /usr/bin/passwd /usr/bin/sudo
+   ```
+
+   Esperado: uma lista de dez a trinta binários. `passwd` precisa de SUID para escrever em `/etc/shadow`; `sudo` precisa para elevar. Cada item é um programa que roda como `root` a pedido de qualquer usuário — a razão de a lista ser curta e de o @sec-cap087 existir.
+
+5. **Aplique os parâmetros de kernel e sinta o efeito.**
+
+   ```bash
+   sysctl kernel.yama.ptrace_scope kernel.dmesg_restrict
+   sudo tee /etc/sysctl.d/99-lab-hardening.conf > /dev/null <<'EOF'
+   kernel.kptr_restrict = 2
+   kernel.dmesg_restrict = 1
+   kernel.yama.ptrace_scope = 1
+   fs.protected_symlinks = 1
+   fs.suid_dumpable = 0
+   EOF
+   sudo sysctl --system > /dev/null
+   sysctl kernel.yama.ptrace_scope kernel.dmesg_restrict
+   ```
+
+   Esperado: os valores mudam de `0` para `1`. Agora o efeito real:
+
+   ```bash
+   sleep 300 &
+   strace -p $! 2>&1 | head -3      # agora falha por permissao
+   kill %1
+   ```
+
+   Esperado: `Operation not permitted` — um processo seu já não inspeciona outro processo seu. Este é o custo da linha correspondente da @tbl-custo-hardening, sentido na pele.
+
+6. **Endureça o SSH com a rede de segurança correta.**
+
+   ```bash
+   sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+   sudo tee /etc/ssh/sshd_config.d/99-lab.conf > /dev/null <<'EOF'
+   PermitRootLogin no
+   MaxAuthTries 3
+   LoginGraceTime 30
+   X11Forwarding no
+   EOF
+   sudo sshd -t && echo "configuracao valida"
+   ```
+
+   Esperado: `configuracao valida`. Note que **não** desativamos senha ainda — isso só depois de instalar e testar uma chave (@sec-cap086). Agora veja o que aconteceria com um erro:
+
+   ```bash
+   echo "PermitRootLogin talvez" | sudo tee -a /etc/ssh/sshd_config.d/99-lab.conf > /dev/null
+   sudo sshd -t          # falha alto, ANTES de recarregar
+   sudo sed -i '$d' /etc/ssh/sshd_config.d/99-lab.conf
+   sudo sshd -t && echo "corrigido"
+   ```
+
+   Esperado: o `sshd -t` acusa a linha inválida e recusa. Foi ele que salvou o acesso remoto.
+
+7. **Desligue um serviço e confirme que ele não volta.**
+
+   ```bash
+   systemctl list-unit-files --state=enabled | head -20
+   sudo systemctl disable --now cups.service 2>/dev/null || echo "cups nao instalado"
+   sudo systemctl mask cups.service 2>/dev/null
+   systemctl is-enabled cups.service 2>&1
+   ```
+
+   Esperado: `masked` — a unidade não pode mais ser ativada, nem por dependência de outra.
+
+8. **Rode a auditoria automatizada e compare com seu próprio inventário.**
+
+   ```bash
+   sudo apt install -y lynis
+   sudo lynis audit system --quick 2>/dev/null | grep -E 'Hardening index|Suggestion' | tail -30
+   ```
+
+   Esperado: um índice numérico e uma lista de sugestões. Confira quantas você já tinha identificado no passo 2 — a ferramenta vê mais itens, seu inventário vê os que importam para esta máquina.
+
+9. **Meça de novo e produza o diferencial.**
+
+   ```bash
+   ./superficie.sh > superficie-depois.txt
+   diff superficie-antes.txt superficie-depois.txt || true
+   ```
+
+   Esperado: o `diff` mostra exatamente o que mudou. Um relatório de hardening honesto é isto: um antes, um depois, e a diferença entre eles.
+
+10. **Reverta tudo.**
+
+    ```bash
+    sudo rm -f /etc/sysctl.d/99-lab-hardening.conf /etc/ssh/sshd_config.d/99-lab.conf
+    sudo sysctl --system > /dev/null
+    sudo systemctl unmask cups.service 2>/dev/null || true
+    kill %1 2>/dev/null || true
+    sysctl kernel.yama.ptrace_scope        # de volta ao padrao
+    ```
+
+    Esperado: os valores voltam ao original. Reverter com a mesma facilidade com que se aplica é parte do método — hardening irreversível é hardening que ninguém ousa aplicar.
+
+## Resumo
+
+- **A maioria dos comprometimentos explora configuração, não vulnerabilidade.** O serviço esquecido escutando em `0.0.0.0` com senha padrão é o padrão real de invasão, não o dia zero.
+- **Superfície de ataque é uma lista finita e enumerável** em cinco camadas — rede, serviços, contas, binários privilegiados, kernel — e cada uma tem um comando que a mede. Sem essa medição, hardening é fé.
+- **Fechar a camada de cima vale mais do que corrigir tudo abaixo dela.** Serviço que não roda não tem CVE que importe.
+- **Cinco princípios substituem qualquer lista de receitas:** menor privilégio, defesa em profundidade, falhar fechado, reduzir antes de proteger, auditabilidade. São eles que decidem os casos que a lista não previu.
+- **`sudo sshd -t` antes de todo `reload`, e uma segunda sessão aberta para testar.** É o que separa endurecer o SSH de perder a máquina.
+- **Toda medida cobra um preço**, e a decisão certa depende do papel do sistema. Hardening genérico não existe: existe hardening para uma máquina com propósito declarado.
+- **O Kali é o oposto de endurecido de propósito**, porque as ferramentas que ele hospeda precisam de privilégio e de rede livre — mas vem com usuário não privilegiado e nenhum serviço de rede ativo. O risco é o `systemctl enable` esquecido, não o padrão de fábrica.
